@@ -5,7 +5,7 @@ import (
     "log"
     "strings"
 
-    "yola/internal/base"
+    "yola/test/study/base"
 )
 
 const (
