@@ -1,0 +1,41 @@
+{
+	"self":"./conf/teenpatti.json" ,
+    "log_new":{"path":"./log", "type":0, "level":0, "maxsize":104857600, "maxnum":5},
+	"venun_info":{
+		"skey":"57a513c8a4beda60aa1f224e7c66aba6",
+		"ispractice":0,
+		"currency_type":2,
+		"gtype":0
+	},
+	"tables":{
+		"vid":8,
+		"zid":9100,
+		"begin":1,
+		"end":1000,
+		"seat_count":5,
+		"min_money":100,
+		"max_money":4000,
+		"base_money":1,
+		"auto_ready":true,
+		"is_newbie":false,
+		"fee":0.05,
+		"ch_limit":128,
+		"pot_limit":1024,
+		"see_round":0,
+		"auto_see_round":5,
+		"speaker_minmoney":30000,
+		"speaker_card_type":3,
+		"high_strength_rate":100
+	},
+	"robot_cfg":{
+		"is_open":true,
+		"num":4,
+		"table_max_count":4,
+		"min_play_count":4,
+		"id_begin":34000,
+		"min_money":500,
+		"max_money":1000,
+		"stand_min_money":120,
+		"stand_max_money":3500
+	}
+}

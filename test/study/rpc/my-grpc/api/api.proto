@@ -1,0 +1,17 @@
+syntax = "proto3";
+
+package api;
+
+service Hello {
+    rpc SayHello(HelloReq) returns(HelloRsp){}
+}
+
+message HelloReq {
+    int32 Id = 1;
+}
+
+message HelloRsp {
+    int32 Id = 1;
+    string Msg = 2;
+}
+
