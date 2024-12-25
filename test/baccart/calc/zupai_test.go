@@ -17,7 +17,7 @@ func TestZuPai(t *testing.T) {
 	a = SliceShuffle(a)
 
 	r := findCombinations(intToCards(a), PairBankWin)
-	fmt.Printf("a:%+v \n", r)
+	fmt.Printf("r:%+v \n", r)
 
 	fmt.Printf("b:%+v p:%+v\n", calculatePoints(intToCards(r[0])), calculatePoints(intToCards(r[1])))
 

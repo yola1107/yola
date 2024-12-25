@@ -65,7 +65,7 @@ func Permute(cards []int32, laiZi int) *TagResult {
 func convertToCardNodes(cList []int32) ([4][14]*Node, []int32) {
 	var data [4][14]*Node
 	uniqueCardsMap := make(map[int32]struct{})
-	uniqueCards := []int32{}
+	var uniqueCards []int32
 
 	// Initialize the data structure for card nodes.
 	for i := range data {

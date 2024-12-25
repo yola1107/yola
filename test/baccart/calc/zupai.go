@@ -1,6 +1,6 @@
 package calc
 
-// 牌型定义
+// CardType 牌型定义
 type CardType int
 
 // 结果常量
@@ -23,7 +23,7 @@ type Card struct {
 func findCombinations(deck []Card, combinationType CardType) [][]int {
 	result := findCombination(deck, combinationType, nil, 0, make([]bool, len(deck)))
 
-	total := [][]int{}
+	var total [][]int
 	for _, v := range result {
 		total = append(total, cardsToInt(v))
 	}
