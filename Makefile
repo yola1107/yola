@@ -51,7 +51,7 @@ build:
 
 
 .PHONY: nginx
-# nginx 目标：nginx配置scp远程服务器
+# nginx
 nginx:
 	scp test/study/websocket-ssl/nginx.conf root@192.168.1.100:/etc/nginx/
 	ssh root@192.168.1.100 'systemctl restart nginx && systemctl status nginx'

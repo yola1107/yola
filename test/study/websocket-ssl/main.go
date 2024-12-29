@@ -84,6 +84,6 @@ func main() {
 
     // 启动 WebSocket 服务器
 
-    fmt.Printf("WebSocket server started on port %+v", *port)
+    fmt.Printf("WebSocket server started on port %+v\n", *port)
     log.Fatal(http.ListenAndServe(fmt.Sprintf(":%d", *port), nil))
 }

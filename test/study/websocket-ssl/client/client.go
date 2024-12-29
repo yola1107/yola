@@ -11,11 +11,37 @@ import (
 )
 
 //const serverURL = "ws://192.168.1.101:8000/ws" // 这里是 Nginx 负载均衡的地址
-const serverURL = "ws://test.yola.com/ws" // 这里是 Nginx 负载均衡的地址
+const serverURL = "wss://test.yola.com/ws" // 这里是 Nginx 负载均衡的地址
 
 // 连接 WebSocket 服务器并处理消息
 func connectToWebSocket() (*websocket.Conn, error) {
-    // 创建 WebSocket 连接
+
+    //// 读取 CA 证书
+    //caCert, err := ioutil.ReadFile("server.crt") // 服务器证书
+    //if err != nil {
+    //    log.Fatalf("Failed to read CA cert: %v", err)
+    //}
+    //
+    //// 创建证书池并将 CA 证书添加到池中
+    //certPool := x509.NewCertPool()
+    //if ok := certPool.AppendCertsFromPEM(caCert); !ok {
+    //    log.Fatalf("Failed to append cert to cert pool")
+    //}
+    //
+    //// 创建自定义的 http.Transport 和 tls.Config
+    //tlsConfig := &tls.Config{
+    //    RootCAs: certPool,
+    //}
+    //tlsConfig.BuildNameToCertificate()
+    //
+    //// 创建自定义的 Dialer
+    //dialer := websocket.Dialer{
+    //    TLSClientConfig: tlsConfig,
+    //}
+    //
+    //// 创建 WebSocket 连接
+    //conn, _, err := dialer.Dial(serverURL, nil)
+
     conn, _, err := websocket.DefaultDialer.Dial(serverURL, nil)
     if err != nil {
         return nil, fmt.Errorf("error connecting to WebSocket server: %v", err)
@@ -54,10 +80,6 @@ func receiveMessage(conn *websocket.Conn) {
 }
 
 func main() {
-    // 创建一个捕获信号的通道，以便优雅地退出
-    sigChan := make(chan os.Signal, 1)
-    signal.Notify(sigChan, os.Interrupt)
-
     // 连接 WebSocket 服务器
     conn, err := connectToWebSocket()
     if err != nil {
@@ -81,6 +103,9 @@ func main() {
         }
     }()
 
+    // 创建一个捕获信号的通道，以便优雅地退出
+    sigChan := make(chan os.Signal, 1)
+    signal.Notify(sigChan, os.Interrupt)
     // 等待程序结束的信号
     <-sigChan
     fmt.Println("Received interrupt signal, closing connection...")
