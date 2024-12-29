@@ -58,12 +58,7 @@ ssl:
 	scp test/study/websocket-ssl/app      root@192.168.1.100:/home/bin/
 	scp test/study/websocket-ssl/start.sh root@192.168.1.100:/home/bin/
 	rm -f test/study/websocket-ssl/app
-
-
-	ssh root@192.168.1.100 'cd /home/bin && ./start.sh &'
-
-
-
+	ssh root@192.168.1.100 'cd /home/bin && nohup ./start.sh > /dev/null 2>&1 &'
 
 
 .PHONY: generate
