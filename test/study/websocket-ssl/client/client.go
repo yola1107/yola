@@ -1,70 +1,87 @@
-// client.go
 package main
 
 import (
-    "crypto/tls"
     "fmt"
     "log"
     "os"
     "os/signal"
+    "time"
 
     "github.com/gorilla/websocket"
 )
 
-func main() {
-    // 连接到 WebSocket 服务器
-    url := "wss://test.yola.com/ws"
-    fmt.Println("Connecting to WebSocket server at", url)
+//const serverURL = "ws://192.168.1.101:8000/ws" // 这里是 Nginx 负载均衡的地址
+const serverURL = "ws://test.yola.com/ws" // 这里是 Nginx 负载均衡的地址
 
-    // 忽略证书验证（仅限开发使用）
-    dialer := websocket.DefaultDialer
-    dialer.TLSClientConfig = &tls.Config{
-        InsecureSkipVerify: true, // 跳过证书验证
+// 连接 WebSocket 服务器并处理消息
+func connectToWebSocket() (*websocket.Conn, error) {
+    // 创建 WebSocket 连接
+    conn, _, err := websocket.DefaultDialer.Dial(serverURL, nil)
+    if err != nil {
+        return nil, fmt.Errorf("error connecting to WebSocket server: %v", err)
     }
 
-    // 创建 WebSocket 连接
-    conn, _, err := dialer.Dial(url, nil)
+    // 打印连接成功
+    fmt.Println("Connected to WebSocket server at", serverURL)
+    return conn, nil
+}
+
+// 发送消息
+func sendMessage(conn *websocket.Conn, message string) error {
+    err := conn.WriteMessage(websocket.TextMessage, []byte(message))
     if err != nil {
-        log.Fatal("Failed to connect to WebSocket:", err)
+        return fmt.Errorf("error sending message: %v", err)
+    }
+    fmt.Println("Sent message:", message)
+    return nil
+}
+
+// 接收消息
+func receiveMessage(conn *websocket.Conn) {
+    for {
+        // 读取消息
+        messageType, msg, err := conn.ReadMessage()
+        if err != nil {
+            log.Printf("Error reading message: %v", err)
+            return
+        }
+
+        // 打印接收到的消息
+        if messageType == websocket.TextMessage {
+            fmt.Printf("Received message: %s\n", msg)
+        }
+    }
+}
+
+func main() {
+    // 创建一个捕获信号的通道，以便优雅地退出
+    sigChan := make(chan os.Signal, 1)
+    signal.Notify(sigChan, os.Interrupt)
+
+    // 连接 WebSocket 服务器
+    conn, err := connectToWebSocket()
+    if err != nil {
+        log.Fatalf("Failed to connect to WebSocket server: %v", err)
     }
     defer conn.Close()
 
-    // 设置接收消息的 goroutine
-    go func() {
-        for {
-            // 读取消息
-            _, message, err := conn.ReadMessage()
-            if err != nil {
-                log.Println("Error reading message:", err)
-                break
-            }
-            // 打印收到的消息
-            fmt.Printf("Received: %s\n", message)
-        }
-    }()
+    // 启动一个 goroutine 来接收消息
+    go receiveMessage(conn)
 
-    // 设置消息发送功能
     go func() {
-        for {
-            var message = "hello , this is from wss client."
-            if err != nil {
-                log.Println("Error reading input:", err)
-                return
-            }
-
-            // 发送消息
-            if err := conn.WriteMessage(websocket.TextMessage, []byte(message)); err != nil {
+        // 在主 goroutine 中发送消息
+        for i := 0; i < 50; i++ {
+            message := fmt.Sprintf("Hello from client %d", i)
+            if err := sendMessage(conn, message); err != nil {
                 log.Println("Error sending message:", err)
-                return
             }
-            fmt.Println("Message sent:", message)
+
+            // 每秒发送一条消息
+            time.Sleep(1 * time.Second)
         }
     }()
 
-    // 等待中断信号以便优雅关闭客户端
-    sig := make(chan os.Signal, 1)
-    signal.Notify(sig, os.Interrupt)
-    <-sig
-
-    fmt.Println("Shutting down WebSocket client...")
+    // 等待程序结束的信号
+    <-sigChan
+    fmt.Println("Received interrupt signal, closing connection...")
 }

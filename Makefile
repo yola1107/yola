@@ -50,15 +50,22 @@ build:
 	mkdir -p bin/ && go build -ldflags "-X main.Version=$(VERSION)" -o ./bin/ ./...
 
 
+.PHONY: nginx
+# nginx 目标：nginx配置scp远程服务器
+nginx:
+	scp test/study/websocket-ssl/nginx.conf root@192.168.1.100:/etc/nginx/
+	ssh root@192.168.1.100 'systemctl restart nginx && systemctl status nginx'
+
 
 .PHONY: ssl
 # ssl 目标：编译 Go 程序并上传到远程服务器
 ssl:
 	cd test/study/websocket-ssl && GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o app main.go
-	scp ./app      root@192.168.1.100:/home/bin/
-	scp ./start.sh root@192.168.1.100:/home/bin/
-	rm -f ./app
-	ssh root@192.168.1.100 'cd /home/bin && nohup ./start.sh > /dev/null 2>&1 &'
+	scp test/study/websocket-ssl/app test/study/websocket-ssl/start.sh root@192.168.1.100:/home/bin/
+	scp test/study/websocket-ssl/app test/study/websocket-ssl/start.sh root@192.168.1.200:/home/bin/
+	rm -f test/study/websocket-ssl/app
+	#ssh root@192.168.1.100 'cd /home/bin && nohup ./start.sh > /dev/null 2>&1 &'
+	#ssh root@192.168.1.200 'cd /home/bin && nohup ./start.sh > /dev/null 2>&1 &'
 
 
 .PHONY: generate

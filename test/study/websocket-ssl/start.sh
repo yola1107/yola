@@ -46,24 +46,8 @@ start_app() {
         pids[$port]=$!
     done
 
-    # 检查是否启动成功
-    for port in "${ports[@]}"; do
-        check_port $port
-    done
-
     # 打印当前正在运行的 app 进程
-    echo "$(date +'%Y-%m-%d %H:%M:%S') - Current running app processes:"
-    ps -ef | grep "app_server" | grep -v "grep"
-}
-
-# 检查端口是否成功绑定
-check_port() {
-    port=$1
-    if ss -tuln | grep -q ":$port "; then
-        echo "$(date +'%Y-%m-%d %H:%M:%S') - app on port $port started successfully."
-    else
-        echo "$(date +'%Y-%m-%d %H:%M:%S') - Failed to start app on port $port."
-    fi
+    ps -ef | grep "app_server"
 }
 
 # 主函数
