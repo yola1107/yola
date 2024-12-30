@@ -7,6 +7,24 @@ info:
     description: The greeting service definition.
     version: 0.0.1
 paths:
+    /api/users/login:
+        post:
+            tags:
+                - Greeter
+            operationId: Greeter_Login
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/helloworld.v1.LoginRequest'
+                required: true
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/helloworld.v1.LoginReply'
     /helloworld/{name}:
         get:
             tags:
@@ -34,5 +52,24 @@ components:
                 message:
                     type: string
             description: The response message containing the greetings
+        helloworld.v1.LoginReply:
+            type: object
+            properties:
+                userID:
+                    type: integer
+                    format: int32
+                email:
+                    type: string
+                password:
+                    type: string
+                token:
+                    type: string
+        helloworld.v1.LoginRequest:
+            type: object
+            properties:
+                email:
+                    type: string
+                password:
+                    type: string
 tags:
     - name: Greeter
