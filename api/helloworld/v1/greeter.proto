@@ -19,8 +19,9 @@ service Greeter {
     }
     rpc Login(LoginRequest) returns (LoginReply) {
         option (google.api.http) = {
-            post: "/api/users/login",
-            body: "*",
+            get: "/helloworld2/{name}"
+//            post: "/api/users/login",
+//            body: "*",
         };
     }
 }
