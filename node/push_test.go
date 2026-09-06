@@ -10,6 +10,8 @@ import (
 	"yola/api/cluster/v1"
 	"yola/locate"
 
+	"github.com/go-kratos/kratos/v3/middleware"
+	"github.com/go-kratos/kratos/v3/transport"
 	kgrpc "github.com/go-kratos/kratos/v3/transport/grpc"
 	"github.com/stretchr/testify/require"
 	grpcgo "google.golang.org/grpc"
@@ -335,6 +337,77 @@ func TestPushToUIDTimeoutIncludesGateLookup(t *testing.T) {
 	err := server.PushToUID(ctx, "player-a", 2, wrapperspb.String("push"))
 	require.ErrorIs(t, err, context.DeadlineExceeded)
 	require.Less(t, time.Since(started), 200*time.Millisecond)
+}
+
+func TestClientMiddlewareObservesPushWithoutChangingResult(t *testing.T) {
+	for _, pushSource := range []string{"session", "uid"} {
+		t.Run(pushSource, func(t *testing.T) {
+			stub := &gatewayStub{pushes: make(chan *v1.PushRequest, 2)}
+			binding := testBinding("player-a", "conn-a")
+			binding.GateEndpoint = "grpc://" + startGatewayStub(t, stub)
+			store := newMemoryLocator()
+			_, _, err := store.BindGate(context.Background(), binding, time.Minute)
+			require.NoError(t, err)
+			var middlewareCalls []string
+			var observedDeadline time.Time
+			var observedErr error
+			observe := func(name string) middleware.Middleware {
+				return func(next middleware.Handler) middleware.Handler {
+					return func(ctx context.Context, request any) (any, error) {
+						transportInfo, ok := transport.FromClientContext(ctx)
+						require.True(t, ok)
+						require.Equal(t, v1.Gateway_Push_FullMethodName, transportInfo.Operation())
+						observedDeadline, ok = ctx.Deadline()
+						require.True(t, ok)
+						middlewareCalls = append(middlewareCalls, name+" before")
+						reply, err := next(ctx, request)
+						observedErr = err
+						middlewareCalls = append(middlewareCalls, name+" after")
+						return reply, err
+					}
+				}
+			}
+			server := newDispatchTestServer(t, Locator(store), ClientMiddleware(observe("outer")), ClientMiddleware(observe("inner")))
+			t.Cleanup(func() { require.NoError(t, server.Stop(context.Background())) })
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			push := func() error { return server.PushToUID(ctx, binding.UID, 2, wrapperspb.String("push")) }
+			if pushSource == "session" {
+				server.RegisterRawHandler(1, func(ctx context.Context, _ []byte) ([]byte, error) {
+					sess, ok := FromContext(ctx)
+					require.True(t, ok)
+					return nil, sess.Push(ctx, 2, wrapperspb.String("push"))
+				})
+				push = func() error {
+					_, err := server.forward(ctx, binding, 1, nil)
+					return err
+				}
+			}
+			require.NoError(t, push())
+			require.NoError(t, observedErr)
+			deadline, _ := ctx.Deadline()
+			require.Equal(t, deadline, observedDeadline)
+			require.Equal(t, []string{"outer before", "inner before", "inner after", "outer after"}, middlewareCalls)
+			require.Equal(t, binding.BindingToken, (<-stub.pushes).GetRoute().GetBindingToken())
+		})
+	}
+}
+
+func TestClientMiddlewarePreservesErrorIdentity(t *testing.T) {
+	want := status.Error(codes.ResourceExhausted, "middleware failure")
+	server := newDispatchTestServer(t, ClientMiddleware(func(middleware.Handler) middleware.Handler {
+		return func(context.Context, any) (any, error) { return nil, want }
+	}))
+	t.Cleanup(func() { require.NoError(t, server.Stop(context.Background())) })
+	server.RegisterRawHandler(1, func(ctx context.Context, _ []byte) ([]byte, error) {
+		sess, ok := FromContext(ctx)
+		require.True(t, ok)
+		return nil, sess.Push(ctx, 2, wrapperspb.String("push"))
+	})
+	binding := testBinding("player-a", "conn-a")
+	binding.GateEndpoint = "grpc://127.0.0.1:1"
+	_, err := server.forward(context.Background(), binding, 1, nil)
+	require.ErrorIs(t, err, want)
 }
 
 func TestPushToUIDRejectsAfterStop(t *testing.T) {

@@ -89,7 +89,7 @@ func NewServer(opts ...Option) (*Server, error) {
 		fatalCtx:    fatalCtx,
 		fatalCancel: fatalCancel,
 	}
-	server.gateways = gateclient.New(o.clientTLS)
+	server.gateways = gateclient.New(o.clientTLS, o.clientMiddlewares...)
 	server.grpcListener = listener.New(o.network, o.address, o.listener)
 	grpcOptions := make([]grpc.ServerOption, 0, len(o.grpcOptions)+5)
 	grpcOptions = append(grpcOptions,

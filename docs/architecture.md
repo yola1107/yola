@@ -178,6 +178,10 @@ Node 对已绑定请求在 handler 前再次查询 binding，承担改绑 fencin
 - Gateway Push/Kick 会校验目标 Gate identity、完整 binding、lease 和 `MaxProtoSize`，发送队列满时返回 `ResourceExhausted`。
 - 客户端断开和 Gateway 正常停机时，Gateway best-effort 调用 `Node/Disconnect`；重复登录触发的连接替换 Kick 不发送该通知。`Disconnect` 是 at-most-once 的连接事件，可能晚于最后一次 Forward 或玩家重连，不等同业务 Logout。
 
+`node.ClientMiddleware` 将 Kratos client middleware 按配置顺序安装到 Node → Gateway RPC，覆盖 `Session.Push` 和 `PushToUID` 的 gRPC 阶段；`node.Middleware` 仍只处理入站 command。Yola 沿用调用方的 Push deadline，不因接入 middleware 增设超时、重试或后台任务。
+
+应用可注入 Kratos OTel metrics/tracing middleware，并自行创建和关闭 exporter/provider；Yola 不设置全局 OTel SDK。`LocateGate`、桌 fanout 和 mailbox 等待不在 RPC middleware 的计时范围内。
+
 Gateway 为 Forward 查询 epoch，Disconnect 仅共用 Node 路由定位，不额外查询 epoch；二者不能合并为失败语义相同的转发流程。
 
 业务处理 Disconnect 时必须在实际状态所有者（例如 actor/mailbox）内比较 `Session.BindingToken()` 与玩家当前 Session；旧 token 的通知不得修改新连接状态。支付、结算和状态写入仍需业务提供幂等、事务条件或串行化。

@@ -13,6 +13,7 @@ import (
 	"yola/internal/tlsconfig"
 	"yola/locate"
 
+	"github.com/go-kratos/kratos/v3/middleware"
 	kgrpc "github.com/go-kratos/kratos/v3/transport/grpc"
 	"golang.org/x/sync/singleflight"
 	"google.golang.org/grpc"
@@ -31,13 +32,14 @@ var (
 )
 
 type Client struct {
-	idle      time.Duration
-	tlsConfig *tls.Config
-	ctx       context.Context
-	cancel    context.CancelFunc
-	dials     singleflight.Group
-	mu        sync.Mutex
-	byHost    map[string]*rpc
+	idle        time.Duration
+	tlsConfig   *tls.Config
+	middlewares []middleware.Middleware
+	ctx         context.Context
+	cancel      context.CancelFunc
+	dials       singleflight.Group
+	mu          sync.Mutex
+	byHost      map[string]*rpc
 }
 
 type rpc struct {
@@ -50,14 +52,15 @@ type rpc struct {
 }
 
 // New creates a connection pool; callers own every Push/Kick deadline.
-func New(tlsConfig *tls.Config) *Client {
+func New(tlsConfig *tls.Config, middlewares ...middleware.Middleware) *Client {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Client{
-		idle:      idleTimeout,
-		tlsConfig: tlsconfig.Clone(tlsConfig),
-		ctx:       ctx,
-		cancel:    cancel,
-		byHost:    make(map[string]*rpc),
+		idle:        idleTimeout,
+		tlsConfig:   tlsconfig.Clone(tlsConfig),
+		middlewares: append([]middleware.Middleware(nil), middlewares...),
+		ctx:         ctx,
+		cancel:      cancel,
+		byHost:      make(map[string]*rpc),
 	}
 }
 
@@ -138,7 +141,8 @@ func (c *Client) cached(host string) (*rpc, error) {
 func (c *Client) connect(host string) error {
 	opts := []kgrpc.ClientOption{
 		kgrpc.WithEndpoint("direct:///" + host),
-		kgrpc.WithTimeout(0), // Disable Kratos' implicit 2s deadline; caller context owns it.
+		kgrpc.WithTimeout(0),                   // Disable Kratos' implicit 2s deadline; caller context owns it.
+		kgrpc.WithMiddleware(c.middlewares...), //
 	}
 	if c.tlsConfig != nil {
 		opts = append(opts, kgrpc.WithTLSConfig(c.tlsConfig.Clone()))

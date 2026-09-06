@@ -20,18 +20,19 @@ import (
 type Option func(*options) error
 
 type options struct {
-	grpcOptions   []grpc.ServerOption
-	clientTLS     *tls.Config
-	pushTimeout   time.Duration
-	network       string
-	address       string
-	listener      net.Listener
-	advertiseHost string
-	endpoint      *url.URL
-	serverTLS     bool
-	middlewares   []middleware.Middleware
-	locator       locate.Locator
-	drain         DrainFunc
+	grpcOptions       []grpc.ServerOption
+	clientTLS         *tls.Config
+	pushTimeout       time.Duration
+	network           string
+	address           string
+	listener          net.Listener
+	advertiseHost     string
+	endpoint          *url.URL
+	serverTLS         bool
+	middlewares       []middleware.Middleware
+	clientMiddlewares []middleware.Middleware
+	locator           locate.Locator
+	drain             DrainFunc
 }
 
 func resolveOptions(opts ...Option) (options, error) {
@@ -149,6 +150,14 @@ func ServerTLS(config *tls.Config) Option {
 func Middleware(m ...middleware.Middleware) Option {
 	return func(o *options) error {
 		o.middlewares = append(o.middlewares, m...)
+		return nil
+	}
+}
+
+// ClientMiddleware 配置 Node 到 Gateway 的 Kratos RPC middleware；调用方仍拥有 Push deadline。
+func ClientMiddleware(m ...middleware.Middleware) Option {
+	return func(o *options) error {
+		o.clientMiddlewares = append(o.clientMiddlewares, m...)
 		return nil
 	}
 }
