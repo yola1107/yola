@@ -17,7 +17,6 @@
 | I03 | P2 | 约束 | Node binding 默认 6h 后过期，没有独立续租、NodeID 反查或批量清理 | 长业务定期幂等 `BindNode`；不得把 TTL 当存活探测 |
 | I08 | P2 | 约束 | Gateway 首次使用 service 后固定 `sticky` 模式，后续模式变化 fail closed | Stateful/Stateless 切换必须重启全部 Gateway；安全在线切换需增加独立、版本化的 service 路由策略和有状态 binding 迁移协议，不能由实例 metadata 直接触发 |
 | I29 | P2 | 约束 | TCP/WebSocket 的 per-IP 限制与 Auth IP 使用 socket peer，不支持 PROXY protocol 或可信代理头 | 直接部署；经代理时先设计可信代理边界，禁止直接信任任意 `X-Forwarded-For` |
-| I42 | P2 | 约束 | Gateway/Node 回滚自身准备失败，Node 也回滚自身启动失败；Gateway 的 Start 错误交由 App 停止。Kratos 后续 `Endpointer` 或 `BeforeStart` hook 失败不会自动回滚此前准备的 Server。2026-09-06 临时探针已复现后续 hook 失败后 Node listener 和 epoch 仍保留；注册及 AfterStart 失败尚未分别注入验证 | 启动失败后退出进程，或由 App owner 用独立、有界的 context 显式停止自己创建的 Server，再关闭外部依赖；不能仅调用 `App.Stop`。支持同进程重建前，须覆盖 endpoint、hook、注册、AfterStart 失败，以及重复清理、超时和注销失败，核对端口、任务、Drain/epoch 条件与原始错误身份，见 [应用装配](./architecture.md#31-应用装配) |
 
 ## 性能与验收限制
 

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"log/slog"
 	"net"
@@ -21,6 +22,8 @@ var (
 	grpcPort string
 )
 
+const stopTimeout = 10 * time.Second
+
 func init() {
 	flag.StringVar(&id, "id", "whot-1", "stable Kratos instance ID")
 	flag.StringVar(&grpcPort, "grpc-port", "9001", "gRPC listen port")
@@ -34,6 +37,8 @@ func main() {
 		AddSource: true,
 	})).With("service", name, "instance_id", id)
 	slog.SetDefault(logger)
+	appCtx, cancelApp := context.WithCancel(context.Background())
+	defer cancelApp()
 
 	grpcAddr := net.JoinHostPort(env.Host, grpcPort)
 	registry, err := env.NewRegistry()
@@ -68,17 +73,26 @@ func main() {
 			slog.Error("close event bus", "error", closeErr)
 		}
 	}()
+	defer func() {
+		cancelApp()
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), stopTimeout)
+		defer cancel()
+		if stopErr := nodeServer.Stop(cleanupCtx); stopErr != nil {
+			slog.Error("stop Whot Node", "error", stopErr)
+		}
+	}()
 	service := gameService{events: eventBus}
 	node.Register(nodeServer, message.WhotEnterCommand, service.Enter)
 	node.Register(nodeServer, message.WhotLeaveCommand, service.Leave)
 	node.Register(nodeServer, message.EchoCommand, service.Echo)
 
 	app := kratos.New(
+		kratos.Context(appCtx),
 		kratos.ID(id),
 		kratos.Name(name),
 		kratos.Logger(logger),
 		kratos.Metadata(nodeServer.Metadata()),
-		kratos.StopTimeout(10*time.Second),
+		kratos.StopTimeout(stopTimeout),
 		kratos.BeforeStart(nodeServer.BeforeStart),
 		kratos.Server(nodeServer),
 		kratos.Registrar(registry),

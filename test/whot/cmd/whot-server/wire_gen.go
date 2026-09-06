@@ -47,8 +47,9 @@ func wireApp(instanceID string, serverConfig *conf.Server, dataConfig *conf.Data
 		cleanup()
 		return nil, nil, err
 	}
-	app := newApp(instanceID, logger, nodeServer, registry)
+	app, cleanup4 := newApp(instanceID, logger, nodeServer, registry)
 	return app, func() {
+		cleanup4()
 		cleanup3()
 		cleanup2()
 		cleanup()

@@ -87,13 +87,17 @@ WebSocket 默认 codec 由包内 protobuf 实现持有，不受 Kratos 全局同
 
 ### 3.1 应用装配
 
-Kratos App 按 `buildInstance` → 顺序执行 `BeforeStart` hooks → 启动 `Server.Start` → `Registrar.Register` 运行。`buildInstance` 调用 `Endpoint` 时会触发内部 gRPC listener 的惰性 bind，Gateway/Node 在自身初始化回滚和 `Stop` 中关闭该 listener。
+Kratos App 按 `buildInstance` → 顺序执行 `BeforeStart` hooks → 启动 `Server.Start` → `Registrar.Register` → `AfterStart` hooks 运行。`buildInstance` 调用 `Endpoint` 时会触发内部 gRPC listener 的惰性 bind，Gateway/Node 在自身初始化回滚和 `Stop` 中关闭该 listener。
 
-服务入口直接使用 `kratos.New`，显式配置 StopTimeout、BeforeStart、Server 和按需 metadata。Registry、Redis 和 EventBus 由创建它们的应用层关闭；EventBus 的订阅和释放语义见 [EventBus 接入](./eventbus.md)。后续 Endpointer 或 hook 失败不保证此前 Server 自动回滚，当前入口以退出进程结束启动失败，见 [I42](./issues.md#运行与部署限制)。
+服务入口直接使用 `kratos.New`，显式配置 Context、StopTimeout、BeforeStart、Server 和按需 metadata。正常停止仍由 Kratos 调度。当前 Kratos v3.0.0 在 Endpointer、BeforeStart、注册或 AfterStart 失败时可能直接返回，应用所有者须在 `Run` 返回后取消自有 context，再用独立的 10s 预算调用 Server.Stop，最后关闭 EventBus、Registry、Redis 等外部依赖。`Run` 的原始错误保持不变，额外清理错误单独记录。
+
+不能对每个启动错误直接补调 `App.Stop()`：Kratos 可能已构造 instance，但尚未完成本实例注册，盲目注销会删除同 service、同 ID 的已有注册记录。失败回收通过 `Server.Stop` 清理本次持有的 listener、业务任务与 epoch；etcd Registry 的后台任务绑定到其 `client.Ctx()`，关闭 client 后退出。未完成正常注销的注册记录按原有 etcd lease 回收，默认 TTL 为 15s。
+
+Registry、Redis 和 EventBus 由创建它们的应用层关闭；EventBus 的订阅和释放语义见 [EventBus 接入](./eventbus.md)。Ludo/Whot 的 App provider 返回 Wire cleanup，生成的关闭顺序为 Node → Registry → usecase → Redis；usecase 的重复 Drain 沿用自身幂等规则。
 
 Gateway/Node 实例不支持生命周期重试，也不支持外部并发调用 `BeforeStart` 与 `Stop`。初始化 owner 服从 hook context：并发重复初始化只拒绝后来者；owner 失败同步回滚并进入终态，成功后再次初始化也进入终态。误用时的保护为：Stop 先关闭准入并等待准备结束，初始化提交再次检查终态，不能发布新 identity；Stop 等待超时后，初始化 owner 仍负责完成回滚。
 
-正常停止共用 `kratos.StopTimeout` 提供的预算，业务 Drain 服从同一 context。Ludo/Whot 把同一 `Usecase.Drain` 注册给 Node 并用于 Wire cleanup，Table 和 mailbox 提供 context-aware 关闭入口。
+正常停止共用 `kratos.StopTimeout` 提供的预算，业务 Drain 服从同一 context。`Run` 返回后的重复 Stop 不会重做业务 Drain，也不会绕过失败排空释放 epoch；只有先前已允许释放、但注销未完成的 epoch 可以重试。Table 和 mailbox 提供 context-aware 关闭入口。
 
 ### 3.2 Gateway
 

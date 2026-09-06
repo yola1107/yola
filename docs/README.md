@@ -66,7 +66,7 @@ go run ./examples/client -service ludo
 
 ## 接入
 
-Gateway App 配置依赖和客户端 Transport 后，直接把 `gateway.Server` 交给 Kratos：
+Gateway App 配置依赖和客户端 Transport 后，直接把 `gateway.Server` 交给 Kratos。下面展示装配参数，完整资源回收见 [Gateway 入口](../examples/gateway/main.go) 和 [应用装配契约](./architecture.md#31-应用装配)：
 
 ```go
 gate, err := gateway.NewServer(
@@ -84,7 +84,10 @@ if err != nil {
     return nil, err
 }
 
+appCtx, cancelApp := context.WithCancel(context.Background())
+defer cancelApp()
 app := kratos.New(
+    kratos.Context(appCtx),
     kratos.ID("gateway-1"),
     kratos.Name("gateway"),
     kratos.StopTimeout(10*time.Second),
@@ -108,7 +111,10 @@ if err != nil {
 }
 v1.RegisterGameServer(server, gameService)
 
+appCtx, cancelApp := context.WithCancel(context.Background())
+defer cancelApp()
 app := kratos.New(
+    kratos.Context(appCtx),
     kratos.ID("whot-1"),
     kratos.Name("whot"),
     kratos.Metadata(server.Metadata()),
@@ -119,7 +125,7 @@ app := kratos.New(
 )
 ```
 
-Stateless Node 不配置 Locator，`Metadata()` 为 nil；Stateful Node instance ID 必须稳定且在线唯一。持有 Table、玩家或后台任务的 Node 通过 `node.Drain` 注入业务关闭：Drain 期间仍可推送，返回前必须停止推送生产者。启动核验、租约失效和排空契约见 [生命周期](./architecture.md#3-生命周期)。
+Stateless Node 不配置 Locator，`Metadata()` 为 nil；Stateful Node instance ID 必须稳定且在线唯一。入口在 `Run` 返回后取消 App context，以独立、有界的 context 停止 Server，再关闭外部依赖；完整代码见 [Whot 入口](../examples/whot/main.go)。持有 Table、玩家或后台任务的 Node 通过 `node.Drain` 注入业务关闭：Drain 期间仍可推送，返回前必须停止推送生产者。启动核验、租约失效和排空契约见 [生命周期](./architecture.md#3-生命周期)。
 
 ## 开发与验证
 

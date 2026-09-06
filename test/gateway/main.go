@@ -24,6 +24,8 @@ import (
 
 const Name = "gateway"
 
+const stopTimeout = 10 * time.Second
+
 func main() {
 	cfg, err := parseConfig()
 	if err != nil {
@@ -34,6 +36,8 @@ func main() {
 		panic(err)
 	}
 	defer cleanupLogger()
+	appCtx, cancelApp := context.WithCancel(context.Background())
+	defer cancelApp()
 
 	registry, err := etcd.New(
 		etcd.WithEndpoints(cfg.etcdEndpoints),
@@ -82,6 +86,14 @@ func main() {
 			logger.Error("close event bus", "error", closeErr)
 		}
 	}()
+	defer func() {
+		cancelApp()
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), stopTimeout)
+		defer cancel()
+		if stopErr := gate.Stop(cleanupCtx); stopErr != nil {
+			logger.Error("stop Gateway", "error", stopErr)
+		}
+	}()
 	if _, err = eventBus.Subscribe(context.Background(), broadcastprobe.Topic, func(ctx context.Context, received event.Event) {
 		if broadcastErr := gate.Broadcast(broadcastprobe.Command, received.Payload); broadcastErr != nil &&
 			!errors.Is(broadcastErr, gateway.ErrBroadcastQueueFull) &&
@@ -93,10 +105,11 @@ func main() {
 	}
 
 	app := kratos.New(
+		kratos.Context(appCtx),
 		kratos.ID(cfg.id),
 		kratos.Name(Name),
 		kratos.Logger(logger),
-		kratos.StopTimeout(10*time.Second),
+		kratos.StopTimeout(stopTimeout),
 		kratos.BeforeStart(gate.BeforeStart),
 		kratos.AfterStart(func(ctx context.Context) error {
 			go runBroadcastProbe(ctx, logger, gate, eventBus)

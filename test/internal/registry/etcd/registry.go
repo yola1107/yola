@@ -56,7 +56,7 @@ func New(opts ...Option) (*Registry, error) {
 	if err != nil {
 		return nil, fmt.Errorf("etcd: create client: %w", err)
 	}
-	provider := kratosetcd.New(client, kratosetcd.Namespace(c.prefix))
+	provider := kratosetcd.New(client, kratosetcd.Namespace(c.prefix), kratosetcd.Context(client.Ctx()))
 	return &Registry{Registrar: provider, Discovery: provider, client: client}, nil
 }
 

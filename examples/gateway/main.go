@@ -31,6 +31,8 @@ var (
 	wsPort   string
 )
 
+const stopTimeout = 10 * time.Second
+
 func init() {
 	flag.StringVar(&id, "id", "gateway-1", "Kratos instance ID")
 	flag.StringVar(&grpcPort, "grpc-port", "9010", "gRPC listen port")
@@ -63,6 +65,8 @@ func main() {
 		AddSource: true,
 	})).With("service", name, "instance_id", id)
 	slog.SetDefault(logger)
+	appCtx, cancelApp := context.WithCancel(context.Background())
+	defer cancelApp()
 
 	grpcAddr := net.JoinHostPort(env.Host, grpcPort)
 	tcpAddr := net.JoinHostPort("127.0.0.1", tcpPort)
@@ -113,6 +117,14 @@ func main() {
 			slog.Error("close event bus", "error", closeErr)
 		}
 	}()
+	defer func() {
+		cancelApp()
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), stopTimeout)
+		defer cancel()
+		if stopErr := gate.Stop(cleanupCtx); stopErr != nil {
+			slog.Error("stop Gateway", "error", stopErr)
+		}
+	}()
 	if _, err = eventBus.Subscribe(
 		context.Background(),
 		message.AnnouncementTopic,
@@ -127,10 +139,11 @@ func main() {
 		return
 	}
 	app := kratos.New(
+		kratos.Context(appCtx),
 		kratos.ID(id),
 		kratos.Name(name),
 		kratos.Logger(logger),
-		kratos.StopTimeout(10*time.Second),
+		kratos.StopTimeout(stopTimeout),
 		kratos.BeforeStart(gate.BeforeStart),
 		kratos.Server(gate),
 		kratos.Registrar(registry),

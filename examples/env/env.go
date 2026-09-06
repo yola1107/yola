@@ -61,10 +61,13 @@ func NewRegistry() (*Registry, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Registry{Registry: etcd.New(client), client: client}, nil
+	return &Registry{
+		Registry: etcd.New(client, etcd.Context(client.Ctx())),
+		client:   client,
+	}, nil
 }
 
-// Close releases the shared etcd client.
+// Close 通过 etcd client 的 context 同时停止 Registry 续租。
 func (r *Registry) Close() error {
 	return r.client.Close()
 }

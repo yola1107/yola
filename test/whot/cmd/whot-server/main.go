@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"log/slog"
 	"os"
@@ -23,23 +24,36 @@ var (
 	id       string
 )
 
+const stopTimeout = 10 * time.Second
+
 func init() {
 	flag.StringVar(&flagconf, "conf", "whot/configs", "config path, eg: -conf config.yaml")
 	flag.StringVar(&id, "id", Name, "service instance ID")
 }
 
-func newApp(instanceID string, logger *slog.Logger, server *node.Server, registry *etcd.Registry) *kratos.App {
-	return kratos.New(
+func newApp(instanceID string, logger *slog.Logger, server *node.Server, registry *etcd.Registry) (*kratos.App, func()) {
+	appCtx, cancelApp := context.WithCancel(context.Background())
+	app := kratos.New(
+		kratos.Context(appCtx),
 		kratos.ID(instanceID),
 		kratos.Name(Name),
 		kratos.Version(Version),
 		kratos.Metadata(server.Metadata()),
 		kratos.Logger(logger),
-		kratos.StopTimeout(10*time.Second),
+		kratos.StopTimeout(stopTimeout),
 		kratos.BeforeStart(server.BeforeStart),
 		kratos.Server(server),
 		kratos.Registrar(registry),
 	)
+	return app, func() {
+		// Run 的早退不会等待 Server；Wire 必须先停止 Node，再释放其外部依赖。
+		cancelApp()
+		cleanupCtx, cancel := context.WithTimeout(kratos.NewContext(context.Background(), app), stopTimeout)
+		defer cancel()
+		if stopErr := server.Stop(cleanupCtx); stopErr != nil {
+			logger.Error("stop Whot Node", "error", stopErr)
+		}
+	}
 }
 
 func main() {
