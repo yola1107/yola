@@ -48,10 +48,10 @@ func (uc *Usecase) Disconnect(ctx context.Context, sess player.Session) error {
 	})
 }
 
-func (uc *Usecase) Login(ctx context.Context, sess player.Session, uid int64, token string) (*v1.LoginRsp, error) {
+func (uc *Usecase) Login(ctx context.Context, sess player.Session, uid int64, token string, tableID int32) (*v1.LoginRsp, error) {
 	current := uc.pm.GetByID(uid)
 	if current == nil {
-		return uc.enterRoom(ctx, sess, uid, token)
+		return uc.enterRoom(ctx, sess, uid, token, tableID)
 	}
 	if token == "" {
 		return loginResponse(current, codes.TokenFail, "TOKEN_FAIL"), nil
@@ -68,7 +68,7 @@ func (uc *Usecase) Login(ctx context.Context, sess player.Session, uid int64, to
 	if err := uc.LogoutGame(current, codes.TableNotFound, "TABLE_NOT_FOUND"); err != nil {
 		return nil, fmt.Errorf("recover detached player %d: %w", uid, err)
 	}
-	return uc.enterRoom(ctx, sess, uid, token)
+	return uc.enterRoom(ctx, sess, uid, token, tableID)
 }
 
 func (uc *Usecase) Logout(ctx context.Context, uid int64) (*v1.LogoutRsp, error) {
@@ -271,7 +271,7 @@ func (uc *Usecase) reconnect(ctx context.Context, sess player.Session, p *player
 	return loginResponse(p, codes.Success, "ReEnter"), nil
 }
 
-func (uc *Usecase) enterRoom(ctx context.Context, sess player.Session, uid int64, token string) (*v1.LoginRsp, error) {
+func (uc *Usecase) enterRoom(ctx context.Context, sess player.Session, uid int64, token string, tableID int32) (*v1.LoginRsp, error) {
 	raw := &player.Raw{
 		ID:      uid,
 		Session: sess,
@@ -312,7 +312,7 @@ func (uc *Usecase) enterRoom(ctx context.Context, sess player.Session, uid int64
 
 	lifecycleCtx, cancelLifecycle := context.WithTimeout(context.Background(), playerCleanupTimeout)
 	defer cancelLifecycle()
-	code, msg, enterErr := uc.tm.Enter(lifecycleCtx, p)
+	code, msg, enterErr := uc.tm.Enter(lifecycleCtx, p, tableID)
 	if enterErr == nil && code == codes.Success {
 		return loginResponse(p, code, msg), nil
 	}

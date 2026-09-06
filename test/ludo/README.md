@@ -37,6 +37,8 @@ Logout -> Table mailbox 移出 -> Save -> Unbind -> 删除 Player
 
 每桌 FIFO、跨桌并行；Table mailbox 由固定 worker 共享。`FastMode` 下 Dice/Move 阶段各 5s，SendCard/Result 各 3s（`test/ludo/internal/biz/table/define.go:23`）。同步 Push 由 Node 统一限制，默认最多等待 3s；多个慢 Push 可能占用共享 worker，需在真实网络压测中观测。
 
+`LoginReq.tableID` 用于首次入座：`<= 0` 保留自动选桌，优先人数较少的可入座桌；正数只进入当前 Node 内的指定桌，不存在返回 `NoTableSpecified / NO_TABLE_SPECIFIED`，已满返回 `TableNoSpace / TABLE_NO_SPACE`。入座仍在目标桌 mailbox 内检查空位和写入座位；队列满、超时或入座执行失败沿用现有错误处理，不自动改投其他桌。已有在桌玩家登录仍重连原桌，传入其他桌号不会切桌；`type` 和 `chairID` 未增加新语义。桌号是 Node 内的编号，不负责首次登录时跨 Node 选服。
+
 ## 当前 `press` 入口
 
 压测客户端读取同一配置源中的 `loadTest.press`：

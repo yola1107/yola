@@ -20,7 +20,7 @@ const (
 
 func (u *User) login() error {
 	rsp := new(v1.LoginRsp)
-	err := u.Request(v1.GameCommand_CmdLogin, &v1.LoginReq{UserID: u.id, Token: u.runner.loginToken}, rsp)
+	err := u.Request(v1.GameCommand_CmdLogin, &v1.LoginReq{UserID: u.id, Token: u.runner.loginToken, TableID: u.targetTableID}, rsp)
 	if err != nil {
 		return err
 	}

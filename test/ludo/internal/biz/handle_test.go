@@ -154,7 +154,7 @@ func testRoom(tableCount, chairCount int32) *conf.Room {
 
 func login(t *testing.T, uc *Usecase, raw *recordingSession, uid int64) *v1.LoginRsp {
 	t.Helper()
-	reply, err := uc.Login(context.Background(), raw, uid, "valid")
+	reply, err := uc.Login(context.Background(), raw, uid, "valid", 0)
 	if err != nil {
 		t.Fatalf("Login(%d): %v", uid, err)
 	}
@@ -185,7 +185,7 @@ func TestPressureLoginResetsStoredMoney(t *testing.T) {
 	}
 	raw := &recordingSession{uid: "42"}
 
-	reply, err := uc.Login(context.Background(), raw, 42, token)
+	reply, err := uc.Login(context.Background(), raw, 42, token, 0)
 	managed := uc.pm.GetByID(42)
 	if err != nil || reply.Code != codes.Success || managed == nil || managed.GetAllMoney() < 200 || managed.GetAllMoney() > 400 {
 		t.Fatalf("pressure login: reply=%+v player=%v error=%v", reply, managed, err)
@@ -208,7 +208,7 @@ func TestLoginRollsBackBindFailure(t *testing.T) {
 	uc, _ := newTestUsecase(t, 1, 2)
 	raw := &recordingSession{uid: "42", bindErr: errors.New("bind failed")}
 
-	if _, err := uc.Login(context.Background(), raw, 42, "valid"); err == nil {
+	if _, err := uc.Login(context.Background(), raw, 42, "valid", 0); err == nil {
 		t.Fatal("Login() error = nil, want bind failure")
 	}
 	if uc.pm.GetByID(42) != nil {
@@ -245,7 +245,7 @@ func TestConcurrentLoginKeepsOnePlayer(t *testing.T) {
 	for index := range sessions {
 		go func(index int) {
 			defer wait.Done()
-			replies[index], errs[index] = uc.Login(context.Background(), sessions[index], 42, "valid")
+			replies[index], errs[index] = uc.Login(context.Background(), sessions[index], 42, "valid", 0)
 		}(index)
 	}
 	wait.Wait()

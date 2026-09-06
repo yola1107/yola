@@ -159,7 +159,7 @@ func TestManagerEnterTriesNextTableWhenFirstMailboxIsFull(t *testing.T) {
 	}
 
 	p := player.New(&player.Raw{ID: 1, BaseData: &player.BaseData{UID: 1, Money: 500}})
-	code, _, err := tables.Enter(context.Background(), p)
+	code, _, err := tables.Enter(context.Background(), p, 0)
 	if err != nil || code != codes.Success {
 		t.Fatalf("Enter() = (%d, %v), want success", code, err)
 	}

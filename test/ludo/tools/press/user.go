@@ -18,6 +18,7 @@ import (
 type User struct {
 	runner        *Runner
 	id            int64
+	targetTableID int32      // 登录前确定的目标桌号，零值保留自动选桌。
 	eventMu       sync.Mutex // bridges Login/delayed logout/disconnect with the Client callback FIFO
 	state         atomic.Int32
 	logout        atomic.Bool

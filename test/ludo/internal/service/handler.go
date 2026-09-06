@@ -18,7 +18,7 @@ func (s *Service) OnLoginReq(ctx context.Context, req *v1.LoginReq) (*v1.LoginRs
 	if err != nil {
 		return nil, err
 	}
-	reply, err := s.usecase.Login(ctx, sess, uid, req.Token)
+	reply, err := s.usecase.Login(ctx, sess, uid, req.Token, req.TableID)
 	return reply, mapBusinessError(err)
 }
 

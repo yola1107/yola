@@ -101,10 +101,13 @@ func TestUserDrivesReadySceneDiceAndMoveCommands(t *testing.T) {
 	runner := NewRunner(Press{})
 	defer runner.Stop()
 	var moveRequest *v1.MoveReq
-	user := &User{runner: runner, id: 42}
+	user := &User{runner: runner, id: 42, targetTableID: 7}
 	user.requestFn = func(command v1.GameCommand, request, response proto.Message) error {
 		switch command {
 		case v1.GameCommand_CmdLogin:
+			if login := request.(*v1.LoginReq); login.TableID != user.targetTableID {
+				t.Fatalf("login table = %d, want %d", login.TableID, user.targetTableID)
+			}
 			response.(*v1.LoginRsp).ChairID = 2
 		case v1.GameCommand_CmdScene:
 			scene := response.(*v1.SceneRsp)

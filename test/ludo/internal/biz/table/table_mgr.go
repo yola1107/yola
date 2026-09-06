@@ -24,9 +24,9 @@ var (
 
 const (
 	tableMigrationTimeout      = 2 * time.Second
+	defaultTableMailboxWorkers = 16
 	defaultTableQueueSize      = 128
 	defaultTableMailboxBatch   = 64
-	defaultTableMailboxWorkers = 16
 )
 
 type Manager struct {
@@ -105,18 +105,37 @@ func (m *Manager) table(tableID int32) *Table {
 	return m.tables[tableID-1]
 }
 
-func (m *Manager) Enter(ctx context.Context, p *player.Player) (int32, string, error) {
+// Enter 在指定桌内串行入座；tableID <= 0 时自动选桌，指定桌失败不换桌。
+func (m *Manager) Enter(ctx context.Context, p *player.Player, tableID int32) (int32, string, error) {
 	if p == nil {
 		return codes.PlayerInvalid, "PLAYER_INVALID", nil
 	}
-	mailboxBusy := false
-	entered, err := m.tryAvailableTables(0, func(target *Table) (bool, error) {
+	tryEnter := func(target *Table) (bool, error) {
 		seated := false
 		err := m.call(ctx, target.ID, func(gameTable *Table) error {
 			var seatErr error
 			seated, seatErr = gameTable.Seat(p)
 			return seatErr
 		})
+		return seated, err
+	}
+	if tableID > 0 {
+		target := m.table(tableID)
+		if target == nil {
+			return codes.NoTableSpecified, "NO_TABLE_SPECIFIED", nil
+		}
+		entered, err := tryEnter(target)
+		if err != nil {
+			return 0, "", err
+		}
+		if !entered {
+			return codes.TableNoSpace, "TABLE_NO_SPACE", nil
+		}
+		return codes.Success, "", nil
+	}
+	mailboxBusy := false
+	entered, err := m.tryAvailableTables(0, func(target *Table) (bool, error) {
+		seated, err := tryEnter(target)
 		if errors.Is(err, mailbox.ErrFull) {
 			mailboxBusy = true
 			return false, nil
