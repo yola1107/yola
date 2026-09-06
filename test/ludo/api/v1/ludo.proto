@@ -1,0 +1,329 @@
+syntax = "proto3";
+
+package ludo.v1;
+
+option go_package = "yola/test/ludo/api/v1;v1";
+
+enum GameCommand {
+    CmdNothing         = 0;
+    CmdLogin           = 1;
+    CmdLogout          = 2;
+    CmdReady           = 3;
+    CmdSwitchTable     = 4;
+    CmdScene           = 5;
+    CmdChat            = 6;
+    CmdHosting         = 7;
+    CmdForward         = 8;
+    CmdDice            = 9;
+    CmdMove            = 10;
+    CmdUserInfoPush    = 11;
+    CmdReadyPush       = 12;
+    CmdChatPush        = 13;
+    CmdHostingPush     = 14;
+    CmdForwardPush     = 15;
+    CmdUserOfflinePush = 16;
+    CmdPlayerQuitPush  = 17;
+    CmdMatchResultPush = 18;
+    CmdSendCardPush    = 19;
+    CmdScenePush       = 20;
+    CmdActivePush      = 21;
+    CmdDicePush        = 22;
+    CmdMovePush        = 23;
+    CmdResultPush      = 24;
+}
+
+//登录请求
+message LoginReq {
+    int64 userID  = 1;  //用户ID
+    string token  = 2;  //验证token
+    int32 type    = 3;  //0创建 1加入 2快速加入
+    int32 tableID = 4;  //目标桌号
+    int32 chairID = 5;  //指定椅子号
+}
+
+//登录响应
+message LoginRsp {
+    int32 code    = 1;  //错误码（0成功）
+    string msg    = 2;  //错误信息
+    int64 userID  = 3;  //用户ID
+    int32 tableID = 4;  //桌号
+    int32 chairID = 5;  //椅子号
+    int32 arenaID = 6;  //场次编号
+}
+
+//登出请求
+message LogoutReq {
+    int64 userDBID = 1;  //用户数据库ID
+}
+
+//登出响应
+message LogoutRsp {
+    int32 code   = 1;  //错误码 0:成功
+    string msg   = 2;  //错误信息 主动/踢人
+    int64 UserID = 3;
+}
+
+//准备请求
+message ReadyReq {
+    int64 userID = 1;
+    bool isReady = 2;
+}
+
+//准备响应
+message ReadyRsp {
+    int64 userID = 1;
+    bool isReady = 2;
+}
+
+//换桌请求
+message SwitchTableReq {
+    int64 userID  = 1;
+    int32 chairID = 2;
+}
+
+//换桌响应
+message SwitchTableRsp {
+    int32 code   = 1;
+    string msg   = 2;
+    int64 userID = 3;
+}
+
+//聊天请求
+message ChatReq {
+    int32 userID = 1;  //玩家ID
+    int32 opType = 2;  //0表情 1快捷文字 2自定义文字
+    int32 faceID = 3;  //表情or聊天ID
+    string msg   = 4;  //聊天信息
+}
+
+//聊天响应
+message ChatRsp {
+    int32 userID = 1;  //玩家ID
+    int32 opType = 2;  //0表情 1快捷文字 2自定义文字
+    int32 faceID = 3;  //表情or聊天ID
+    string msg   = 4;  //聊天信息
+}
+
+//自定义转发请求
+message ForwardReq {
+    int32 type = 1;  //消息类型
+    string msg = 2;  //消息内容
+}
+
+//自定义转发响应
+message ForwardRsp {
+    int32 type = 1;
+    string msg = 2;
+}
+
+//托管请求
+message HostingReq {
+    bool isHosting = 1;  //true启用托管 false取消托管
+}
+
+//托管响应
+message HostingRsp {
+    int32 chairID   = 1;  //玩家座位
+    int32 status    = 2;  //状态：1正常，2托管
+    int32 aiNum     = 3;  //当前局托管次数
+    int32 playTimes = 4;  //玩家操作倒计时
+}
+
+//玩家信息推送
+message UserInfoPush {
+    int64 userID     = 1;  //用户ID
+    int32 chairID    = 2;  //椅子号
+    string userName  = 3;  //用户名字
+    double money     = 4;  //玩家金币
+    string avatar    = 5;  //头像
+    string avatarUrl = 6;  //头像
+    int32 vip        = 7;  //用户vip
+    int32 status     = 8;  //用户状态，符合原Frame的用户状态 0:free 1:sit(noReady) 2:ready 3:gaming
+    string ip        = 9;  //ip地址
+}
+
+//玩家退出推送
+message PlayerQuitPush {
+    int64 userID  = 1;  //玩家ID
+    int32 chairID = 2;  //椅子号
+}
+
+//用户断线状态推送
+message UserOfflinePush {
+    int64 userID   = 1;  //用户ID
+    bool isOffline = 2;  //用户离线状态
+}
+
+//====================== 游戏逻辑 ======================
+/*
+
+	  游戏协议
+*/
+
+//可执行动作类型，表示玩家当前可以进行的操作
+enum ACTION_TYPE {
+    AcVoid = 0;  //无操作，当前无法行动
+    AcDice = 1;  //掷骰子动作
+    AcMove = 2;  //移动棋子动作
+}
+
+//游戏结束类型，指示游戏何种状态下结束
+enum FINISH_TYPE {
+    NONE              = 0;  //游戏未结束
+    PLAYER_HAND_EMPTY = 1;  //玩家所有棋子已到达终点（获胜）
+    DECK_EMPTY        = 2;  //牌堆为空（备用结束条件）
+}
+
+//匹配结果推送（已废弃）
+message MatchResultPush {
+    int32 code = 1;  //状态码，0表示成功
+    string msg = 2;  //提示信息
+    int64 uid  = 3;  //用户ID
+}
+
+//发牌及棋盘状态推送，通知玩家当前的棋子布局
+message SendCardPush {
+    int64 userID          = 1;  //接收该消息的玩家ID
+    int32 firstChair      = 2;  //第一位出手玩家的座位号
+    int32 color           = 3;  //当前持方颜色（红黄绿蓝）
+    repeated Piece pieces = 4;  //当前所有棋子的状态列表
+}
+
+//场景请求，客户端请求当前游戏全局状态
+message SceneReq {
+    int64 userID = 1;  //请求者的用户ID
+}
+
+//场景响应，返回游戏当前整体状态
+message SceneRsp {
+    double baseScore            = 1;  //游戏基础分
+    int32 stage                 = 2;  //当前游戏阶段（如等待、掷骰、行动等）
+    int64 timeout               = 3;  //当前阶段剩余时间（秒）
+    int32 active                = 4;  //当前操作玩家椅子号
+    int32 firstChair            = 5;  //首家玩家椅子号
+    BoardConfig boardConfig     = 6;  //当前棋盘配置
+    repeated PlayerInfo players = 7;  //所有玩家信息列表
+    repeated Piece pieces       = 8;  //棋盘所有棋子信息
+}
+
+//棋盘配置，描述棋盘的基础布局信息
+message BoardConfig {
+    repeated int32 common = 1;  //公共路径格子索引（0~51）
+    repeated int32 home   = 2;  //各玩家的基地起始格子位置
+    repeated int32 entry  = 3;  //各玩家进入公共路径的起始点
+    repeated int32 safe   = 4;  //安全区域位置，棋子不可被吃
+    repeated int32 end    = 5;  //终点区域的格子索引
+    repeated int32 color  = 6;  //颜色对应索引，红黄绿蓝
+}
+
+//玩家信息，描述单个玩家的状态及操作能力
+message PlayerInfo {
+    int64 userId           = 1;  //玩家ID
+    int32 chairId          = 2;  //玩家座位号
+    int32 status           = 3;  //玩家状态（0:空闲，1:坐下未准备，2:已准备，3:游戏中）
+    bool hosting           = 4;  //是否处于托管状态（AI代打）
+    bool offline           = 5;  //是否断线
+    int32 color            = 6;  //玩家棋子颜色（0红，1黄，2绿，3蓝）
+    repeated Dice diceList = 7;  //当前玩家持有的骰子列表
+    ACTION_TYPE canAction  = 8;  //玩家当前可执行的动作类型
+    //    repeated CanMoveDice move_dices = 9;   //当前可用骰子对应的可移动棋子列表
+    //    TagRetData Ret                  = 10;  //玩家全路径遍历可移动路径信息（如果有）
+}
+
+//请求掷骰色子
+message DiceReq {
+    int64 uid = 1;  //掷骰玩家ID
+}
+
+message DiceRsp {
+    int32 code             = 1;
+    string msg             = 2;
+    int64 uid              = 3;  //掷骰玩家ID
+    int32 dice             = 4;  //掷骰点数结果
+    repeated Dice diceList = 5;  //色子列表
+}
+
+//骰子信息，表示骰子的点数及是否已被使用
+message Dice {
+    int32 value = 1;  //骰子点数（1~6）
+    bool used   = 2;  //是否已使用该骰子点数
+}
+
+//玩家行动请求，玩家指定移动哪个棋子及用哪个骰子点数
+message MoveReq {
+    int64 userId     = 1;  //玩家ID
+    int32 piece_id   = 2;  //移动棋子ID
+    int32 dice_value = 3;  //选用的骰子点数
+}
+
+//玩家行动响应，包含移动结果和更新的棋盘状态
+message MoveRsp {
+    int64 code               = 1;  //状态码，0为成功
+    string msg               = 2;  //消息说明
+    int32 dice_value         = 3;  //实际使用的骰子点数
+    DiceMove move            = 4;  //玩家当前移动动作
+    repeated DiceMove killed = 5;  //被捕获（吃掉）的对手棋子列表
+    repeated Piece pieces    = 6;  //最新棋盘所有棋子信息
+}
+
+//单次棋子移动的详细信息
+message DiceMove {
+    int64 player_id = 1;  //玩家ID
+    int32 piece_id  = 2;  //移动棋子ID
+    int32 from      = 3;  //起始位置
+    int32 to        = 4;  //目标位置
+}
+
+//单个棋子的状态
+message Piece {
+    int32 id     = 1;  //棋子ID
+    int32 pos    = 2;  //当前棋子在棋盘的位置索引
+    int32 color  = 3;  //棋子颜色（0红，1黄，2绿，3蓝）
+    int32 status = 4;  //棋子状态（0未出发，1公共路径，2终点路径，3到达终点）
+}
+
+//当前活动玩家信息推送，告知客户端谁可操作及可选动作
+message ActivePush {
+    int32 stage                = 1;  //当前游戏阶段
+    int64 timeout              = 2;  //当前阶段剩余时间（秒）
+    int32 active               = 3;  //当前操作玩家椅子号
+    repeated int32 unusedDices = 4;  //未使用的骰子点数列表
+    ACTION_TYPE canAction      = 5;  //当前可执行的动作
+    //    repeated CanMoveDice move_dices = 6;  //可用骰子对应的可移动棋子列表
+    //    TagRetData Ret                  = 7;  //全路径遍历移动路径信息（可选）
+}
+
+////全遍历结果，描述所有可移动路径
+//message TagRetData {
+//    int32 Max            = 1;  //最大可移动步数
+//    repeated int32 Cache = 2;  //预计算缓存数据
+//    repeated Path Paths  = 3;  //所有可行路径集合
+//}
+
+////单条移动路径描述
+//message Path {
+//    repeated int32 Path = 1;  //一条路径 格式为 [pieceID, 步数, pieceID, 步数, ...]
+//}
+
+////单个骰子及对应可移动棋子列表
+//message CanMoveDice {
+//    int32 dice            = 1;  //骰子点数
+//    repeated int32 pieces = 2;  //可用该骰子移动的棋子ID列表
+//}
+
+//游戏结算推送
+message ResultPush {
+    FINISH_TYPE finishType        = 1;  //结束类型
+    int64 winnerID                = 2;  //获胜玩家ID
+    repeated PlayerResult results = 3;  //所有玩家结算信息
+}
+
+//单个玩家结算详情
+message PlayerResult {
+    int64 userID             = 1;  //玩家ID
+    int32 chairID            = 2;  //玩家座位号
+    bool isWinner            = 3;  //是否获胜
+    double winScore          = 4;  //赢得分数
+    repeated int32 handCards = 5;  //剩余棋子（备用字段）
+    int32 handCardsScore     = 6;  //剩余棋子得分（备用字段）
+}

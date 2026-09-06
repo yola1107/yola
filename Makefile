@@ -1,72 +1,64 @@
-GOHOSTOS:=$(shell go env GOHOSTOS)
-GOPATH:=$(shell go env GOPATH)
-VERSION=$(shell git describe --tags --always)
+export BUF_BREAKING_AGAINST
 
-#ifeq ($(GOHOSTOS), windows)
-#	#the `find.exe` is different from `find` in bash/shell.
-#	#to see https://docs.microsoft.com/en-us/windows-server/administration/windows-commands/find.
-#	#changed to use git-bash.exe to run find cli or other cli friendly, caused of every developer has a Git.
-#	#Git_Bash= $(subst cmd\,bin\bash.exe,$(dir $(shell where git)))
-#	Git_Bash=$(subst \,/,$(subst cmd\,bin\bash.exe,$(dir $(shell where git))))
-#	INTERNAL_PROTO_FILES=$(shell $(Git_Bash) -c "find internal -name *.proto")
-#	API_PROTO_FILES=$(shell $(Git_Bash) -c "find api -name *.proto")
-#else
-	INTERNAL_PROTO_FILES=$(shell find internal -name *.proto)
-	API_PROTO_FILES=$(shell find api -name *.proto)
-#endif
+.PHONY: init api build generate lint check breaking race clean all help
 
-.PHONY: init
-# init env
+# install development tools
 init:
-	go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
-	go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
-	go install github.com/go-kratos/kratos/cmd/kratos/v2@latest
-	go install github.com/go-kratos/kratos/cmd/protoc-gen-go-http/v2@latest
-	go install github.com/google/gnostic/cmd/protoc-gen-openapi@latest
-	go install github.com/google/wire/cmd/wire@latest
+	go install github.com/bufbuild/buf/cmd/buf@latest
+	go install honnef.co/go/tools/cmd/staticcheck@latest
+	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
 
-.PHONY: config
-# generate internal proto
-config:
-	protoc --proto_path=./internal \
-	       --proto_path=./third_party \
- 	       --go_out=paths=source_relative:./internal \
-	       $(INTERNAL_PROTO_FILES)
-
-.PHONY: api
-# generate api proto
+# generate root API protobuf
 api:
-	protoc --proto_path=./api \
-	       --proto_path=./third_party \
- 	       --go_out=paths=source_relative:./api \
- 	       --go-http_out=paths=source_relative:./api \
- 	       --go-grpc_out=paths=source_relative:./api \
-	       --openapi_out=fq_schema_naming=true,default_response=false:. \
-	       $(API_PROTO_FILES)
+	buf generate --template buf.gen.yaml
 
-.PHONY: build
-# build
+# build root module packages
 build:
-	mkdir -p bin/ && go build -ldflags "-X main.Version=$(VERSION)" -o ./bin/ ./...
+	go build ./...
 
-.PHONY: generate
-# generate
+# run root module generators and tidy dependencies
 generate:
 	go generate ./...
 	go mod tidy
 
+# run optional local lint checks without gating check or CI
+lint:
+	golangci-lint run ./...
+	cd test && golangci-lint run --config ../.golangci.yml ./...
 
-.PHONY: wire
-# wire
-wire:
-	cd cmd/yola && wire
+# run repository checks without rewriting tracked files
+check:
+	buf lint
+	go mod tidy -diff
+	go vet ./...
+	staticcheck ./...
+	go test ./...
+	cd test && go mod tidy -diff
+	cd test && go vet ./...
+	cd test && staticcheck ./...
+	cd test && go test ./...
+	git diff --check
+	git diff --cached --check
 
-.PHONY: all
-# generate all
+# check API compatibility against an explicit Buf input
+breaking:
+	@test -n "$${BUF_BREAKING_AGAINST}" || (echo "BUF_BREAKING_AGAINST is required (for example: .git#ref=<tag-or-commit>)" >&2; exit 2)
+	buf breaking --against "$${BUF_BREAKING_AGAINST}"
+
+# run all tests with the race detector
+race:
+	go test -race ./...
+	cd test && go test -race ./...
+
+# remove local build artifacts
+clean:
+	rm -rf -- ./bin ./*.exe
+
+# generate root module and run repository checks
 all:
-	make api;
-	make config;
-	make generate;
+	$(MAKE) api
+	$(MAKE) generate
+	$(MAKE) check
 
 # show help
 help:
@@ -75,12 +67,12 @@ help:
 	@echo ' make [target]'
 	@echo ''
 	@echo 'Targets:'
-	@awk '/^[a-zA-Z\-\_0-9]+:/ { \
-	helpMessage = match(lastLine, /^# (.*)/); \
+	@awk '/^[a-zA-Z_-]+:/ { \
+		helpMessage = match(lastLine, /^# (.*)/); \
 		if (helpMessage) { \
-			helpCommand = substr($$1, 0, index($$1, ":")); \
+			helpCommand = substr($$1, 0, index($$1, ":")-1); \
 			helpMessage = substr(lastLine, RSTART + 2, RLENGTH); \
-			printf "\033[36m%-22s\033[0m %s\n", helpCommand,helpMessage; \
+			printf "\033[36m%-22s\033[0m %s\n", helpCommand, helpMessage; \
 		} \
 	} \
 	{ lastLine = $$0 }' $(MAKEFILE_LIST)

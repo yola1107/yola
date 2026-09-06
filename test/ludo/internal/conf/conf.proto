@@ -1,0 +1,83 @@
+syntax = "proto3";
+package kratos.api;
+
+option go_package = "yola/test/ludo/internal/conf;conf";
+
+import "google/protobuf/duration.proto";
+import "validate/validate.proto";
+import "zapslog/config.proto";
+
+message Bootstrap {
+    Server server       = 1 [(validate.rules).message.required = true];
+    Data data           = 2 [(validate.rules).message.required = true];
+    zapslog.Log log     = 3 [(validate.rules).message.required = true];
+    Room room           = 4 [(validate.rules).message.required = true];
+}
+
+message Server {
+    message GRPC {
+        string network                   = 1;
+        string addr                      = 2;
+        google.protobuf.Duration timeout = 3;
+    }
+    GRPC grpc = 1 [(validate.rules).message.required = true];
+}
+
+message Data {
+    message Redis {
+        string addr     = 1;
+        string password = 2;
+        int32 db        = 3;
+    }
+    message Registry {
+        repeated string endpoints             = 1;
+        string prefix                         = 2;
+        google.protobuf.Duration dial_timeout = 3;
+    }
+    Redis redis           = 1 [(validate.rules).message.required = true];
+    Registry registry     = 2 [(validate.rules).message.required = true];
+    string advertise_host = 3;
+}
+
+message Room {
+    message Table {
+        int32 tableNum = 1 [(validate.rules).int32.gt = 0];
+        int32 chairNum = 2 [(validate.rules).int32 = {gt: 0, lte: 4}];
+    }
+    message Game {
+        int32 vid                = 1;
+        int32 see_round          = 2;
+        int32 auto_see_round     = 3;
+        int32 speaker_card_type  = 4;
+        int32 high_strength_rate = 5;
+        bool is_newbie           = 6;
+        bool auto_ready          = 7;
+        double min_money         = 8;
+        double max_money         = 9;
+        double base_money        = 10 [(validate.rules).double.gt = 0];
+        double ch_limit          = 11;
+        double pot_limit         = 12;
+        double fee               = 13 [(validate.rules).double = {gte: 0, lte: 1}];
+        double speaker_minmoney  = 14;
+        int32 vip_limit          = 15;
+    }
+    // 机器人配置
+    message Robot {
+        bool open              = 1;
+        int32 num              = 2;
+        int32 table_max_count  = 3;
+        int32 min_play_count   = 4;  // 预留N个AI自己玩游戏
+        int64 id_begin         = 5;
+        double min_money       = 6;
+        double max_money       = 7;
+        double stand_min_money = 8;
+        double stand_max_money = 9;
+    }
+    message LogCache {
+        bool open = 1;
+    }
+    Table table       = 1 [(validate.rules).message.required = true];
+    Game game         = 2 [(validate.rules).message.required = true];
+    Robot robot       = 3 [(validate.rules).message.required = true];
+    LogCache logCache = 4;
+}

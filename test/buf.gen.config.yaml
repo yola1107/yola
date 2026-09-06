@@ -1,0 +1,10 @@
+version: v2
+plugins:
+  - local: ["go", "run", "google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.11"]
+    out: .
+    opt: module=yola/test
+  - local: ["go", "run", "github.com/envoyproxy/protoc-gen-validate@v1.3.3"]
+    out: .
+    opt:
+      - lang=go
+      - module=yola/test

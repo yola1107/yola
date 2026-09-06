@@ -1,0 +1,54 @@
+syntax = "proto3";
+
+package cluster.v1;
+
+import "google/protobuf/empty.proto";
+
+option go_package = "yola/api/cluster/v1;v1";
+
+service Node {
+  rpc Forward(ForwardRequest) returns (ForwardReply);  // 转发客户端请求
+  rpc Disconnect(DisconnectRequest) returns (google.protobuf.Empty);  // 客户端断线通知（best-effort）
+}
+
+service Gateway {
+  rpc Push(PushRequest) returns (google.protobuf.Empty);  // 推送消息到客户端
+  rpc Kick(KickRequest) returns (google.protobuf.Empty);  // 关闭指定客户端连接
+}
+
+// GateRoute 是当前请求携带的不可变 Gateway 连接路由。
+message GateRoute {
+  string service_name  = 1;  // 目标游戏服务
+  string uid           = 2;  // 稳定用户身份
+  string binding_token = 3;  // 当前连接 binding 的 fencing token
+  string gate_id       = 4;  // 持有连接的 Gateway 实例
+  string gate_endpoint = 5;  // Gateway 内部 gRPC 地址
+  string conn_id       = 6;  // Gateway 内的连接标识
+}
+
+message ForwardRequest {
+  GateRoute route   = 1;  // 当前请求的 Gateway 连接路由
+  int32 command     = 2;  // Node 业务命令
+  bytes body        = 3;  // Node 业务请求
+  string node_id    = 4;  // Stateful 请求期望的 Node 实例；空值表示普通负载均衡
+  string node_epoch = 5;  // sticky Node 进程代次
+}
+
+message ForwardReply {
+  bytes body = 1;  // 业务响应；错误使用 gRPC status
+}
+
+message DisconnectRequest {
+  GateRoute route = 1;  // 断开时的 Gateway 连接路由
+}
+
+message PushRequest {
+  GateRoute route = 1;  // 目标 Gateway 连接
+  int32 command   = 2;  // 客户端业务命令
+  bytes body      = 3;  // 客户端业务消息
+}
+
+message KickRequest {
+  GateRoute route = 1;  // 目标 Gateway 连接
+  int32 code      = 2;  // 踢线原因码
+}

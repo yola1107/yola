@@ -1,0 +1,11 @@
+version: v2
+modules:
+  - path: internal
+  - path: ludo/internal
+deps:
+  - buf.build/envoyproxy/protoc-gen-validate
+lint:
+  use:
+    - MINIMAL
+  except:
+    - PACKAGE_DIRECTORY_MATCH

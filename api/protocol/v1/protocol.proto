@@ -1,0 +1,20 @@
+syntax = "proto3";
+
+package protocol.v1;
+
+option go_package = "yola/api/protocol/v1;v1";
+
+// Proto 是 Client 与 Gateway 之间的外部消息封套。
+message Proto {
+  int32 op       = 1;  // 外部消息类型
+  int32 seq      = 2;  // 客户端请求响应序号
+  int32 code     = 3;  // 框架处理状态
+  int32 cmd      = 4;  // 客户端业务命令
+  bytes body     = 5;  // 客户端业务消息
+}
+
+// ClientAuthReq 只由 Gateway 处理，token 不进入内部 Node RPC。
+message ClientAuthReq {
+  string service_name = 1;  // 目标游戏服务
+  bytes token         = 2;  // 不透明认证凭据
+}

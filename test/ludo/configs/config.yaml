@@ -1,0 +1,81 @@
+server:
+  grpc:
+    addr: 0.0.0.0:9001
+    timeout: 3s
+
+data:
+  redis:
+    addr: 127.0.0.1:6379
+    db: 0
+    password: ""
+  registry:
+    endpoints:
+      - 127.0.0.1:2379
+    prefix: /yola/test
+    dial_timeout: 3s
+  advertise_host: 127.0.0.1
+
+log:
+  app_name: ludo
+  level: debug
+  format: console
+  time_format: 2006/01/02 15:04:05.000
+  output: ludo.log
+  dir: ./logs
+  max_size: 100
+  max_backups: 10
+  max_age: 7
+  compress: true
+  file: false
+  error_file: false
+
+room:
+  table:
+    tableNum: 100
+    chairNum: 4
+  game:
+    vid: 1002
+    min_money: 100.0
+    max_money: 10000.0
+    base_money: 100.0
+    auto_ready: true
+    ch_limit: 600.0
+    pot_limit: 800.0
+    see_round: 3
+    auto_see_round: 6
+    fee: 0.2
+    speaker_minmoney: 200.0
+    speaker_card_type: 2
+    high_strength_rate: 30
+  robot:
+    open: false
+    num: 4
+    table_max_count: 4
+    min_play_count: 4
+    id_begin: 100000
+    min_money: 100.0
+    max_money: 10000.0
+    stand_min_money: 200.0
+    stand_max_money: 8000.0
+  logCache:
+    open: false
+
+loadTest:
+  press:
+    open: true
+    scenario: play
+    url: ws://127.0.0.1:3102/
+    num: 20
+    batch: [2, 100]
+    interval: 200
+    startID: 600000
+    uidCount: 100000
+    concurrency: 100
+    actionConcurrency: 100
+    gatewayLimit: 10000
+    gatewayPerIPLimit: 10000
+    nodeSeatCapacity: 400
+    minMoney: 1000.0
+    maxMoney: 8000.0
+    logoutRate: 0
+    offlineRate: 0

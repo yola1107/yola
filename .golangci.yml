@@ -1,0 +1,77 @@
+version: "2"
+run:
+  modules-download-mode: readonly
+linters:
+  default: none
+  enable:
+    - bodyclose
+    - dogsled
+    - durationcheck
+    - errcheck
+    - gocognit
+    - goconst
+    - gocyclo
+    - govet
+    - ineffassign
+    - lll
+    - loggercheck
+    - misspell
+    - mnd
+    - nilnesserr
+    - nolintlint
+    - revive
+    - staticcheck
+    - unconvert
+    - unused
+    - wastedassign
+    - whitespace
+  settings:
+    gocognit:
+      min-complexity: 40
+    gocyclo:
+      min-complexity: 30
+    govet:
+      enable:
+        - shadow
+    lll:
+      line-length: 160
+    misspell:
+      locale: US
+    mnd:
+      checks:
+        - case
+        - condition
+        - return
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+    whitespace:
+      multi-func: true
+  exclusions:
+    generated: lax
+    warn-unused: true
+    presets:
+      - comments
+      - std-error-handling
+    rules:
+      - linters:
+          - gocognit
+          - goconst
+        path: (.+)_test\.go
+issues:
+  max-same-issues: 0
+formatters:
+  enable:
+    - gci
+    - gofmt
+  settings:
+    gci:
+      sections:
+        - standard
+        - prefix(yola)
+        - default
+      custom-order: true
+    gofmt:
+      simplify: true
+  exclusions:
+    generated: lax

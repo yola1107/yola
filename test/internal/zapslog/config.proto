@@ -1,0 +1,22 @@
+syntax = "proto3";
+
+package zapslog;
+
+option go_package = "yola/test/internal/zapslog;zapslog";
+
+import "validate/validate.proto";
+
+message Log {
+  string level       = 1 [(validate.rules).string = { in: [ "", "debug", "info", "warn", "error" ] }];
+  string format      = 2 [(validate.rules).string = { in: [ "console", "json" ] }];
+  string time_format = 3;
+  string output      = 4 [(validate.rules).string.min_len = 1];
+  string dir         = 5;
+  int32 max_size     = 6 [(validate.rules).int32.gte = 0];
+  int32 max_backups  = 7 [(validate.rules).int32.gte = 0];
+  int32 max_age      = 8 [(validate.rules).int32.gte = 0];
+  bool compress      = 9;
+  bool file          = 10;
+  bool error_file    = 11;
+  string app_name    = 12;
+}

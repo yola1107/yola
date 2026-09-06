@@ -1,0 +1,16 @@
+version: v2
+modules:
+  - path: api
+lint:
+  use:
+    - STANDARD
+  except:
+    - PACKAGE_DIRECTORY_MATCH
+    - RPC_RESPONSE_STANDARD_NAME
+    - SERVICE_SUFFIX
+  ignore_only:
+    RPC_REQUEST_RESPONSE_UNIQUE:
+      - api/cluster/v1/cluster.proto
+breaking:
+  use:
+    - FILE

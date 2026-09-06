@@ -1,0 +1,59 @@
+server:
+  grpc:
+    addr: 0.0.0.0:9002
+    timeout: 3s
+data:
+  redis:
+    addr: 127.0.0.1:6379
+    db: 0
+    password: ""
+  registry:
+    endpoints:
+      - 127.0.0.1:2379
+    prefix: /yola/test
+    dial_timeout: 3s
+  advertise_host: 127.0.0.1
+room:
+  table:
+    tableNum: 1000
+    chairNum: 4
+  game:
+    vid: 1002
+    min_money: 100.0
+    max_money: 10000.0
+    base_money: 100.0
+    auto_ready: true
+    ch_limit: 600.0
+    pot_limit: 800.0
+    see_round: 3
+    auto_see_round: 6
+    fee: 0.2
+    speaker_minmoney: 200.0
+    speaker_card_type: 2
+    high_strength_rate: 30
+  robot:
+    open: true
+    num: 3
+    table_max_count: 2
+    min_play_count: 2
+    id_begin: 200000
+    min_money: 100.0
+    max_money: 10000.0
+    stand_min_money: 200.0
+    stand_max_money: 8000.0
+    reserveN: 1
+  logCache:
+    open: false
+
+loadTest:
+  press:
+    open: false
+    url: "ws://127.0.0.1:3102/"
+    num: 2
+    batch: [1, 2]
+    interval: 5000
+    startID: 700000
+    minMoney: 100.0
+    maxMoney: 10000.0
+    logoutRate: 0.15
+    offlineRate: 0.05
