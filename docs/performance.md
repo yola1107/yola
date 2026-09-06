@@ -199,6 +199,55 @@ go tool pprof -top -cum "$env:TEMP/yola-push.test" "$env:TEMP/yola-push-block.pp
 
 本轮使用临时固定到达率诊断脚本，与上方闭环 `BenchmarkTablePush` 不同；原始日志、脚本、源码快照和 SHA-256 清单保留在本机诊断产物 `yola-i45-workers-207c2458`。4,000 个 Session 仍为合成接收器，未覆盖真实客户端、完整业务 handler、机器人、心跳、数据库结算、集中到达和长期运行。增加 worker 只提高跨桌并发，百人热点桌的同步投递成本仍需独立验证。
 
+## 真实 WebSocket 与游戏链路
+
+2026-09-06 基于 `8131705` 和本批测试代码，在上述 VMware Linux/amd64、4 vCPU、约 7.5GiB RAM、Go 1.26.6 环境补测。使用同 VM 独占、可丢弃的 Redis 8.6.1 和 etcd 3.5.21，`GOMAXPROCS=4`；生产代码未变，worker 仍为 `min(tableNum, 16)`、每桌队列 128、batch 64。本节表格中的延迟均为直方图 p99 所在桶的上界，单位 ms。
+
+客户端、Gateway、Node 和观测器在同一进程，经 loopback 真实 WebSocket/gRPC 通信，保留默认 heartbeat；未覆盖跨机或 TLS。CPU 为整个测试进程生命周期的平均用量，100% 表示一个逻辑核；RSS 为该进程峰值，二者包含客户端、服务和观测成本，CPU 还包含建连与排空阶段，均不包含独立 Redis/etcd 进程。正式性能样本顺序执行，未与编译、lint 或其他压测并行。
+
+### 每桌每秒一次操作
+
+`BenchmarkTableCadence` 使用实际桌广播函数和四名真实 WebSocket 接收者，每个任务串行广播两次、共 8 条 Push，Payload 为包含 256B bytes 的 protobuf。桌和玩家为测试夹具，不执行游戏 handler。发生器直接按计划提交 mailbox；逐玩家核对桌号、序号和数量，预热序号不计入结果。`client_scheduled` 从计划提交时刻计至客户端 Push 回调，包含发生器迟到、排队、同步投递和客户端处理等待。
+
+| 游戏 | 桌数 | 时长 | mailbox 等待 p99 上界 | client_scheduled p99 上界 | 任务完成 p99 上界 | CPU % | 峰值 RSS MiB |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Ludo | 100 | 30s | 0.114 | 15.726 | 18.871 | 39.8 | 83.9 |
+| Ludo | 500 | 30s | 0.709 | 27.174 | 32.609 | 117.3 | 297.3 |
+| Ludo | 1,000 | 30s | 868.147 | 868.147 | 868.147 | 165.0 | 559.7 |
+| Whot | 100 | 30s | 0.137 | 18.871 | 18.871 | 40.8 | 83.7 |
+| Whot | 500 | 30s | 0.137 | 9.100 | 13.105 | 113.6 | 295.0 |
+| Whot | 1,000 | 30s | 32.609 | 46.956 | 56.348 | 159.6 | 561.5 |
+| Ludo | 1,000 | 120s | 39.130 | 46.956 | 56.348 | 168.7 | 564.0 |
+| Whot | 1,000 | 120s | 27.174 | 39.130 | 46.956 | 168.6 | 568.2 |
+
+任务完成从实际提交 mailbox 计至任务结束；`scheduled_complete` 另计发生器迟到。八个正式样本共完成 336,000 次操作、672,000 次广播、2,688,000 条 Push，投递数量和顺序全部匹配，观测到的 Push、定位和 mailbox 错误均为 0。两款游戏的 1,000 桌长样本各完成 120,000 次操作、960,000 条 Push，耗时均约 120.006s。
+
+Ludo 的 1,000 桌 30s 样本仍有明显尾延迟：mailbox 等待均值 59.704ms，任务执行均值 10.124ms，发生器迟到 p99 上界 10.921ms，LocateGate/RPC p99 上界分别为 1.764/3.048ms。分段结果把主要延迟定位到任务开始前的等待，但尚未定位积压波次的原因。早期与编译重叠的探索样本已排除，868.147ms 在无该干扰的正式样本仍出现；较好的 120s 结果不能覆盖此问题，也不能证明延长运行会消除尾延迟。
+
+因此，本轮证明该拓扑下 1,000 桌、每秒 8,000 条 Push 能在两分钟样本内保持数量与顺序；尚不能承诺 1,000 桌的延迟 SLO。另行通过的 `TestTablePushSocketOrdering` 覆盖每帧延迟 10ms 和旧连接关闭后的同 UID 重连；发送在重连期间暂停，未验证离线重放、并发接管或慢客户端队列溢出。
+
+### 真实游戏操作与启动失败
+
+`TestGameDelivery` 使用真实游戏服务、Redis 玩家仓库及 etcd Registry，保留 Ludo 压测玩家的同步操作、Whot 的异步请求和响应 mailbox。所有玩家收到开局 Push 后计时 30s，按原客户端反馈立即操作，属于闭环负载，不等于每桌每秒一次操作。结束后逐桌查询 Scene，核对人数、UID 归属、座位和在线状态；排空生产者后按 UID 比较 Node Push 与客户端回调的数量及有消息边界的 SHA-256 流摘要。
+
+两款游戏的两桌烟测、一名真人加两名服务器机器人的场景均通过；机器人场景各观察到 7 条实际机器人动作推送。100 桌、400 名真人场景的结果如下：
+
+| 游戏 | 客户端请求往返 p99 上界 | 客户端 Push p99 上界 | 全生命周期匹配 Push 数 | ResultPush 数 | CPU % | 峰值 RSS MiB |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Ludo | 140.211 | 22.645 | 498,840 | 420 | 202.0 | 108.1 |
+| Whot | 97.369 | 3.048 | 146,832 | 1,200 | 74.8 | 100.9 |
+
+客户端请求往返从出站帧编码计至响应解码；客户端 Push 从 Node 的 Gateway RPC middleware 入口计至客户端回调，不包含前置定位。Push 和 ResultPush 数覆盖建连、计时与排空的完整生命周期，延迟只采计时阶段，因此不能直接用该 Push 总数除以 30s 计算稳态吞吐。样本观察到了真实结算，但未要求每桌在短样本内完成整局。计时阶段 Ludo/Whot 分别观测到 37,689/10,061 条请求响应；测量边界和客户端早期失败、迟到响应的观测限制见 [测试说明](../test/README.md#固定速率与真实游戏验证)。
+
+500 桌目标规模的两款游戏均在启动阶段失败，尚未达到 2,000 人全部就座开局，因而停止升档，未运行 1,000 桌真实游戏场景：
+
+- Ludo 按每 100ms 一批 20 名玩家、最多 100 个并发启动任务进入，已开局玩家同时持续操作。首个失败为 Login 的 Gateway Forward `DeadlineExceeded`，日志同时出现 `enter player: context deadline exceeded`；重复运行并采集 CPU/block profile 仍复现。默认 Forward deadline 为 3s（`gateway/options.go:64`），入桌路径经过 `Manager.Enter → tryAvailableTables → call → mailbox.Call`（`test/ludo/internal/biz/table/table_mgr.go:108`）。profile 显示调用方等待 mailbox，worker 在 `PushToUID → gateclient.Push → gRPC Invoke` 同步投递中阻塞；累计 goroutine 阻塞时间不能当作单次请求延迟。候选桌竞争、到达波次与 batch 调度各自的贡献尚未分离，现有证据不支持直接增加选桌索引。
+- Whot 在逐个建连、异步 Login 与已开局操作重叠时，Scene 请求返回 `ResourceExhausted`，消息为 `node request queue is full`。该错误由 Table mailbox 的 `ErrFull` 映射而来（`test/internal/mailbox/mailbox.go:62`），调用链为 `OnSceneReq → Scene → CallPlayer → mailbox.Call`；不能根据错误文案归因于 Node 全局请求线程池。
+
+下一项诊断应分离登录入桌压力和稳定对局负载，独立采集真实游戏的 mailbox wait/reject、候选桌竞争与同步发送等待，并复现 1,000 桌固定速率的长尾波次。500 桌启动失败不能视为“500 张已开局桌”的容量上限；目前也没有依据放大队列、改用 32 worker 或异步并发桌内广播。百人热点桌、跨机拓扑、长期稳态与失败窗口仍待验证，I45 保持待验证。
+
+运行命令见 [测试模块](../test/README.md#固定速率与真实游戏验证)。原始日志、资源采样、失败 profile、运行脚本、`source-final.tar.gz` 源码快照及 SHA-256 清单保留在本机诊断产物 `yola-i45-ws-20260906-a51d9c2e`；`tested-source.json` 的 317 个 Go 源码与 module 文件已与实际测试的 VM 源码逐项核对。
+
 ## 容量验收
 
 - I41 的真实广播入口为 `test/gateway`，默认 NATS 为 `nats://127.0.0.1:4222`，可用 `-nats-url` 覆盖；每个 Gateway 实例固定每秒发布 1 个 256B Payload。单 Gateway 验收时，`test/ludo` press 使用 `connect` 场景统计客户端到达量和采样延迟。具体启动参数见 [测试模块](../test/README.md)。

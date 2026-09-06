@@ -73,6 +73,37 @@ go test ./whot/internal/biz/table -run '^$' -bench '^BenchmarkTablePush$' -bench
 
 每桌四人、Payload 为 256B bytes 的 protobuf 消息，8/64 桌分别对照无注入延迟和每条 Push 注入 5ms Gateway 处理延迟。worker 跟随 Ludo/Whot 的 `min(tableNum, 16)` 默认规则，8/64 桌分别为 8/16；闭环并发固定为 `8 × GOMAXPROCS`，上述命令下为 32。接收器只计数、不使用客户端 socket；每轮要求成功投递数等于广播数的四倍。输出各段调用数、均值及直方图分位数所在桶的上界（`p99_le_us`），任何 Push 或 mailbox 调用失败都会使基准失败。历史 8 worker 结果、队列和计时边界见 [性能基线](../docs/performance.md#table-push-分段基线)。
 
+## 固定速率与真实游戏验证
+
+`BenchmarkTableCadence` 使用真实 WebSocket 客户端，分 100、500、1,000 桌运行。每桌每秒一次任务，同一任务内串行广播两次，每次四名玩家；消息携带桌号、序号和计划时间。发生器直接按计划入队，不等待前一次完成；`generator_lag`、`mailbox_wait`、`scheduled_complete` 和 `client_scheduled` 分别区分发生器迟到、排队、任务完成和客户端回调延迟。
+
+从 `test` 目录运行，必须使用 `-benchtime=1x`，每个 iteration 表示整个场景；`YOLA_CADENCE_DURATION` 默认为 30s，允许 1s～30m 的整秒数：
+
+```powershell
+$env:YOLA_REDIS_INTEGRATION = '<dedicated-redis>:6379'
+$env:GOMAXPROCS = '4'
+$env:YOLA_CADENCE_DURATION = '30s'
+go test -p=1 ./ludo/internal/biz/table ./whot/internal/biz/table -run '^TestTablePushSocketOrdering$' -bench '^BenchmarkTableCadence$' -benchtime=1x -count=1 -timeout=15m
+```
+
+每名接收者必须按序收到全部消息，队列拒绝、缺失、重复、串桌或乱序均使测试失败。`TestTablePushSocketOrdering` 额外覆盖读循环每帧延迟 10ms，以及旧连接关闭后的同 UID 重连，校验 binding token 已更换且序号连续；它不覆盖断线期间的消息重放、并发接管或发送队列溢出。
+
+`TestGameDelivery` 装配真实游戏 Usecase、Redis 玩家仓库、Node、Gateway 和独立 etcd namespace，使用原压测玩家驱动 Login、Scene 和游戏操作。Ludo 保持同步操作，Whot 保持异步请求与响应 mailbox；测试连接接入观测 codec，不修改业务协议。场景包括两桌烟测、一名真人与两名服务器机器人，以及 100、500、1,000 桌各四名真人。
+
+```powershell
+$env:YOLA_ETCD_INTEGRATION = '<dedicated-etcd>:2379'
+$env:YOLA_GAME_DURATION = '30s'
+go test -p=1 ./ludo/tools/press ./whot/tools/press -run '^TestGameDelivery$' -count=1 -v -timeout=20m
+# 只验证小规模真人和机器人；Linux 可补 -race，race 数据不用于性能比较。
+go test -p=1 ./ludo/tools/press ./whot/tools/press -run '^TestGameDelivery/(smoke|robots)$' -count=1 -v -timeout=5m
+```
+
+真实游戏测试等待所有玩家收到开局推送后计时，默认 30s、允许 1s～30m；按已有游戏反馈立即操作，属于闭环负载，与每桌每秒一次的固定速率基准分别解释。结束后查询每桌 Scene，核对人数、UID 归属、座位唯一性和在线状态；停止服务生产者后，对每个 UID 的 Node Push 与客户端回调做数量及 SHA-256 流摘要比对，摘要包含 command、长度与内容边界。机器人场景还要求观察到机器人实际动作；结算消息单独计数，短样本不保证每桌完成整局。每款游戏遇到首个失败场景即停止升档；延长采样时间时须按所选场景总时长增大 `-timeout`。
+
+`client_wire_request` 从客户端出站帧编码计至响应解码，包含出站队列、Forward、业务执行和返回；它不包含业务 payload 首次序列化，也不代表 `Client.Request` 返回值观测。编码前失败和超时后迟到的响应仍需结合压测客户端日志判断。`handler` 是 Node command middleware 内部耗时，不能直接当作 mailbox 等待；真实游戏的 mailbox wait/reject 仍未独立采集。所有延迟分位数都是直方图桶上界。
+
+固定速率基准使用随机 service；真实游戏使用随机可丢弃 UID 和 etcd namespace，并写入玩家数据，因此 Redis 必须独占且可丢弃。认证 token 只是测试 UID。服务、压测客户端和观测器同进程，CPU/RSS 包含三者及观测开销；正式计时期间不要并行编译、跑其他检查或压测。结果与限制见 [性能基线](../docs/performance.md)。
+
 ## 日志
 
 - Gateway 和 Ludo 压测客户端使用 console zapslog，级别分别由 `-log-level` 控制。

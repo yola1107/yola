@@ -68,7 +68,7 @@ type measurementSummary struct {
 	Failed   bool    `json:"failed"`
 }
 
-func (m *measurements) report(b *testing.B) {
+func (m *measurements) report(b testing.TB) {
 	b.Helper()
 	var summaries []measurementSummary
 	for _, scope := range m.collect(b).ScopeMetrics {
@@ -95,8 +95,10 @@ func (m *measurements) report(b *testing.B) {
 					Failed:   failed.AsBool(),
 				}
 				summaries = append(summaries, summary)
-				b.ReportMetric(summary.MeanUS, name+"_mean_us")
-				b.ReportMetric(summary.P99Upper, name+"_p99_le_us")
+				if benchmark, ok := b.(*testing.B); ok {
+					benchmark.ReportMetric(summary.MeanUS, name+"_mean_us")
+					benchmark.ReportMetric(summary.P99Upper, name+"_p99_le_us")
+				}
 				if summary.Failed {
 					b.Errorf("%s had %d failed calls", name, point.Count)
 				}
