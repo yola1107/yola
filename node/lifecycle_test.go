@@ -240,7 +240,11 @@ func TestRollbackPreparationPreservesCauseAndEpochForRetry(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	lease := newEpochLease(locator, nodeIdentity{serviceName: "game", nodeID: "node-a", epoch: "epoch-a"})
+	lease := newEpochLease(
+		locator,
+		nodeIdentity{serviceName: "game", nodeID: "node-a", epoch: "epoch-a"},
+		time.Now().Add(DefaultNodeEpochTTL),
+	)
 	err := server.rollbackPreparation(ctx, lease, prepareErr)
 	require.ErrorIs(t, err, prepareErr)
 	require.ErrorIs(t, err, cleanupErr)
@@ -248,7 +252,7 @@ func TestRollbackPreparationPreservesCauseAndEpochForRetry(t *testing.T) {
 	require.NotNil(t, locator.ctx)
 	_, hasDeadline := locator.ctx.Deadline()
 	require.True(t, hasDeadline)
-	require.Same(t, lease, server.currentLease())
+	require.Same(t, lease, server.lease.Load())
 	require.NoError(t, lease.retryRelease(context.Background()))
 	require.Equal(t, epochReleased, lease.releaseState)
 	require.True(t, server.requests.isClosed())
@@ -264,7 +268,7 @@ func TestRollbackPreparationBoundsUncanceledEpochCleanup(t *testing.T) {
 	started := time.Now()
 	lease := newEpochLease(locator, nodeIdentity{
 		serviceName: "game", nodeID: "node-a", epoch: "epoch-a",
-	})
+	}, time.Now().Add(DefaultNodeEpochTTL))
 	err := server.rollbackPreparation(ctx, lease, errors.New("prepare failed"))
 	require.ErrorIs(t, err, context.DeadlineExceeded)
 	require.Less(t, time.Since(started), 200*time.Millisecond)
@@ -370,15 +374,15 @@ func TestStickyStartFailureKeepsEpochCleanupForStop(t *testing.T) {
 	server := newTestServer(t, Listener(lis), Locator(locator))
 	ctx := kratos.NewContext(context.Background(), nodeTestAppInfo{metadata: instance.StickyMetadata()})
 	require.NoError(t, server.BeforeStart(ctx))
-	require.NoError(t, server.currentLease().ctx.Err())
+	require.NoError(t, server.lease.Load().ctx.Err())
 	require.ErrorIs(t, server.Start(ctx), cleanupErr)
-	require.ErrorIs(t, server.currentLease().ctx.Err(), context.Canceled)
+	require.ErrorIs(t, server.lease.Load().ctx.Err(), context.Canceled)
 	require.Empty(t, server.currentIdentity().epoch)
-	require.Equal(t, epochReleaseFailed, server.currentLease().releaseState)
+	require.Equal(t, epochReleaseFailed, server.lease.Load().releaseState)
 	require.True(t, server.requests.isClosed())
 	require.EqualError(t, server.BeforeStart(ctx), "node: server is stopping or stopped")
 	require.NoError(t, server.Stop(context.Background()))
-	require.Equal(t, epochReleased, server.currentLease().releaseState)
+	require.Equal(t, epochReleased, server.lease.Load().releaseState)
 	// Epoch must be free for a replacement process with the same NodeID.
 	require.NoError(t, base.RegisterNodeEpoch(context.Background(), "game", "node-a", "fresh", DefaultNodeEpochTTL))
 }
@@ -469,7 +473,7 @@ func TestStopDrainFailureKeepsEpochUntilTTL(t *testing.T) {
 	drainErr := errors.New("drain failed")
 	server := newTestServer(t, Locator(locator), Drain(func(context.Context) error { return drainErr }))
 	publishTestIdentity(server, nodeIdentity{serviceName: "game", nodeID: "node-a", epoch: epoch})
-	renewCtx := server.currentLease().ctx
+	renewCtx := server.lease.Load().ctx
 
 	require.ErrorIs(t, server.Stop(context.Background()), drainErr)
 	located, err := locator.LocateNodeEpoch(context.Background(), "game", "node-a")

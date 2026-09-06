@@ -130,7 +130,7 @@ fanout 流程：
 1. 单个协调协程取得当前 Session 快照。
 2. 一条广播最多拆成 `BroadcastWorkers` 个批次并行处理；默认 worker 数为 `min(8, GOMAXPROCS)`。
 3. 全部批次完成后才处理下一条广播，避免同一连接上的后续广播越过前一条。
-4. worker 只向已经认证且 lease 有效的连接调用 `SendProto`；连接自己的有界发送队列继续负责慢客户端隔离。
+4. worker 只向已经认证且 lease 有效的连接发送；支持 `PreparedConnection` 时使用 `SendPrepared` 共享编码，否则调用 `SendProto`。连接自己的有界发送队列负责慢客户端隔离。
 5. 广播队列默认容量为 256，可用 `BroadcastQueueCapacity` 调整；队列满返回 `gateway.ErrBroadcastQueueFull`。
 
 Gateway 不为每个 Session 创建 goroutine，也不在 EventBus 内复制 Session 索引。连接发送队列满、连接关闭或停机过程中都允许丢弃，并以限频日志记录 drop。

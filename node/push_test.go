@@ -171,6 +171,137 @@ func TestAcceptedSessionPushCompletesWhileStopDrains(t *testing.T) {
 	require.NoError(t, receiveNodeValue(t, stopDone))
 }
 
+func TestAcceptedHandlerPushToUIDCompletesWhileStopDrains(t *testing.T) {
+	stub := &gatewayStub{pushes: make(chan *v1.PushRequest, 1)}
+	binding := testBinding("player-a", "conn-a")
+	binding.GateEndpoint = "grpc://" + startGatewayStub(t, stub)
+	store := newMemoryLocator()
+	_, _, err := store.BindGate(context.Background(), binding, time.Minute)
+	require.NoError(t, err)
+	server := newDispatchTestServer(t, Locator(store), PushTimeout(time.Second))
+	t.Cleanup(func() { require.NoError(t, server.Stop(context.Background())) })
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	releaseHandler := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(releaseHandler)
+	server.RegisterRawHandler(1, func(ctx context.Context, _ []byte) ([]byte, error) {
+		close(entered)
+		<-release
+		return nil, server.PushToUID(ctx, binding.UID, 2, wrapperspb.String("push"))
+	})
+	forwardDone := make(chan error, 1)
+	go func() {
+		_, forwardErr := server.forward(context.Background(), binding, 1, nil)
+		forwardDone <- forwardErr
+	}()
+	waitNodeSignal(t, entered)
+	stopDone := make(chan error, 1)
+	go func() { stopDone <- server.Stop(context.Background()) }()
+	require.Eventually(t, server.requests.isClosed, time.Second, time.Millisecond)
+	releaseHandler()
+
+	require.NoError(t, receiveNodeValue(t, forwardDone))
+	require.NotNil(t, receiveNodeValue(t, stub.pushes))
+	require.NoError(t, receiveNodeValue(t, stopDone))
+}
+
+func TestBusinessDrainCanPushToUID(t *testing.T) {
+	stub := &gatewayStub{pushes: make(chan *v1.PushRequest, 1)}
+	binding := testBinding("player-a", "conn-a")
+	binding.GateEndpoint = "grpc://" + startGatewayStub(t, stub)
+	store := newMemoryLocator()
+	_, _, err := store.BindGate(context.Background(), binding, time.Minute)
+	require.NoError(t, err)
+	var server *Server
+	server = newDispatchTestServer(t, Locator(store), Drain(func(ctx context.Context) error {
+		return server.PushToUID(ctx, binding.UID, 2, wrapperspb.String("drain"))
+	}))
+
+	require.NoError(t, server.Stop(context.Background()))
+	require.NotNil(t, receiveNodeValue(t, stub.pushes))
+	require.Equal(t, codes.Unavailable, status.Code(server.PushToUID(context.Background(), binding.UID, 2, wrapperspb.String("closed"))))
+}
+
+func TestStopWaitsForDeliveriesBeforeReleasingEpoch(t *testing.T) {
+	for _, method := range []string{"PushToUID", "Session.Push"} {
+		t.Run(method, func(t *testing.T) {
+			entered := make(chan struct{})
+			release := make(chan struct{})
+			releasePush := sync.OnceFunc(func() { close(release) })
+			stub := &gatewayStub{push: func(context.Context, *v1.PushRequest) (*emptypb.Empty, error) {
+				close(entered)
+				<-release
+				return &emptypb.Empty{}, nil
+			}}
+			binding := testBinding("player-a", "conn-a")
+			binding.GateEndpoint = "grpc://" + startGatewayStub(t, stub)
+			store := newMemoryLocator()
+			_, _, err := store.BindGate(context.Background(), binding, time.Minute)
+			require.NoError(t, err)
+			require.NoError(t, store.RegisterNodeEpoch(context.Background(), "game", "node-a", "epoch-a", DefaultNodeEpochTTL))
+			server := newDispatchTestServer(t, Locator(store))
+			publishTestIdentity(server, nodeIdentity{serviceName: "game", nodeID: "node-a", epoch: "epoch-a"})
+			t.Cleanup(func() { require.NoError(t, server.Stop(context.Background())) })
+			t.Cleanup(releasePush)
+			pushed := make(chan error, 1)
+			go func() {
+				if method == "PushToUID" {
+					pushed <- server.PushToUID(context.Background(), binding.UID, 2, wrapperspb.String("push"))
+					return
+				}
+				pushed <- (requestSession{server: server, binding: binding}).Push(context.Background(), 2, wrapperspb.String("push"))
+			}()
+			waitNodeSignal(t, entered)
+			stopped := make(chan error, 1)
+			go func() { stopped <- server.Stop(context.Background()) }()
+			require.Eventually(t, server.deliveries.isClosed, time.Second, time.Millisecond)
+			epoch, err := store.LocateNodeEpoch(context.Background(), "game", "node-a")
+			require.NoError(t, err)
+			require.Equal(t, "epoch-a", epoch)
+			select {
+			case stopErr := <-stopped:
+				t.Fatalf("Stop returned with active delivery: %v", stopErr)
+			default:
+			}
+			releasePush()
+			require.NoError(t, receiveNodeValue(t, pushed))
+			require.NoError(t, receiveNodeValue(t, stopped))
+			_, err = store.LocateNodeEpoch(context.Background(), "game", "node-a")
+			require.ErrorIs(t, err, locate.ErrNodeEpochNotFound)
+		})
+	}
+}
+
+func TestDeliveryDrainTimeoutKeepsEpochUntilTTL(t *testing.T) {
+	entered := make(chan struct{})
+	stub := &gatewayStub{push: func(ctx context.Context, _ *v1.PushRequest) (*emptypb.Empty, error) {
+		close(entered)
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}}
+	binding := testBinding("player-a", "conn-a")
+	binding.GateEndpoint = "grpc://" + startGatewayStub(t, stub)
+	store := newMemoryLocator()
+	_, _, err := store.BindGate(context.Background(), binding, time.Minute)
+	require.NoError(t, err)
+	require.NoError(t, store.RegisterNodeEpoch(context.Background(), "game", "node-a", "epoch-a", DefaultNodeEpochTTL))
+	server := newDispatchTestServer(t, Locator(store))
+	publishTestIdentity(server, nodeIdentity{serviceName: "game", nodeID: "node-a", epoch: "epoch-a"})
+	// Stop 可能已记录预期的排空超时，清理不重复断言它的返回值。
+	t.Cleanup(func() { _ = server.Stop(context.Background()) })
+	pushed := make(chan error, 1)
+	go func() { pushed <- server.PushToUID(context.Background(), binding.UID, 2, wrapperspb.String("push")) }()
+	waitNodeSignal(t, entered)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	require.ErrorIs(t, server.Stop(ctx), context.DeadlineExceeded)
+	require.Error(t, receiveNodeValue(t, pushed))
+	require.ErrorIs(t, server.Stop(context.Background()), context.DeadlineExceeded)
+	epoch, err := store.LocateNodeEpoch(context.Background(), "game", "node-a")
+	require.NoError(t, err)
+	require.Equal(t, "epoch-a", epoch)
+}
+
 func TestPushToUIDLocatesGateAndPushes(t *testing.T) {
 	stub := &gatewayStub{pushes: make(chan *v1.PushRequest, 1)}
 	gateAddress := startGatewayStub(t, stub)

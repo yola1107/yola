@@ -12,10 +12,10 @@ import (
 	"yola/locate"
 
 	"github.com/go-kratos/kratos/v3"
-	grpcgo "google.golang.org/grpc"
+	"google.golang.org/grpc"
 )
 
-// Start begins runtime work and serves resources prepared by BeforeStart.
+// Start 在首次续租核验后开放 BeforeStart 准备的服务。
 func (s *Server) Start(ctx context.Context) error {
 	s.lifecycleMu.Lock()
 	if s.requests.isClosed() {
@@ -31,9 +31,26 @@ func (s *Server) Start(ctx context.Context) error {
 		s.lifecycleMu.Unlock()
 		return errors.New("node: server is not prepared")
 	}
-	s.lease.start(s.failLifecycle)
+	ready := s.lease.Load().start(s.failLifecycle)
 	s.state = stStarted
 	s.lifecycleMu.Unlock()
+	var startErr error
+	if ready != nil {
+		select {
+		case startErr = <-ready:
+		case <-ctx.Done():
+			startErr = ctx.Err()
+		}
+	}
+	if startErr == nil {
+		startErr = s.lease.Load().valid()
+	}
+	if startErr != nil {
+		if errors.Is(startErr, context.Canceled) && s.requests.isClosed() && context.Cause(s.fatalCtx) == nil {
+			return nil
+		}
+		return errors.Join(startErr, s.rollbackStart(ctx))
+	}
 
 	result := make(chan error, 1)
 	go func() { result <- s.grpcServer.Start(ctx) }()
@@ -44,7 +61,7 @@ func (s *Server) Start(ctx context.Context) error {
 		if fatalErr := context.Cause(s.fatalCtx); fatalErr != nil {
 			return fatalErr
 		}
-		if errors.Is(err, grpcgo.ErrServerStopped) {
+		if errors.Is(err, grpc.ErrServerStopped) {
 			return nil
 		}
 		if err != nil {
@@ -54,24 +71,23 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 }
 
-// Stop rejects new requests, drains accepted work, and releases the epoch only after a successful drain.
+// Stop 排空请求、业务和投递，仅在全部完成后主动释放 epoch。
 func (s *Server) Stop(ctx context.Context) error {
 	ctx = normalizeContext(ctx)
-	firstStop := false
+	var firstStop bool
 	var epochErr error
 	s.stopOnce.Do(func() {
 		firstStop = true
 		s.stopErr, epochErr = s.shutdown(ctx)
 	})
 	if !firstStop {
-		epochErr = s.currentLease().retryRelease(ctx)
+		epochErr = s.lease.Load().retryRelease(ctx)
 	}
 	return errors.Join(s.stopErr, epochErr)
 }
 
 func (s *Server) shutdown(ctx context.Context) (error, error) {
-	preparationDone := s.beginStopping()
-	if preparationDone != nil {
+	if preparationDone := s.beginStopping(); preparationDone != nil {
 		if err := contextwait.Done(ctx, preparationDone); err != nil {
 			return err, nil
 		}
@@ -82,19 +98,23 @@ func (s *Server) shutdown(ctx context.Context) (error, error) {
 	if requestErr == nil && s.drain != nil {
 		drainErr = s.drain(ctx)
 	}
-	if requestErr != nil || drainErr != nil {
-		s.currentLease().stopRenewal()
+	// 业务 Drain 负责停止推送生产者，投递能力在此之前继续服务已接纳业务。
+	deliveryErr := s.deliveries.stopAndWait(ctx)
+	canRelease := requestErr == nil && drainErr == nil && deliveryErr == nil
+	var renewalErr error
+	if !canRelease {
+		renewalErr = s.lease.Load().stopRenewal(ctx)
 	}
 	grpcErr := errors.Join(s.grpcServer.Stop(ctx), s.closeGRPCListener())
 	var epochErr error
-	if requestErr == nil && drainErr == nil {
+	if canRelease {
 		epochErr = s.releaseEpoch(ctx)
 	}
 	slog.InfoContext(ctx, "node stopping", "pid", os.Getpid())
-	return errors.Join(requestErr, drainErr, grpcErr, s.gateways.Close()), epochErr
+	return errors.Join(requestErr, drainErr, deliveryErr, renewalErr, grpcErr, s.gateways.Close()), epochErr
 }
 
-// BeforeStart validates the Kratos identity, verifies Locator access, and claims the Node epoch.
+// BeforeStart 校验应用身份与 Locator，并按需申请 Node epoch。
 func (s *Server) BeforeStart(ctx context.Context) (err error) {
 	s.lifecycleMu.Lock()
 	if s.requests.isClosed() {
@@ -114,7 +134,7 @@ func (s *Server) BeforeStart(ctx context.Context) (err error) {
 	s.state = stPreparing
 	s.preparationDone = preparationDone
 	s.lifecycleMu.Unlock()
-	committed := false
+	var committed bool
 	var lease *epochLease
 	defer func() {
 		if !committed {
@@ -142,8 +162,8 @@ func (s *Server) BeforeStart(ctx context.Context) (err error) {
 		s.lifecycleMu.Unlock()
 		return errors.New("node: server is stopping or stopped")
 	}
+	s.lease.Store(lease)
 	s.identity.Store(&identity)
-	s.lease = lease
 	s.state = stPrepared
 	committed = true
 	handlerCount := len(s.handlers)
@@ -167,7 +187,7 @@ func (s *Server) rollbackPreparation(ctx context.Context, lease *epochLease, cau
 		return cause
 	}
 	s.lifecycleMu.Lock()
-	s.lease = lease
+	s.lease.Store(lease)
 	s.lifecycleMu.Unlock()
 	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(normalizeContext(ctx)), s.pushTimeout)
 	defer cancel()
@@ -177,14 +197,15 @@ func (s *Server) rollbackPreparation(ctx context.Context, lease *epochLease, cau
 	return cause
 }
 
-// rollbackStart releases resources prepared before a failed gRPC Start.
+// rollbackStart 使用独立的有界 context，按完整 Stop 顺序清理启动失败。
 func (s *Server) rollbackStart(ctx context.Context) error {
-	ctx = normalizeContext(ctx)
-	s.beginStopping()
-	return errors.Join(s.releaseEpoch(ctx), s.closeGRPCListener())
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(normalizeContext(ctx)), s.pushTimeout)
+	defer cancel()
+	return s.Stop(ctx)
 }
 
 func (s *Server) failLifecycle(err error) {
+	s.deliveries.close()
 	s.beginStopping()
 	s.fatalCancel(err)
 }
@@ -214,21 +235,14 @@ func (s *Server) claimNodeIdentity(ctx context.Context, app kratos.AppInfo) (nod
 	}
 	lease, err := claimEpoch(ctx, s.locator, identity)
 	if err != nil {
-		return nodeIdentity{}, nil, err
+		return nodeIdentity{}, lease, err
 	}
 	return lease.identity, lease, nil
 }
 
-func (s *Server) currentLease() *epochLease {
-	s.lifecycleMu.Lock()
-	defer s.lifecycleMu.Unlock()
-	return s.lease
-}
-
-// releaseEpoch 先停止续租并撤下服务身份，再释放独立保存的租约凭据。
+// releaseEpoch 先撤下服务身份，再停止续租并释放独立保存的凭据。
 func (s *Server) releaseEpoch(ctx context.Context) error {
-	lease := s.currentLease()
-	lease.stopRenewal()
+	lease := s.lease.Load()
 	s.lifecycleMu.Lock()
 	s.identity.Store(nil)
 	s.lifecycleMu.Unlock()

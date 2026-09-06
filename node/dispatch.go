@@ -60,6 +60,8 @@ func (s *Server) forwardTo(ctx context.Context, claim stickyClaim, binding locat
 	if err != nil {
 		return nil, err
 	}
+	ctx, cancel := s.lease.Load().requestContext(ctx)
+	defer cancel()
 	if err := s.fenceStickyClaim(ctx, claim, binding, identity); err != nil {
 		return nil, err
 	}
@@ -92,7 +94,15 @@ func (s *Server) routeIdentity(binding locate.GateBinding) (nodeIdentity, error)
 	if identity.serviceName == "" || identity.serviceName != binding.ServiceName {
 		return nodeIdentity{}, status.Error(codes.Aborted, "node service mismatch")
 	}
-	return identity, nil
+	return identity, s.checkEpoch()
+}
+
+func (s *Server) checkEpoch() error {
+	if err := s.lease.Load().valid(); err != nil {
+		s.failLifecycle(err)
+		return status.Error(codes.Unavailable, "node epoch is unavailable")
+	}
+	return nil
 }
 
 func (s *Server) checkNodeBinding(ctx context.Context, gate locate.GateBinding, identity nodeIdentity) error {
@@ -106,5 +116,6 @@ func (s *Server) checkNodeBinding(ctx context.Context, gate locate.GateBinding, 
 	if nodeID != identity.nodeID {
 		return status.Error(codes.Aborted, "node binding changed")
 	}
-	return nil
+	// 定位 I/O 可能跨过租约截止时间，迟到的成功结果不得放行 handler。
+	return s.checkEpoch()
 }

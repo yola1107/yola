@@ -9,7 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	v1 "yola/api/cluster/v1"
+	"yola/api/cluster/v1"
 	"yola/instance"
 	"yola/internal/gateclient"
 	"yola/internal/listener"
@@ -19,7 +19,7 @@ import (
 	"github.com/go-kratos/kratos/v3/middleware"
 	"github.com/go-kratos/kratos/v3/middleware/recovery"
 	"github.com/go-kratos/kratos/v3/transport"
-	kgrpc "github.com/go-kratos/kratos/v3/transport/grpc"
+	"github.com/go-kratos/kratos/v3/transport/grpc"
 )
 
 var (
@@ -38,7 +38,7 @@ const (
 
 // Server is the Yola Node transport for a Kratos application.
 type Server struct {
-	grpcServer   *kgrpc.Server
+	grpcServer   *grpc.Server
 	grpcListener *listener.Owner
 	pushTimeout  time.Duration
 	drain        DrainFunc
@@ -48,7 +48,7 @@ type Server struct {
 	onDisconnect DisconnectHandler
 	gateways     *gateclient.Client
 	locator      locate.Locator
-	// identity publishes immutable lifecycle snapshots to request hot paths.
+	// identity 向请求路径发布不可变的服务身份快照。
 	identity atomic.Pointer[nodeIdentity]
 
 	// lifecycleMu 保护准备、启动和 lease 的交接；租约自身管理续租与清理。
@@ -57,13 +57,14 @@ type Server struct {
 	fatalCancel     context.CancelCauseFunc
 	state           lifecycleState
 	preparationDone chan struct{}
-	lease           *epochLease
+	lease           atomic.Pointer[epochLease]
 	requests        requestAdmission
+	deliveries      requestAdmission
 	stopOnce        sync.Once
 	stopErr         error
 }
 
-// DrainFunc runs once during Stop after the Node has stopped accepting internal requests.
+// DrainFunc 在入站请求排空后执行一次；返回前须停止业务的推送生产者。
 type DrainFunc func(ctx context.Context) error
 
 type nodeIdentity struct {
@@ -90,16 +91,16 @@ func NewServer(opts ...Option) (*Server, error) {
 	}
 	server.gateways = gateclient.New(o.clientTLS)
 	server.grpcListener = listener.New(o.network, o.address, o.listener)
-	grpcOptions := make([]kgrpc.ServerOption, 0, len(o.grpcOptions)+5)
+	grpcOptions := make([]grpc.ServerOption, 0, len(o.grpcOptions)+5)
 	grpcOptions = append(grpcOptions,
-		kgrpc.Network(o.network),
-		kgrpc.Address(o.address),
-		kgrpc.Listener(server.grpcListener),
-		kgrpc.Timeout(network.DefaultHandlerTimeout),
-		kgrpc.Middleware(recovery.Recovery()),
+		grpc.Network(o.network),
+		grpc.Address(o.address),
+		grpc.Listener(server.grpcListener),
+		grpc.Timeout(network.DefaultHandlerTimeout),
+		grpc.Middleware(recovery.Recovery()),
 	)
 	grpcOptions = append(grpcOptions, o.grpcOptions...)
-	server.grpcServer = kgrpc.NewServer(grpcOptions...)
+	server.grpcServer = grpc.NewServer(grpcOptions...)
 	v1.RegisterNodeServer(server.grpcServer, &forwardService{server: server})
 	return server, nil
 }

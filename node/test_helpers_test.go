@@ -36,7 +36,7 @@ func publishTestIdentity(server *Server, identity nodeIdentity) {
 	defer server.lifecycleMu.Unlock()
 	server.identity.Store(&identity)
 	if server.locator != nil && identity.epoch != "" {
-		server.lease = newEpochLease(server.locator, identity)
+		server.lease.Store(newEpochLease(server.locator, identity, time.Now().Add(DefaultNodeEpochTTL)))
 	}
 }
 

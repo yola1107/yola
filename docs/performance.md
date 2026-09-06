@@ -30,7 +30,7 @@ Gate lease 默认 TTL 为 60s，仅在 heartbeat 到达且剩余 lease 不超过
 
 每个 service 复用一个 WRR ClientConn；普通请求按权重选择 SubConn，粘性请求按 Registry instance ID 精确选择同一连接内的 SubConn，不为每个 NodeID 创建独立 ClientConn。Gateway 在请求入口设置 `RPCTimeout`，ClientConn 不再为同一次调用重复创建 timeout context。
 
-Node 请求接纳仅在终态 Stop 仍有活动请求时创建完成 channel；identity 以不可变 atomic snapshot 发布，请求读取不获取 lifecycle mutex。TCP/WebSocket 的连接表只在接纳、释放和停机交接时加锁，WebSocket Stop 直接移交 channel map，不构造快照 slice。Gateway 停机 worker 通过 atomic 索引动态领取已移交 Session，不分配同长 channel，也不把慢 Session 固定绑定到某个 worker。
+Node 请求读取原子发布的 identity 与 lease，不获取 lifecycle mutex。下列历史基线未覆盖新增的本地租约检查与 context 取消关联成本；排空和状态所有权见 [生命周期](./architecture.md#3-生命周期)。
 
 TCP Reader/Writer buffer 均按最大合法帧 `MaxProtoSize + 4B` 创建，即每个 4,100B、每连接固定约 8.0KiB，10 万连接理论约 782MiB；这只计算用户态 I/O buffer，不包含 socket、Session、发送队列和业务状态。WebSocket Upgrader 为每连接保留 4KiB read buffer，write buffer 通过 `WriteBufferPool` 借用，不应按每连接固定 8KiB 预算。真实连接 RSS 仍按 [I41](./issues.md#性能与验收限制) 验收。
 
@@ -43,10 +43,11 @@ TCP Reader/Writer buffer 均按最大合法帧 `MaxProtoSize + 4B` 创建，即�
 当前优化优先级为：
 
 1. **压测基线**：tracked Ludo 配置启用 debug console；即使文件日志关闭，console core 仍同步写 stdout，且 `slog.Debug` 的 `Player.Desc`、JSON 和棋盘路径等参数会在级别过滤前求值。容量测试先使用 `info` 或 `warn`，昂贵调试参数只在对应级别启用时构造，否则结果会混入日志 I/O 和无效计算。
-2. **Stateful Locator**：已绑定请求固定执行 3 次顺序 Redis GET，是已确认的延迟下限和 Redis QPS 放大器。不得缓存 UID binding 或删除 Node fencing；若真实 Redis profile 证明 epoch 重复读取占比高，可优先评估按 `(service, nodeID)` 合并同一时刻的 `LocateNodeEpoch` 请求。该方案不是时间缓存，只降低并发负载，不保证降低单请求延迟，并须避免首个调用者取消影响其他等待者。
-3. **Table Push**：配置 manager pusher 时，Ludo/Whot fanout 逐玩家同步执行 `PushToUID`，每个目标包含一次 `LocateGate` 和一次 Gateway gRPC，整个 job 持有共享 mailbox worker。该路径尚无真实业务 profile，属于高影响待验证项；若 `PushToUID` p99 和 mailbox queue wait 证实瓶颈，先在单次 fanout 内按座位数做有界并行，并等待全部结果后结束 job，以保持相邻 table job 的顺序。没有证据时不增加独立 worker pool、outbox 或新的投递语义。
-4. **WebSocket 分配与广播**：优化前 4KB request round-trip 为 29 alloc、约 29.5KB/op，alloc profile 中 `io.ReadAll` 占 70.8%；100,000 Session 的 pure fanout 为零分配，但默认 protobuf 会为每个 WebSocket Session 独立 `proto.Marshal`。当前默认 protobuf 已改为 `NextReader + bounded buffer pool`，并在单次 Gateway fanout 内共享 immutable prepared frame；fragmentation、超限帧、共享 frame 生命周期、显式 custom codec fallback、全局同名 codec 隔离和并发复用均有测试覆盖。默认 codec 由 WebSocket 包持有，Kratos 全局注册不能改变其 wire format 或输入生命周期；custom codec 必须通过 `Codec`/`WithCodec` 显式配置。剩余风险是发送队列只按 32 帧限流，尚未观测每连接排队字节和慢连接比例。
-5. **Heartbeat 波次**：续租只在 client heartbeat 到达时触发，没有跨 Session 并发整形；同步建连或依赖故障可能让大量请求同时进入 Redis pool。先记录 pool wait、续租 p99、失败和 lease 剩余量；确认同步波次后，优先使用保留安全余量的稳定 renewal jitter 并校准连接池，而不是直接增加会令 lease 排队过期的 semaphore 或退避状态机。
+2. **Stateful Locator**：先采集 Redis p99、pool wait 和请求占比。按 `(service, nodeID)` 合并同一时刻的 epoch 查询只可能降低并发负载，不保证降低单请求延迟，也不得让首个调用者取消影响其他等待者；删除查询的额外条件见 [I04](./issues.md#性能与验收限制)。Kratos 在 BeforeStart 申请 epoch 前已构建 instance，不能靠运行时修改 metadata map 代替身份准备与发布契约。
+3. **Table Push**：逐玩家同步 `LocateGate + Gateway gRPC` 会占用 mailbox worker，真实影响尚未 profile；按 [I45](./issues.md#性能与验收限制) 分段测量后，再决定是否在单个 table job 内有界并行。若仍需批量 Push，须另行定义逐 UID 结果和消息顺序，不能仅靠增加 worker、queue 或 outbox 认定问题已关闭。
+4. **WebSocket 分配与广播**：默认 codec 已使用 bounded pooled reader 和单次 fanout 共享的 prepared frame，进程内对照见下文。剩余风险是发送队列只按 32 帧限流，尚未观测每连接排队字节、慢连接比例及单边 RSS，按 [I41](./issues.md#性能与验收限制) 验收。
+5. **Heartbeat 波次**：同步建连或依赖故障可能让大量续租同时进入 Redis pool，按 [I34](./issues.md#性能与验收限制) 测量后再决定整形方式。
+6. **NATS 积压**：dispatch 暂无热点证据，慢 handler 的队列内存与 broker Payload 上限按 [I44](./issues.md#性能与验收限制) 验收。
 
 默认发送队列按帧数限制为 32，不区分 32B 与 4KB 消息。`32 × 100,000 × 4KB ≈ 12.8GB` 是逻辑 Payload 积压上限；默认 protobuf 的同一次广播现已跨连接共享一份 body，不会按连接重复持有这 12.8GB，但自定义 codec、逐连接独立消息以及 frame、channel、Session 和 socket 成本仍然存在。因此真实广播验收必须同时采集排队字节和慢连接比例。Gate client 的 endpoint 解析、全局锁和空闲 timer 存在可消除成本，但当前没有 profile 证据支持其优先于上述路径。
 
@@ -75,12 +76,7 @@ TCP Reader/Writer buffer 均按最大合法帧 `MaxProtoSize + 4B` 创建，即�
 | 10,000 | 333,956 | 0 | 0 |
 | 100,000 | 2,601,778 | 0 | 0 |
 
-fanout 在第一次扩容后复用 Session 快照和批次完成 channel，10 万 Session 稳态也没有每条广播堆分配。补充 synthetic WebSocket 编码档：每个 Session 按当前路径独立执行 `proto.Marshal`，仍不包含 channel、socket 和客户端读取。
-
-| 在线 Session | Payload | ns/broadcast | B/op | allocs/op |
-| ---: | ---: | ---: | ---: | ---: |
-| 100,000 | 256B | 16,673,333 | 28,800,112 | 100,001 |
-| 100,000 | 4,000B | 99,179,583 | 409,601,344 | 100,012 |
+fanout 在第一次扩容后复用 Session 快照和批次完成 channel，10 万 Session 稳态也没有每条广播堆分配。
 
 2026-08-21 在 commit `3035fb8` 使用 `-benchtime=1x -count=3` 复核：100,000 Session no-op fanout 为 2.23～2.42ms、0 alloc；256B WebSocket 编码为 14.69～16.51ms、约 28.8MB 和 100,001 次分配；4,000B 为 103.17～107.65ms、约 409.6MB 和约 100,000 次分配。该结果是 prepared frame 优化前的对照，确认 session 扫描不是首要成本，按连接重复编码才是广播热点。
 
@@ -94,7 +90,7 @@ fanout 在第一次扩容后复用 Session 快照和批次完成 channel，10 �
 
 prepared frame 消除了随 Session 数量线性增长的 protobuf marshal 与 Payload 分配，同时保持 no-op fanout 的零分配；显式 custom codec 继续逐连接编码，全局同名注册不能进入默认优化路径，避免假定相同 codec 名称具有相同 wire bytes 或输入生命周期。当前数据只关闭进程内重复编码成本，不关闭真实连接的网络、TLS、队列和 RSS 容量问题。
 
-prepared synthetic 档只证明 CPU 编码已不再随 10 万 Session 线性放大；它不是真实连接压测。当前开发机 `kern.maxfiles=122880`、`kern.maxfilesperproc=61440`，临时端口范围 `49152～65535`；单源 IP 对单 endpoint 无法提供 20,000 条并发连接。给 `lo0` 增加多个目标 IP alias 后，现有 press 可轮询不同 URL，使同一源 IP 按不同 TCP 四元组复用临时端口，在同机运行 10,000～50,000 档并观察相对曲线；但客户端与 Gateway 共享 CPU、内存和全局 FD，不能据此关闭单边容量验证。当前真实验收仍把 press 分散到 5 个独立出口 IP。按 protobuf 与帧头粗估，50,000 条连接、256B Payload 的单 Gateway 出站约 107Mbps；真实容量仍受 socket、TCP/TLS 开销、连接发送队列和慢客户端影响，关闭条件见 [I41](./issues.md#性能与验收限制)。
+prepared synthetic 档不是真实连接压测；同机运行 client/server 也不能证明 Gateway 单边容量。真实验收使用 5 个独立出口 IP 的 press；50,000 条连接每秒接收一条 256B 消息时，按 protobuf 与帧头粗估出站约 107Mbps，尚未计入 TCP/TLS 开销，具体条件见 [容量验收](#容量验收)。
 
 同日使用 `-benchtime=100000x` 复测 256B NATS 事件；本机档使用测试进程内嵌 NATS，VM 档为 Windows 到 `192.168.152.129` 的 NATS 2.10.29（无 TLS/认证）。固定次数下 B/op 会受 client buffer 扩容摊销影响，只用于同命令回归。
 
@@ -141,7 +137,7 @@ prepared synthetic 档只证明 CPU 编码已不再随 10 万 Session 线性放�
 - Session Push 默认最多等待 3s；慢 Push 可能占用共享 worker。
 - 选桌按少人桌优先做两阶段线性扫描；无可用桌时最多检查 `2 × tableNum`，不维护额外索引。
 
-2026-08-21 在 commit `3035fb8` 对 Ludo 代表实现复核：100/1,000/10,000 张全满桌分别约为 210ns/3.4µs/37.8µs，均为 0 alloc；Whot 使用相同扫描逻辑。当前数据不支持增加选桌索引。同步 Push 尚未通过真实业务 profile 确认为瓶颈，因此先采集 fanout 总耗时、`LocateGate`、Gateway gRPC 和 mailbox queue wait；证实后只在单个 table job 内做有界并行，不直接增加 worker pool 或 outbox。
+2026-08-21 在 commit `3035fb8` 对 Ludo 代表实现复核：100/1,000/10,000 张全满桌分别约为 210ns/3.4µs/37.8µs，均为 0 alloc；Whot 使用相同扫描逻辑。当前数据不支持增加选桌索引，同步 Push 的测量与验收见 [I45](./issues.md#性能与验收限制)。
 
 ## 容量验收
 
@@ -177,7 +173,7 @@ $env:YOLA_ETCD_INTEGRATION='<dedicated-etcd>:2379'
 $env:YOLA_NATS_URL='nats://<dedicated-nats>:4222'
 go test ./locate/redis -run '^$' -bench '^BenchmarkStatefulForwardRedisLookups$' -benchtime=1s -count=3 -benchmem -cpu=4
 go test ./event/nats -run '^$' -bench 'Benchmark(Publish|EndToEnd)$' -benchtime=100000x -count=1 -benchmem
-go test ./locate/redis ./gateway -run 'TestRedisIntegration|TestGatewayNodeIntegration|TestRedisFailureAndRecoveryIntegration' -count=1 -v
+go test ./gateway -run '^TestGatewayNodeIntegration$' -count=1 -v
 ```
 
 测试结果必须同时记录 commit 和环境；未记录时只能作为临时诊断，不能更新本页基线。

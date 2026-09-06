@@ -54,6 +54,8 @@ func (s *forwardService) Disconnect(ctx context.Context, in *v1.DisconnectReques
 		return nil, status.Error(codes.Unavailable, "node is draining")
 	}
 	defer s.server.requests.done()
+	ctx, cancel := s.server.lease.Load().requestContext(ctx)
+	defer cancel()
 	handler := s.server.onDisconnect
 	if handler == nil {
 		return &emptypb.Empty{}, nil

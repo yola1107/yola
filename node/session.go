@@ -58,8 +58,10 @@ func (s requestSession) BindNode(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	ctx, cancel := s.server.lease.Load().requestContext(normalizeContext(ctx))
+	defer cancel()
 	return mapNodeLocatorError(s.server.locator.BindNode(
-		normalizeContext(ctx), identity.serviceName, s.binding.UID, identity.nodeID,
+		ctx, identity.serviceName, s.binding.UID, identity.nodeID,
 	))
 }
 
@@ -71,17 +73,28 @@ func (s requestSession) UnbindNode(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	ctx, cancel := s.server.lease.Load().requestContext(normalizeContext(ctx))
+	defer cancel()
 	return mapNodeLocatorError(s.server.locator.UnbindNode(
-		normalizeContext(ctx), identity.serviceName, s.binding.UID, identity.nodeID,
+		ctx, identity.serviceName, s.binding.UID, identity.nodeID,
 	))
 }
 
 func (s requestSession) Push(ctx context.Context, command int32, msg proto.Message) error {
+	if !s.server.deliveries.admit() {
+		return status.Error(codes.Unavailable, "node is stopping or stopped")
+	}
+	defer s.server.deliveries.done()
+	if err := s.server.checkEpoch(); err != nil {
+		return err
+	}
 	if !validMessage(msg) {
 		return status.Error(codes.InvalidArgument, "push message is required")
 	}
 	ctx, cancel := context.WithTimeout(normalizeContext(ctx), s.server.pushTimeout)
 	defer cancel()
+	ctx, cancelEpoch := s.server.lease.Load().requestContext(ctx)
+	defer cancelEpoch()
 	return s.server.pushToGate(ctx, s.binding, command, msg)
 }
 
@@ -91,7 +104,7 @@ func (s requestSession) validatedIdentity() (nodeIdentity, error) {
 		!locate.ValidNodeLocation(identity.serviceName, s.binding.UID, identity.nodeID) {
 		return nodeIdentity{}, status.Error(codes.FailedPrecondition, "node identity is unavailable")
 	}
-	return identity, nil
+	return identity, s.server.checkEpoch()
 }
 
 func normalizeContext(ctx context.Context) context.Context {

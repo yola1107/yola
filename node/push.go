@@ -14,10 +14,13 @@ import (
 
 // PushToUID locates the player's current Gate binding and pushes a message.
 func (s *Server) PushToUID(ctx context.Context, uid string, command int32, msg proto.Message) error {
-	if !s.requests.admit() {
+	if !s.deliveries.admit() {
 		return status.Error(codes.Unavailable, "node is stopping or stopped")
 	}
-	defer s.requests.done()
+	defer s.deliveries.done()
+	if err := s.checkEpoch(); err != nil {
+		return err
+	}
 	if s.locator == nil {
 		return status.Error(codes.FailedPrecondition, "gate locator is not configured")
 	}
@@ -33,6 +36,8 @@ func (s *Server) PushToUID(ctx context.Context, uid string, command int32, msg p
 	}
 	ctx, cancel := context.WithTimeout(normalizeContext(ctx), s.pushTimeout)
 	defer cancel()
+	ctx, cancelEpoch := s.lease.Load().requestContext(ctx)
+	defer cancelEpoch()
 	lease, err := s.locator.LocateGate(ctx, serviceName, uid)
 	if err != nil {
 		return mapGateLocatorError(err)

@@ -4,16 +4,11 @@ Yola 是基于 Kratos 的分布式长连接接入框架。Gateway 持有 TCP/Web
 
 项目仍处于首版开发阶段，没有存量协议、数据或公开 API 的兼容承诺。当前实现优先保持单向、直接、可追踪的数据流，不为假设中的旧版本增加 fallback、feature gate 或重复协议。
 
-历史依赖方向调整相对基线 `d01450f428bc` 包含有意的 breaking change：`gateway.RedisLocator`、`node.RedisLocator` 改为 `Locator(locateredis.New(client))`；`clusterv1.GateRouteFromBinding`、`GateBindingFromRoute` 已删除，跨层调用方应在自身边界显式转换所需字段，不在 proto 包重新引入 locator 依赖。
-
 ## 文档
 
 - [架构设计](./architecture.md)：组件边界、网络与存储、生命周期、请求链路、粘性路由和默认参数。
-- [Gateway/Node 架构复审](./gateway-node-review.md)：2026-09-06 框架简化结果、状态所有权、启动回滚实证及后续重构方案；区分已实施与候选设计。
-- [Gateway/Node 重构实施](./gateway-node-refactor.md)：Node 租约所有权、原生 Kratos 装配边界及本轮验证记录。
 - [EventBus 接入](./eventbus.md)：Gateway/Node 在线实时 Pub/Sub、NATS 生命周期和 Gateway 有界并行 fanout。
 - [当前限制](./issues.md)：未关闭的部署约束及待验证、待设计事项。
-- [根模块代码审查](./code-review.md)：最近一次审查记录与持续职责边界；历史验证不代表当前通过。
 - [性能基线](./performance.md)：当前热路径成本、诊断优先级、可复现 benchmark 和容量验收口径。
 - [示例说明](../examples/README.md)：Gateway、Stateful Whot、Stateless Ludo 和 Client 的本地运行方式。
 - [测试模块](../test/README.md)：测试服务的配置与启动；Ludo 压测见 [Ludo README](../test/ludo/README.md)。
@@ -39,10 +34,10 @@ Gateway 保存物理 Session。Locator 保存带租约的 `(service, UID) -> Gat
 2. `gateway/auth.go` → `gateway/takeover.go`：认证、BindGate、旧连接 Kick
 3. `gateway/forward.go` → `gateway/backend.go` / `gateway/balancer.go` / `gateway/resolver.go`：路由、粘性定位、负载均衡、服务发现与 gRPC Forward
 4. `node/dispatch.go` → `node/session.go`：fencing、handler、request-scoped Session
-5. `node/push.go` → `gateway/cluster.go`：Push/Kick 回程
+5. `node/push.go` → `gateway/cluster.go`：Push 回程与目标路由校验
 6. `gateway/lifecycle.go` / `node/lifecycle.go`：BeforeStart / Start / Stop（读完热路径后再看）
 
-包职责与不变量见 [架构设计](./architecture.md) 和 [根模块代码审查](./code-review.md)。
+包职责与不变量见 [架构设计](./architecture.md)；未关闭问题集中在 [当前限制](./issues.md)，历史审查与实施过程由 Git 保留。
 
 ## 快速开始
 
@@ -124,7 +119,7 @@ app := kratos.New(
 )
 ```
 
-Stateless Node 不配置 Locator，`Metadata()` 为 nil。`BeforeStart` 完成 identity、Locator 检查和按需 epoch 注册，`Start` 开放 gRPC 服务并按需启动 epoch 续租。EventBus 由应用组装层构造并关闭；持有 Table、玩家或后台任务的 Node 通过 `node.Drain` 注入业务关闭。Stateful Node instance ID 必须稳定且在线唯一。完整约束见 [架构设计](./architecture.md)。
+Stateless Node 不配置 Locator，`Metadata()` 为 nil；Stateful Node instance ID 必须稳定且在线唯一。持有 Table、玩家或后台任务的 Node 通过 `node.Drain` 注入业务关闭：Drain 期间仍可推送，返回前必须停止推送生产者。启动核验、租约失效和排空契约见 [生命周期](./architecture.md#3-生命周期)。
 
 ## 开发与验证
 
