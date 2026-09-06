@@ -6,7 +6,7 @@ Yola 是基于 Kratos 的分布式长连接接入框架。Gateway 持有 TCP/Web
 
 ## 文档
 
-- [架构设计](./architecture.md)：组件边界、网络与存储、生命周期、请求链路、粘性路由和默认参数。
+- [架构设计](./architecture.md)：组件边界、网络与存储、生命周期、请求链路、粘性路由、默认参数与超时职责。
 - [EventBus 接入](./eventbus.md)：Gateway/Node 在线实时 Pub/Sub、NATS 生命周期和 Gateway 有界并行 fanout。
 - [当前限制](./issues.md)：未关闭的部署约束及待验证、待设计事项。
 - [性能基线](./performance.md)：当前热路径成本、诊断优先级、可复现 benchmark 和容量验收口径。

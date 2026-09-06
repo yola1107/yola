@@ -18,7 +18,8 @@ cmd -> server -> service -> biz <- data
 从 `test` module 根目录运行：
 
 ```bash
-go run ./ludo/cmd/ludo-server -conf ./ludo/configs -id ludo-1
+go build -o ./bin/ludo-server ./ludo/cmd/ludo-server
+./bin/ludo-server -conf ./ludo/configs -id ludo-1
 ```
 
 `-conf` 可指向 YAML 文件或目录；默认配置是 `ludo/configs/config.yaml`。Redis、etcd、gRPC、日志和房间参数分别位于 `data`、`server.grpc`、`log`、`room`。Tracked YAML 不保存口令；Redis 开启认证时，在仓库外的配置副本中设置 `data.redis.password`，再用 `-conf` 加载。客户端会在启动阶段执行 `PING`，缺少密码会直接返回 `NOAUTH`。
@@ -39,12 +40,15 @@ Logout -> Table mailbox 移出 -> Save -> Unbind -> 删除 Player
 
 `LoginReq.tableID` 用于首次入座：`<= 0` 保留自动选桌，优先人数较少的可入座桌；正数只进入当前 Node 内的指定桌，不存在返回 `NoTableSpecified / NO_TABLE_SPECIFIED`，已满返回 `TableNoSpace / TABLE_NO_SPACE`。入座仍在目标桌 mailbox 内检查空位和写入座位；队列满、超时或入座执行失败沿用现有错误处理，不自动改投其他桌。已有在桌玩家登录仍重连原桌，传入其他桌号不会切桌；`type` 和 `chairID` 未增加新语义。桌号是 Node 内的编号，不负责首次登录时跨 Node 选服。
 
+首次入座和重连的 mailbox 等待上限为 5s，与失败清理的独立 2s 预算分开。截止时尚未开始的任务会被取消，后续不会迟到入座；已经开始的任务仍等待完成，保持桌内状态和响应结果一致。该上限不包含创建玩家、BindNode，也不是已经开始执行的 Seat 的硬截止。当前 YAML 的 Node handler 为 5s，压测夹具为 15s；具体装配与复现条件见 [测试模块](../README.md#本地启动)，各层关系和待设计的收敛方案见 [超时职责](../../docs/architecture.md#63-请求预算与超时职责)。
+
 ## 当前 `press` 入口
 
 压测客户端读取同一配置源中的 `loadTest.press`：
 
 ```bash
-go run ./ludo/cmd/ludo-client -conf /absolute/path/to/ludo-pressure.yaml -log-level info
+go build -o ./bin/ludo-client ./ludo/cmd/ludo-client
+./bin/ludo-client -conf /absolute/path/to/ludo-pressure.yaml -log-level info
 ```
 
 建议使用仓库外的最小配置，不要为了压测修改或提交 tracked 配置：

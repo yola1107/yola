@@ -246,6 +246,33 @@ Gateway 不缓存玩家 Node binding 或未绑定结果。Gate close、takeover 
 
 `network.DefaultHandlerTimeout` 统一为 3s，供 TCP/WebSocket 和 Gateway/Node 内部 gRPC 限制单次入站 handler；调用方更短的 deadline 仍优先。TCP/WebSocket 可用 `Timeout`、Node 可用 `HandlerTimeout` 显式覆盖。`AuthTimeout` 只限制未认证连接的总生命周期，不能替代单次 handler deadline。TCP Client read timeout 必须大于 ping interval。TCP/WebSocket Client 都是单连接生命周期，断开后由调用方创建新 Client。连接总量与 per-IP 上限相互独立，压测和经代理部署必须分别核对。
 
+### 6.3 请求预算与超时职责
+
+当前超时分散来自两类职责：同一请求在各入口受到独立上限保护，入桌、推送和失败清理又各有生命周期。沿同一个 context 派生的 deadline 取最早截止时间；后续层重新设置更长的 `WithTimeout` 不会延长父 context。因此只放宽 Gateway RPC，仍可能被 WebSocket 或 Node 默认的 3s 截断。
+
+| 位置与所有者 | 当前预算 | 覆盖范围与传递边界 |
+| --- | --- | --- |
+| WebSocket Client `Request` | 默认 30s | 限制客户端等待响应；外部 `Proto` 没有 deadline 字段，客户端请求截止时间不随消息传入服务端 |
+| TCP/WebSocket `NewInvoker` | 默认 3s；测试 Gateway 由 `-rpc-timeout` 覆盖 | 为单条入站消息创建 handler context，Gateway Forward 继承它 |
+| Gateway `Forward` | `RPCTimeout` 默认 3s | 从入站 context 派生，覆盖路由定位和 Node RPC；内部 gRPC Client 已关闭 Kratos 隐式 2s 上限 |
+| Node gRPC handler | 框架默认 3s；Ludo YAML 为 5s；Ludo 压测夹具为 15s | gRPC 传播上游 deadline，Node `HandlerTimeout` 进一步限制处理时间 |
+| Ludo 首次入座、重连 | `playerEnterTimeout = 5s` | BindNode 后从独立 background context 创建；截止时只能取消尚未开始的 mailbox 任务，已开始则等待结果 |
+| Ludo 入座失败清理 | `playerCleanupTimeout = 2s` | 失败后创建新的独立 context 执行解绑，不能复用已过期的入座 context |
+| Node `PushToUID` / Session `Push` | `PushTimeout` 默认 3s | 覆盖单次 LocateGate 与回程 RPC；桌推送当前从 background context 发起，每次 Push 分别计时 |
+
+代码入口为 [请求封套](../api/protocol/v1/protocol.proto)、[入站 handler](../network/invoke.go)、[Gateway Forward](../gateway/forward.go)、[Node 装配](../node/server.go)、[Ludo 入座](../test/ludo/internal/biz/handle.go)、[mailbox 等待](../test/internal/mailbox/group.go) 和 [Node Push](../node/push.go)。测试 Gateway 已把同一参数传给 WebSocket handler 和 Gateway RPC；游戏 Node 仍由各自配置装配。Gateway 的 `RPCTimeout` 还用于建连、续租和部分生命周期操作，直接修改它会影响这些路径。
+
+Ludo 入座预算不包含创建玩家和 BindNode，且 `Seat` 中多次同步 Push 可以使已开始的任务超过 5s。外层 deadline 到期也不能撤销已开始的桌内操作；Node handler 与入座等待都为 5s 时，不能保证排队后还有足够时间执行、清理和返回。单 Gateway 四轮成功数据使用的 WebSocket/Gateway/Node 预算均为 15s，不能据此证明 YAML 的 5s Node 配置具有相同突发容量，详见 [参数对照](./performance.md#ludo-单-gateway-参数对照)。
+
+下一步收敛方案为 **待设计，尚未实施**：
+
+1. 先在应用装配处集中表达请求预算，明确入口、Forward 和 Node 的有效值及覆盖关系；复用现有参数，不新增一个涵盖所有超时的全局配置。跨进程按同一部署策略设置，框架不依赖 Ludo 的入座常量。
+2. 请求链以传入 deadline 为准，内部仅按职责缩短；是否将“每层默认上限”改为“无 deadline 时才补默认值”，须单独确定 Node 独立调用及现有 `HandlerTimeout` 契约。删除现有上限会改变行为，不能作为等价清理直接实施。
+3. 明确排队准入与已开始操作的边界，再评估未开始任务是否使用 `min(请求剩余时间, 入座等待上限)`。保持桌内串行、开始后完成或回滚的语义；不能直接把所有 background context 换成请求 context。
+4. 失败清理继续使用独立且有界的预算。Push、Auth、读写、租约和停服保留各自职责；梳理 `RPCTimeout` 的非请求用途后再决定是否分离，避免改请求预算时连带改变生命周期。
+
+验收须覆盖较短父 deadline、无 deadline 的调用、排队期间取消、开始与取消竞争、独立清理、重连 Session 归属，以及真实 WebSocket/gRPC 的错误传播和逐 UID 顺序；补齐同配置负载验证后再选择默认预算。跟踪项见 [I46](./issues.md#功能与语义缺口)。
+
 ## 7. 部署与安全约束
 
 - Gateway 与 Node 必须使用独立 App 和 Registry identity；Stateful Node instance ID 必须稳定且在线唯一。

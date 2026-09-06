@@ -18,6 +18,7 @@ import (
 )
 
 const (
+	playerEnterTimeout            = 5 * time.Second
 	playerCleanupTimeout          = 2 * time.Second
 	playerCleanupOperationTimeout = 500 * time.Millisecond
 	playerCleanupWorkers          = 16
@@ -247,8 +248,9 @@ func (uc *Usecase) reconnect(ctx context.Context, sess player.Session, p *player
 	if err := sess.BindNode(ctx); err != nil {
 		return nil, fmt.Errorf("bind reconnecting player %d: %w", p.GetPlayerID(), err)
 	}
-	lifecycleCtx, cancelLifecycle := context.WithTimeout(context.Background(), playerCleanupTimeout)
-	err := uc.tm.CallPlayer(lifecycleCtx, p, func(gameTable *table.Table) error {
+	entryCtx, cancelEntry := context.WithTimeout(context.Background(), playerEnterTimeout)
+	defer cancelEntry()
+	err := uc.tm.CallPlayer(entryCtx, p, func(gameTable *table.Table) error {
 		previousSession := p.GetSession()
 		p.UpdateSession(sess)
 		if err := gameTable.ReEnter(p); err != nil {
@@ -262,12 +264,12 @@ func (uc *Usecase) reconnect(ctx context.Context, sess player.Session, p *player
 	if err != nil {
 		var unbindErr error
 		if uc.pm.GetByID(p.GetPlayerID()) == p && p.GetTableID() != player.TableIDDetached {
-			unbindErr = sess.UnbindNode(lifecycleCtx)
+			cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), playerCleanupTimeout)
+			defer cancelCleanup()
+			unbindErr = sess.UnbindNode(cleanupCtx)
 		}
-		cancelLifecycle()
 		return nil, errors.Join(fmt.Errorf("re-enter player %d: %w", p.GetPlayerID(), err), unbindErr)
 	}
-	cancelLifecycle()
 	return loginResponse(p, codes.Success, "ReEnter"), nil
 }
 
@@ -310,9 +312,9 @@ func (uc *Usecase) enterRoom(ctx context.Context, sess player.Session, uid int64
 		return nil, fmt.Errorf("bind player %d: %w", uid, err)
 	}
 
-	lifecycleCtx, cancelLifecycle := context.WithTimeout(context.Background(), playerCleanupTimeout)
-	defer cancelLifecycle()
-	code, msg, enterErr := uc.tm.Enter(lifecycleCtx, p, tableID)
+	entryCtx, cancelEntry := context.WithTimeout(context.Background(), playerEnterTimeout)
+	defer cancelEntry()
+	code, msg, enterErr := uc.tm.Enter(entryCtx, p, tableID)
 	if enterErr == nil && code == codes.Success {
 		return loginResponse(p, code, msg), nil
 	}
@@ -321,7 +323,10 @@ func (uc *Usecase) enterRoom(ctx context.Context, sess player.Session, uid int64
 	retainForCleanup := managed && p.GetTableID() == player.TableIDDetached
 	var unbindErr error
 	if managed && !retainForCleanup {
-		unbindErr = sess.UnbindNode(lifecycleCtx)
+		// 入桌可能已超时，解绑使用独立预算，不能继承失效的 context。
+		cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), playerCleanupTimeout)
+		defer cancelCleanup()
+		unbindErr = sess.UnbindNode(cleanupCtx)
 		uc.pm.RemoveIfSame(p)
 	}
 	if !retainForCleanup {

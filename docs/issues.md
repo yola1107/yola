@@ -7,6 +7,7 @@
 | ID | 优先级 | 状态 | 影响 | 处理与验收 |
 | --- | --- | --- | --- | --- |
 | I36 | P1 | 待设计 | 新认证覆盖 Gate binding 后同步 best-effort Kick 旧连接；本地不再丢弃 Kick 任务，但远端失败时旧连接在 lease 失效前仍可 Forward，当前不保证同 UID 强单活 | 明确业务是否要求强单活；若要求，由框架统一校验当前 Gate binding 并补跨 Gateway Kick 失败测试，不把 fencing 分散到每个业务 handler |
+| I46 | P1 | 待设计 | 请求上限分布在 Transport、Gateway 和 Node；Ludo 入座使用独立 5s context，已开始的桌任务可能在外层截止后继续。当前 Node YAML 为 5s，单 Gateway 压测夹具为 15s，容量结论不能直接复用 | 按 [超时职责与收敛方案](./architecture.md#63-请求预算与超时职责) 集中装配请求预算，明确 deadline 继承、排队取消和已开始操作语义；保留独立清理与生命周期预算，补齐取消边界、真实链路及同配置负载验证后确定默认值 |
 
 ## 运行与部署限制
 
@@ -23,7 +24,7 @@
 | ID | 优先级 | 状态 | 影响 | 验证条件 |
 | --- | --- | --- | --- | --- |
 | I41 | P1 | 待验证 | WebSocket reader 与广播编码复用已降低进程内分配，数据见 [性能基线](./performance.md#最近基线)；连接队列仍只按帧数限制，独立消息、frame/channel/socket 与真实 RSS 尚未验收 | 按 [容量验收](./performance.md#容量验收) 用单 Gateway、5 个独立出口 IP 完成 10,000～50,000 五档，比较每新增 10,000 条连接的资源增量、drop 和 p99；据此决定排队字节预算、慢连接策略和 TCP buffer。10 万真实连接不属于关闭条件 |
-| I45 | P1 | 待验证 | Ludo/Whot 保持固定 `min(tableNum, 16)` 和桌内串行。[真实 WebSocket 验证](./performance.md#真实-websocket-与游戏链路) 中，1,000 桌每秒 8,000 条 Push 的两分钟样本数量与顺序匹配，但 Ludo 30s 样本仍有约 868ms 的客户端 p99 桶上界；100 桌真实游戏通过，500 桌目标规模在启动阶段分别出现 Login 超时和 Scene mailbox 满，1,000 桌真实游戏未运行 | 先分离登录入桌压力与稳定对局负载，独立采集真实游戏 mailbox wait/reject、候选桌竞争、同步发送等待，并复现固定速率长尾；补齐客户端失败窗口、百人热点桌和长期 SLO。若同步发送仍是瓶颈，再评估定向批量定位和 RPC，保留逐 UID 结果、binding 校验、同玩家顺序与失败反馈时机；无进一步证据不增加 outbox 或放大队列 |
+| I45 | P1 | 待验证 | Ludo/Whot 默认保持 `min(tableNum, 16)` 和桌内串行。[入座等待 5s、外层 15s 的单 Gateway 对照](./performance.md#ludo-单-gateway-参数对照) 中，16/128/64 和 32/64/64 各两轮均完成 4,000 人入座及投递检查，Login p99 分别为 2.98～4.47s、2.66～2.75s。1,000 桌固定速率尾延迟、完整对局及长期 SLO 仍未通过验收 | 继续量化同步推送占用共享 worker 的成本，保留每桌顺序、逐 UID 结果和失败反馈时机；补齐完整对局、客户端失败窗口、百人热点桌和长期 SLO。突发入座对照不代表稳态延迟验收；无进一步证据不增加 outbox 或放大队列 |
 | I44 | P1 | 待验证 | NATS 默认每订阅队列 256、业务 Payload 上限 64 KiB，按默认上限计算的 Payload 积压约 16 MiB；本机外置 NATS 测得大 Payload 的 Go heap 增长接近排队 Payload 字节数。超限消息在出队时才校验，实际上限仍受 broker `max_payload` 影响 | 生产对齐 broker `max_payload`；压测记录队列 drop、RSS 与 handler p99，仅在存在不同容量证据时显式覆盖 `WithQueueCapacity`/`WithMaxPayloadBytes` |
 | I04 | P1 | 约束 | 已绑定 Stateful Forward 固定执行 3 次顺序 Redis GET：Gateway 查询 Node binding 与 epoch，Node 再查询 binding 做 fencing；本地租约保护已实现，尚未减少远程查询 | 容量按 `3 × Stateful QPS` 预算，验证真实请求占比、Redis p99 和连接池；不得时间缓存 binding/epoch 或删除 Node fencing。合并同一时刻的 epoch 查询须验证调用者取消与失败恢复；移除 epoch GET 则还需业务副作用 fencing 和 `(NodeID, epoch, endpoint)` 原子发布，覆盖网络分区、续租阻塞、同 ID 新旧进程、旧 Registry 快照和空实例集 |
 | I34 | P1 | 约束 | 一次到期 heartbeat 最多续租一次；失败后由后续 heartbeat 重试，没有跨 Session 并发整形，同步波次按连接数线性放大 | 生产按真实 heartbeat 分布、Redis pool wait、续租 p99、超时、lease 剩余量和连接淘汰做故障容量验收；确认同步波次后优先评估保留安全余量的稳定 renewal jitter 和连接池校准，没有证据时不增加 semaphore 或退避状态机 |

@@ -56,6 +56,15 @@ func TestGameDelivery(t *testing.T) {
 	}
 }
 
+// TestTableAdmission 单独验证 4,000 名玩家定桌入座，不以收到本局发牌作为入座成功条件。
+func TestTableAdmission(t *testing.T) {
+	logger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(logger) })
+	runGameDelivery(t, 1000, false, 0)
+}
+
+// runGameDelivery 在 duration 为零时仅验证入座、场景与消息投递，否则继续验证全员开局及对局。
 func runGameDelivery(t *testing.T, tableCount int, robots bool, duration time.Duration) {
 	t.Helper()
 	playerCount := tableCount * 4
@@ -74,10 +83,11 @@ func runGameDelivery(t *testing.T, tableCount int, robots bool, duration time.Du
 	require.NoError(t, err)
 	t.Cleanup(cleanup)
 	game := service.NewService(usecase)
-	probe := pushbench.StartGame(t, "ludo", client, game.RegisterNode, game.Drain, playerCount)
+	probe := pushbench.StartGame(t, "ludo", client, game.RegisterNode, game.Drain, playerCount, 15*time.Second)
+	// 到达率由 Batch/Interval 控制，有限玩家集不因压测端启动池满而漏发 Login。
 	runner := NewRunner(Press{
-		URL: probe.Endpoint, Open: true, Scenario: scenarioPlay, Num: int32(playerCount), Batch: []int32{20, 20}, Interval: 100,
-		StartID: uidStart, UIDCount: int64(playerCount), Concurrency: 100, ActionConcurrency: 1000, MinMoney: 10000, MaxMoney: 20000,
+		URL: probe.Endpoint, Open: true, Scenario: scenarioPlay, Num: int32(playerCount), Batch: []int32{400, 400}, Interval: 10,
+		StartID: uidStart, UIDCount: int64(playerCount), Concurrency: playerCount, ActionConcurrency: 1000, MinMoney: 10000, MaxMoney: 20000,
 	})
 	t.Cleanup(runner.Stop)
 	var actions atomic.Bool
@@ -87,6 +97,7 @@ func runGameDelivery(t *testing.T, tableCount int, robots bool, duration time.Du
 	var results, robotMoves atomic.Uint64
 	runner.connectUser = func(user *User) error {
 		index := int(user.id - uidStart)
+		user.targetTableID = int32(index/4 + 1)
 		handlers := map[int32]websocket.PushHandler{
 			int32(v1.GameCommand_CmdSendCardPush): user.OnSendCardPush,
 			int32(v1.GameCommand_CmdScenePush):    user.OnScenePush,
@@ -120,6 +131,9 @@ func runGameDelivery(t *testing.T, tableCount int, robots bool, duration time.Du
 		}
 		codec := probe.Codec(func(command int32, body []byte) error {
 			tableID, err := inspectGameResponse(command, body, user.id)
+			if err == nil && v1.GameCommand(command) == v1.GameCommand_CmdLogin && tableID != user.targetTableID {
+				return fmt.Errorf("login table: uid=%d got=%d want=%d", user.id, tableID, user.targetTableID)
+			}
 			if tableID > 0 {
 				tableIDs[index].Store(tableID)
 			}
@@ -135,21 +149,25 @@ func runGameDelivery(t *testing.T, tableCount int, robots bool, duration time.Du
 		user.client.Store(connection)
 		return nil
 	}
+	startupStarted := time.Now()
 	require.NoError(t, runner.Start())
 	require.Eventually(t, func() bool {
-		if probe.Err() != nil {
-			return true
-		}
-		for index := range playerCount {
-			if !started[index].Load() {
-				return false
+		finished := runner.closedPlayers.Load()
+		for _, user := range runner.userSnapshot() {
+			if user.stateValue() == userActive {
+				finished++
 			}
 		}
-		return true
-	}, 90*time.Second, 20*time.Millisecond, "every player must receive a real game start")
+		return finished == int64(playerCount)
+	}, 90*time.Second, 20*time.Millisecond, "every player startup must finish before comparing results")
+	t.Logf("GAME startup: tables=%d players=%d directed=true elapsed=%s tracked=%d rejected=%d closed=%d stages=%v",
+		tableCount, playerCount, time.Since(startupStarted), runner.userCount(), runner.startupRejected.Load(), runner.closedPlayers.Load(), runner.stageReports())
 	require.NoError(t, probe.Err())
+	require.Zero(t, runner.startupRejected.Load(), "pressure startup pool rejected a player before login")
+	require.Zero(t, runner.closedPlayers.Load(), "pressure player failed startup or disconnected")
 	seats := make(map[int32]int, tableCount)
 	for index := range playerCount {
+		require.Equal(t, int32(index/4+1), tableIDs[index].Load())
 		seats[tableIDs[index].Load()]++
 	}
 	require.Len(t, seats, tableCount)
@@ -157,17 +175,10 @@ func runGameDelivery(t *testing.T, tableCount int, robots bool, duration time.Du
 		require.Positive(t, tableID)
 		require.Equal(t, playerCount/tableCount, count)
 	}
-	probe.ResetMeasurements(t)
-	t.Logf("GAME phase: tables=%d started=%s duration=%s", tableCount, time.Now().Format(time.RFC3339Nano), duration)
-	timer := time.NewTimer(duration)
-	defer timer.Stop()
-	select {
-	case <-timer.C:
-	case <-t.Context().Done():
-		t.Fatal(t.Context().Err())
+	if duration > 0 {
+		measureGamePlay(t, probe, started, duration)
 	}
 	actions.Store(false)
-	probe.ReportMeasurements(t)
 	// 等待已进入玩家事件区的同步操作退出，保持接收端存活直至服务排空。
 	for _, user := range runner.userSnapshot() {
 		user.eventMu.Lock()
@@ -196,6 +207,28 @@ func runGameDelivery(t *testing.T, tableCount int, robots bool, duration time.Du
 	}
 	t.Logf("GAME setup: game=ludo tables=%d players=%d robots=%t workers=%d duration=%s result_pushes=%d robot_move_pushes=%d verified_scenes=%d commands=%v",
 		tableCount, playerCount, robots, min(tableCount, 16), duration, results.Load(), robotMoves.Load(), len(verified), runner.commandCounts())
+}
+
+func measureGamePlay(t *testing.T, probe *pushbench.GameProbe, started []atomic.Bool, duration time.Duration) {
+	t.Helper()
+	require.Eventually(t, func() bool {
+		for index := range started {
+			if !started[index].Load() {
+				return false
+			}
+		}
+		return true
+	}, 90*time.Second, 20*time.Millisecond, "every player must receive a real game start")
+	probe.ResetMeasurements(t)
+	t.Logf("GAME phase: players=%d started=%s duration=%s", len(started), time.Now().Format(time.RFC3339Nano), duration)
+	timer := time.NewTimer(duration)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+	case <-t.Context().Done():
+		t.Fatal(t.Context().Err())
+	}
+	probe.ReportMeasurements(t)
 }
 
 func inspectGameResponse(command int32, body []byte, uid int64) (int32, error) {

@@ -26,27 +26,34 @@ Redis 客户端创建时会立即执行 `PING`（`test/internal/xredis/redis.go`
 先启动 Redis、etcd 和 Core NATS，再从 `test` module 根目录启动 Gateway：
 
 ```powershell
-go run ./gateway `
+go build -o ./bin/gateway.exe ./gateway
+./bin/gateway.exe `
   -redis-addr 127.0.0.1:6379 `
   -redis-db 0 `
   -etcd-endpoints 127.0.0.1:2379 `
   -etcd-prefix /yola/test `
-  -advertise-host 127.0.0.1
+  -advertise-host 127.0.0.1 `
+  -rpc-timeout 5s
 ```
 
 Redis 无认证时省略 `-redis-password`；开启认证时从本地 secret 来源注入。再启动游戏 Node：
 
 ```powershell
-go run ./ludo/cmd/ludo-server -conf ./ludo/configs -id ludo-1
-go run ./whot/cmd/whot-server -conf ./whot/configs
+go build -o ./bin/ludo-server.exe ./ludo/cmd/ludo-server
+go build -o ./bin/whot-server.exe ./whot/cmd/whot-server
+./bin/ludo-server.exe -conf ./ludo/configs -id ludo-1
+./bin/whot-server.exe -conf ./whot/configs
 ```
+
+上述 Gateway 请求预算为 5s，Ludo YAML 的 Node handler 也是 5s；Whot 保持自身配置。复现本轮 Ludo 突发入座对照时，须在仓库外的配置副本中把 `server.grpc.timeout` 设为 15s，并将 Gateway 改用 `-rpc-timeout 15s`。入座等待仍为 5s；[超时职责](../docs/architecture.md#63-请求预算与超时职责) 说明了这些预算的边界，不能把压测夹具结果直接当作默认配置容量。
 
 Gateway 的 `-ws-max-connections` 默认 10,000，`-ws-max-connections-per-ip` 默认 **100**（与框架 `DefaultMaxConnPerIP` 一致）。单机压测通常需显式提高 per-IP；总量超过 10,000 时必须同时调整两项，并按每个 Gateway 的实际分流目标设置。硬上限未对齐时，连接拒绝不能作为服务容量结论。
 
 真实广播容量探针默认连接 `nats://127.0.0.1:4222`；`-nats-url` 可覆盖地址。每个 Gateway 实例订阅 `yola.gateway.press.broadcast.v1`，并在 Kratos `AfterStart` 后每秒发布一个 256B 时间戳 Payload；本地 EventBus 和广播接纳队列容量均固定为 256。Gateway 每 15s 输出广播 accepted/completed/drop、队列深度、Go heap、GC 和 goroutine。多个 Gateway 会分别发布并接收彼此的事件，使单连接到达率按 Gateway 数量倍增；I41 的单机基线只启动一个 Gateway。该 Topic、command 与 Payload 只属于测试协议，不是生产业务契约。
 
 ```bash
-go run ./gateway \
+go build -o ./bin/gateway ./gateway
+./bin/gateway \
   -nats-url nats://127.0.0.1:4222 \
   -ws-max-connections 52000 \
   -ws-max-connections-per-ip 12000
@@ -90,12 +97,22 @@ go test -p=1 ./ludo/internal/biz/table ./whot/internal/biz/table -run '^TestTabl
 
 `TestGameDelivery` 装配真实游戏 Usecase、Redis 玩家仓库、Node、Gateway 和独立 etcd namespace，使用原压测玩家驱动 Login、Scene 和游戏操作。Ludo 保持同步操作，Whot 保持异步请求与响应 mailbox；测试连接接入观测 codec，不修改业务协议。场景包括两桌烟测、一名真人与两名服务器机器人，以及 100、500、1,000 桌各四名真人。
 
+Ludo 测试按 `tableID = (UID - uidStart) / 4 + 1` 指定入座，每四个连续 UID 对应一桌，1,000 桌对应 4,000 名真人；验证 Login 返回桌号与分配一致，单独输出启动耗时和 Connect/Login/Scene/Ready 指标。每 10ms 新增 400 人，4,000 人计划约 100ms 发起完，实际发起与完成受调度和依赖处理速度影响。启动池容量按本轮玩家总数设置，避免有限 UID 在压测端因池满而漏发；等待全部启动成功或失败后统一统计，拒绝、掉线或响应错误仍使测试失败。普通 press 入口与 Whot 保留自动选桌。
+
+`TestTableAdmission` 只验收 4,000 人进入指定的 1,000 桌，查询每桌 Scene 并核对座位与消息投递；它不要求所有人已经参与本局。`TestGameDelivery` 先检查入座，再等待全员收到开局推送后采集对局指标。两种验收都保留自动准备和既有客户端动作，入座阶段仍可能与已开局桌的操作重叠。Ready 阶段在 Scene 已表明玩家准备或游戏中时直接成功，阶段成功数不等于 Ready RPC 数。
+
+Ludo 夹具的 WebSocket handler、Gateway Forward 和 Node handler 预算均显式设为 15s，配合业务入座/重连等待上限 5s 和独立清理预算 2s；Whot 夹具保持 3s。客户端请求默认 30s。夹具不读取游戏 YAML 的 Node handler 配置；独立运行服务时按 [本地启动](#本地启动) 装配，职责见 [超时预算](../docs/architecture.md#63-请求预算与超时职责)。测试参数和历史 2s、10s 入座预算不同，跨版本比较时须注明超时链路。
+
 ```powershell
 $env:YOLA_ETCD_INTEGRATION = '<dedicated-etcd>:2379'
 $env:YOLA_GAME_DURATION = '30s'
 go test -p=1 ./ludo/tools/press ./whot/tools/press -run '^TestGameDelivery$' -count=1 -v -timeout=20m
 # 只验证小规模真人和机器人；Linux 可补 -race，race 数据不用于性能比较。
 go test -p=1 ./ludo/tools/press ./whot/tools/press -run '^TestGameDelivery/(smoke|robots)$' -count=1 -v -timeout=5m
+# 只验证 Ludo 定桌入座与对局，按 100、500、1,000 桌升档。
+go test ./ludo/tools/press -run '^TestGameDelivery/tables=' -count=1 -v -timeout=10m
+# 单独验证 4,000 人进入指定的 1,000 桌，核对座位与消息投递，不要求全员已参与本局。
+go test ./ludo/tools/press -run '^TestTableAdmission$' -count=1 -v -timeout=5m
 ```
 
 真实游戏测试等待所有玩家收到开局推送后计时，默认 30s、允许 1s～30m；按已有游戏反馈立即操作，属于闭环负载，与每桌每秒一次的固定速率基准分别解释。结束后查询每桌 Scene，核对人数、UID 归属、座位唯一性和在线状态；停止服务生产者后，对每个 UID 的 Node Push 与客户端回调做数量及 SHA-256 流摘要比对，摘要包含 command、长度与内容边界。机器人场景还要求观察到机器人实际动作；结算消息单独计数，短样本不保证每桌完成整局。每款游戏遇到首个失败场景即停止升档；延长采样时间时须按所选场景总时长增大 `-timeout`。

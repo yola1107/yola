@@ -79,7 +79,7 @@ func runGameDelivery(t *testing.T, tableCount int, robots bool, duration time.Du
 	require.NoError(t, err)
 	t.Cleanup(cleanup)
 	game := service.NewService(usecase)
-	probe := pushbench.StartGame(t, "whot", client, game.RegisterNode, game.Drain, playerCount)
+	probe := pushbench.StartGame(t, "whot", client, game.RegisterNode, game.Drain, playerCount, 3*time.Second)
 	// 连接由测试逐个装配观测 codec，后续请求和回调仍由原 User/Runner 执行。
 	runner := NewRunner(t.Context(), &LoadTest{Press: Press{URL: probe.Endpoint, Interval: 100, Num: int32(playerCount)}})
 	require.NoError(t, runner.Start())

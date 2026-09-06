@@ -38,7 +38,7 @@ func parseConfig() (*gatewayConfig, error) {
 	flag.IntVar(&cfg.wsMaxConns, "ws-max-connections", websocket.DefaultMaxConnLimit, "maximum concurrent WebSocket connections")
 	flag.IntVar(&cfg.wsMaxConnsPerIP, "ws-max-connections-per-ip", websocket.DefaultMaxConnPerIP, "maximum concurrent WebSocket connections per IP")
 	flag.StringVar(&cfg.logLevel, "log-level", "info", "log level: debug, info, warn, or error")
-	flag.DurationVar(&cfg.rpcTimeout, "rpc-timeout", 3*time.Second, "internal RPC timeout")
+	flag.DurationVar(&cfg.rpcTimeout, "rpc-timeout", 3*time.Second, "WebSocket handler and internal RPC timeout")
 	flag.StringVar(&cfg.advertiseHost, "advertise-host", "127.0.0.1", "gRPC advertise host")
 	flag.StringVar(&cfg.natsURL, "nats-url", "nats://"+defaultRemoteHost+":4222", "NATS URL")
 	flag.StringVar(&cfg.redisAddress, "redis-addr", defaultRemoteHost+":6379", "Redis address")

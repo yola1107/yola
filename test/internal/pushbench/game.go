@@ -67,7 +67,11 @@ func GameRedis(t *testing.T) *redis.Client {
 }
 
 // StartGame 装配真实 Node、Gateway、Redis Locator 和 etcd Registry，调用者提供游戏注册与排空。
-func StartGame(t *testing.T, service string, client redis.UniversalClient, register func(*node.Server), drain node.DrainFunc, playerCount int) *GameProbe {
+func StartGame(
+	t *testing.T, service string, client redis.UniversalClient, register func(*node.Server), drain node.DrainFunc,
+	playerCount int, rpcTimeout time.Duration,
+) *GameProbe {
+
 	t.Helper()
 	measurements := newMeasurements(t)
 	probe := &GameProbe{measurements: measurements, streams: make(map[string]*messageStream)}
@@ -81,6 +85,7 @@ func StartGame(t *testing.T, service string, client redis.UniversalClient, regis
 	store := locateredis.New(client)
 	server, err := node.NewServer(
 		node.Address("127.0.0.1:0"), node.Locator(&measuredLocator{Locator: store, measurements: measurements}),
+		node.HandlerTimeout(rpcTimeout),
 		node.ClientMiddleware(probe.observePush, measurements.rpc), node.Middleware(probe.observeHandler), node.Drain(drain),
 	)
 	require.NoError(t, err)
@@ -98,11 +103,11 @@ func StartGame(t *testing.T, service string, client redis.UniversalClient, regis
 		defer cancel()
 		require.NoError(t, discovery.Deregister(ctx, instance))
 	})
-	socket := websocket.NewServer(websocket.Address("127.0.0.1:0"),
+	socket := websocket.NewServer(websocket.Address("127.0.0.1:0"), websocket.Timeout(rpcTimeout),
 		websocket.MaxConnLimit(int32(playerCount+1)), websocket.MaxConnPerIP(int32(playerCount+1)))
 	gate, err := gateway.NewServer(
 		gateway.Address("127.0.0.1:0"), gateway.Auth(benchmarkAuthenticator{}), gateway.Locator(store),
-		gateway.Discovery(discovery), gateway.Transport(socket),
+		gateway.Discovery(discovery), gateway.Transport(socket), gateway.RPCTimeout(rpcTimeout),
 	)
 	require.NoError(t, err)
 	startServer(t, gate, "gateway", "gateway-"+suffix, nil)

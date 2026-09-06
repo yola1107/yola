@@ -68,6 +68,7 @@ func main() {
 		gateway.Transport(
 			websocket.NewServer(
 				websocket.Address(cfg.wsListen),
+				websocket.Timeout(cfg.rpcTimeout),
 				websocket.MaxConnLimit(int32(cfg.wsMaxConns)),
 				websocket.MaxConnPerIP(int32(cfg.wsMaxConnsPerIP)),
 				websocket.Middleware(recovery.Recovery()),
