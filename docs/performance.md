@@ -44,7 +44,7 @@ TCP Reader/Writer buffer 均按最大合法帧 `MaxProtoSize + 4B` 创建，即�
 
 1. **压测基线**：tracked Ludo 配置启用 debug console；即使文件日志关闭，console core 仍同步写 stdout，且 `slog.Debug` 的 `Player.Desc`、JSON 和棋盘路径等参数会在级别过滤前求值。容量测试先使用 `info` 或 `warn`，昂贵调试参数只在对应级别启用时构造，否则结果会混入日志 I/O 和无效计算。
 2. **Stateful Locator**：先采集 Redis p99、pool wait 和请求占比。按 `(service, nodeID)` 合并同一时刻的 epoch 查询只可能降低并发负载，不保证降低单请求延迟，也不得让首个调用者取消影响其他等待者；删除查询的额外条件见 [I04](./issues.md#性能与验收限制)。Kratos 在 BeforeStart 申请 epoch 前已构建 instance，不能靠运行时修改 metadata map 代替身份准备与发布契约。
-3. **Table Push**：逐玩家同步 `LocateGate + Gateway gRPC` 会占用 mailbox worker，真实影响尚未 profile；按 [I45](./issues.md#性能与验收限制) 分段测量后，再决定是否在单个 table job 内有界并行。若仍需批量 Push，须另行定义逐 UID 结果和消息顺序，不能仅靠增加 worker、queue 或 outbox 认定问题已关闭。
+3. **Table Push**：[分段基线](#table-push-分段基线) 已复现逐玩家同步 `LocateGate + Gateway gRPC` 占用 mailbox worker、放大等待的现象；[固定到达率对照](#table-worker-固定到达率对照) 支持将 Ludo/Whot worker 默认值改为 `min(tableNum, 16)`。单桌仍串行；百人房间的高频投递应另行评估定向批量定位和 RPC，保留逐 UID 结果、binding 校验和消息顺序。现有广播包含机器人决策与离线状态变更，不能直接并发调用；真实业务 SLO 仍按 [I45](./issues.md#性能与验收限制) 验收。
 4. **WebSocket 分配与广播**：默认 codec 已使用 bounded pooled reader 和单次 fanout 共享的 prepared frame，进程内对照见下文。剩余风险是发送队列只按 32 帧限流，尚未观测每连接排队字节、慢连接比例及单边 RSS，按 [I41](./issues.md#性能与验收限制) 验收。
 5. **Heartbeat 波次**：同步建连或依赖故障可能让大量续租同时进入 Redis pool，按 [I34](./issues.md#性能与验收限制) 测量后再决定整形方式。
 6. **NATS 积压**：dispatch 暂无热点证据，慢 handler 的队列内存与 broker Payload 上限按 [I44](./issues.md#性能与验收限制) 验收。
@@ -131,13 +131,73 @@ prepared synthetic 档不是真实连接压测；同机运行 client/server 也�
 
 ## Ludo/Whot 执行边界
 
-- 每张 Table 使用 FIFO mailbox，共享 `2 × GOMAXPROCS` worker；单桌串行、跨桌并行。
+- 每张 Table 使用 FIFO mailbox，共享 `min(tableNum, 16)` 个 worker，不提供配置项；单桌串行、跨桌并行。每桌队列 128、batch 64。
 - 普通请求使用 `Executor.Call`，队列满立即返回；换桌和恢复使用有独立超时的 `Group.PostAndWait` 等待容量，未开始的任务可取消，已经开始的任务必须完成。
 - timer callback 回到目标 mailbox，保持单写者。
 - Session Push 默认最多等待 3s；慢 Push 可能占用共享 worker。
 - 选桌按少人桌优先做两阶段线性扫描；无可用桌时最多检查 `2 × tableNum`，不维护额外索引。
 
 2026-08-21 在 commit `3035fb8` 对 Ludo 代表实现复核：100/1,000/10,000 张全满桌分别约为 210ns/3.4µs/37.8µs，均为 0 alloc；Whot 使用相同扫描逻辑。当前数据不支持增加选桌索引，同步 Push 的测量与验收见 [I45](./issues.md#性能与验收限制)。
+
+## Table Push 分段基线
+
+2026-09-06 基于父提交 `c9ca9bd` 及本批 `ClientMiddleware`/`BenchmarkTablePush` 实现，在 VMware Linux/amd64、4 vCPU（i7-9700K）、约 7.5GiB RAM、Go 1.26.6、同 VM 独立 Redis 8.6.1 Docker 上测量。`GOMAXPROCS=4`，每档 `-benchtime=3s -count=3`，Ludo/Whot 顺序运行；下表各项分别取三次结果的中位数。
+
+基准调用实际桌广播函数、Redis Locator、Node 和 Gateway gRPC，每桌四名已就座玩家，消息为包含 256B bytes 的 protobuf。下表记录调整前 `2 × GOMAXPROCS` 策略下的 8 worker、每桌队列 128、batch 64，32 个闭环请求按桌轮询；每个请求等待自己的桌任务完成后才提交下一次。计时前完成认证和首次 Push，清空预热指标；日志输出被关闭，OTel 测量成本计入上层耗时。
+
+| 指标 | 计时范围 |
+| --- | --- |
+| `mailbox_wait` | 提交 `Executor.Call` 到任务开始，包含准入与排队等待 |
+| `fanout` | 任务内实际桌广播函数，保留四名玩家的串行 Push |
+| `push` | 完整 `node.Server.PushToUID`，包含定位、编码、客户端池获取和 RPC |
+| `locate_gate` | Redis Locator 查询及结果处理，包含连接池等待 |
+| `gateway_rpc` | Kratos client metrics middleware 内的 Gateway RPC，不包含前面的定位、业务 Payload 编码和客户端池获取 |
+| `mailbox_call` | 提交到任务完成并返回的总延迟；Go 输出的 `ns/op` 是并发吞吐折算值，不能当作此延迟 |
+
+所有数值单位为 ms。`p99 上界` 是直方图 p99 所在桶的上界，桶边界从 1µs 按 1.2 倍增长，不能视为精确 p99。
+
+| 游戏 | 桌数 | 每条 Push 注入延迟 | LocateGate 均值 | Gateway RPC 均值 | fanout 均值 | mailbox 等待均值 | mailbox 总延迟 p99 上界 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Ludo | 8 | 0 | 0.530 | 0.578 | 4.59 | 13.78 | 56.35 |
+| Ludo | 8 | 5 | 0.597 | 6.286 | 27.67 | 81.60 | 140.21 |
+| Ludo | 64 | 0 | 0.522 | 0.574 | 4.51 | 13.43 | 27.17 |
+| Ludo | 64 | 5 | 0.628 | 6.315 | 27.94 | 82.37 | 140.21 |
+| Whot | 8 | 0 | 0.515 | 0.581 | 4.51 | 13.50 | 56.35 |
+| Whot | 8 | 5 | 0.667 | 6.354 | 28.25 | 83.27 | 140.21 |
+| Whot | 64 | 0 | 0.509 | 0.574 | 4.46 | 13.29 | 27.17 |
+| Whot | 64 | 5 | 0.656 | 6.345 | 28.16 | 82.99 | 140.21 |
+
+24 个正式样本共完成 79,570 次桌广播、318,280 次 Push，逐样本投递计数一致；Push、LocateGate 和 mailbox 调用错误均为 0。闭环最多 32 个在途任务，未压满每桌 128 的队列，因此这些结果不证明过载时没有 reject。64 桌下，注入延迟使广播均值从约 4.5ms 增至约 28ms，mailbox 等待均值从约 13ms 增至约 83ms；该负载下等待约为执行时间的三倍，与 32 个请求竞争 8 个 worker 相符。
+
+Ludo 64 桌的两档各补采 `-benchtime=5s` CPU/block profile：阻塞栈显示调用方等待 `mailboxCall.wait`，worker 停留在 `PushToUID → gateclient.Push → gRPC Invoke`；CPU 样本主要落在系统调用和 Go runtime。block profile 累加多个 goroutine 的等待，不能将其百分比当作单次请求耗时占比，也不能跨档直接比较累计秒数。
+
+Gateway 以计数接收器替代客户端 socket，5ms 只模拟 RPC 内的处理延迟；Gate lease 设为 1h，本轮没有客户端 heartbeat。测试不包含真实 WebSocket/TCP 收发、跨机/TLS、完整对局、慢客户端发送队列或开放到达率压测。这是闭环饱和负载，8 桌与 64 桌结果接近，不能据此声称 64 桌存在容量拐点；一次迭代只广播一次，也不等于完整玩家操作。I45 的真实对局 SLO 与 I41 的真实连接容量仍待独立验收。
+
+基准运行命令见 [测试模块](../test/README.md#table-push-分段基准)。当前基准跟随 `min(tableNum, 16)` 默认规则，8/64 桌分别使用 8/16 worker，闭环请求并发不变；重新运行不会复现上表 64 桌的旧 8 worker 条件。在仓库根目录可补采代表档位的 profile；Redis 地址和 `GOMAXPROCS` 使用相同环境变量，将 `gateway_delay=5ms` 换成 `gateway_delay=0s` 得到无注入延迟档：
+
+```powershell
+go -C test test -o "$env:TEMP/yola-push.test" ./ludo/internal/biz/table -run '^$' -bench '^BenchmarkTablePush/tables=64/gateway_delay=5ms$' -benchtime=5s -count=1 -cpuprofile "$env:TEMP/yola-push-cpu.pprof" -blockprofile "$env:TEMP/yola-push-block.pprof"
+go tool pprof -top "$env:TEMP/yola-push.test" "$env:TEMP/yola-push-cpu.pprof"
+go tool pprof -top -cum "$env:TEMP/yola-push.test" "$env:TEMP/yola-push-block.pprof"
+```
+
+## Table worker 固定到达率对照
+
+2026-09-06 在上述 4 vCPU、Go 1.26.6、独立 Redis 环境，使用 `c9ca9bd` 上的 I45 源码快照补测 1,000 桌、每桌每秒一次操作。每操作在同一个 mailbox 任务内串行广播两次，每次四名接收者，共 8 次 Push；全局每 1ms 发起一次，即 1,000 操作/秒、8,000 Push/秒。发生器按计划时间发起，不等待前一次完成。每样本持续 24 秒；两款游戏各按 8、16、32、32、16、8 的 worker 顺序运行，其他条件不变，无人工延迟注入。
+
+下表区间为每档四个样本的均值范围，完成延迟从提交 mailbox 计至返回；最后一列是最差样本的 p99 所在桶上界，单位均为 ms。
+
+| workers | mailbox 等待均值 | 操作完成均值 | 最差完成 p99 桶上界 |
+| ---: | ---: | ---: | ---: |
+| 8 | 276.57～832.14 | 284.85～840.70 | 2592.27 |
+| 16 | 0.18～3.37 | 8.99～12.15 | 140.21 |
+| 32 | 0.02～31.05 | 8.81～43.70 | 602.88 |
+
+12 个样本共完成 288,000 次操作、576,000 次广播、2,304,000 次 Push，逐样本各段调用数与投递数匹配，记录的错误为 0。8 worker 档每个任务平均占用约 8.2～8.5ms，每秒 1,000 次已超出 8 个 worker 的处理预算；发起计划结束后仍需约 0.67～1.46 秒排空。16 明显改善排队，32 未在两款游戏中稳定更好，因此默认固定为 `min(tableNum, 16)`，不新增配置项；队列、batch 和桌内顺序不变。
+
+32 worker 的 Whot 较慢样本同时出现发生器、Redis 和 RPC 延迟上升，原因尚未定位，不能全部归因于 worker 数。各档发生器延迟的最差 p99 桶上界分别为 2.12/2.54/116.84ms，上表完成延迟未包含该部分。16 worker 仍有完成 p99 桶上界 140.21ms 的样本，不能据此承诺尾延迟全部达标。
+
+本轮使用临时固定到达率诊断脚本，与上方闭环 `BenchmarkTablePush` 不同；原始日志、脚本、源码快照和 SHA-256 清单保留在本机诊断产物 `yola-i45-workers-207c2458`。4,000 个 Session 仍为合成接收器，未覆盖真实客户端、完整业务 handler、机器人、心跳、数据库结算、集中到达和长期运行。增加 worker 只提高跨桌并发，百人热点桌的同步投递成本仍需独立验证。
 
 ## 容量验收
 

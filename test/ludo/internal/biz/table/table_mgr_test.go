@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"yola/test/internal/mailbox"
@@ -14,6 +15,49 @@ import (
 	"yola/test/ludo/internal/conf"
 	"yola/test/ludo/pkg/codes"
 )
+
+func TestManagerLimitsConcurrentTableJobs(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		tableCount int32
+		workers    int
+	}{
+		{name: "one_table", tableCount: 1, workers: 1},
+		{name: "below_limit", tableCount: 15, workers: 15},
+		{name: "at_limit", tableCount: 16, workers: 16},
+		{name: "above_limit", tableCount: 17, workers: 16},
+		{name: "thousand_tables", tableCount: 1000, workers: 16},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				manager := NewManager("ludo-test", testRoom(tc.tableCount), new(tableRepoStub))
+				started := make(chan struct{}, tc.tableCount)
+				release := make(chan struct{})
+				t.Cleanup(func() {
+					close(release)
+					if err := manager.Close(context.Background()); err != nil {
+						t.Error(err)
+					}
+				})
+				if err := manager.Start(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+				for index := range manager.tables {
+					if err := manager.mailboxes.Executor(index).TryPost(func() {
+						started <- struct{}{}
+						<-release
+					}); err != nil {
+						t.Fatal(err)
+					}
+				}
+				synctest.Wait()
+				if got := len(started); got != tc.workers {
+					t.Fatalf("concurrent table jobs = %d, want %d", got, tc.workers)
+				}
+			})
+		})
+	}
+}
 
 func TestManagerUsesStrictTableIDBoundaries(t *testing.T) {
 	room := testRoom(2)

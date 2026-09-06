@@ -58,6 +58,21 @@ go run ./gateway \
 
 仓库当前没有 `ludo-smoke` 或 `whot-smoke` 入口。Ludo 的运行、完整流程测试和压测入口见 [ludo/README](./ludo/README.md)。
 
+## Table Push 分段基准
+
+Ludo/Whot 的 `BenchmarkTablePush` 共用 [pushbench](./internal/pushbench/benchmark.go)，通过真实 Redis、Node、Gateway 和桌广播函数测量 mailbox 等待、fanout、`PushToUID`、`LocateGate` 与 Gateway gRPC。基准使用独立 OTel MeterProvider 和 Kratos metrics client middleware，未配置 `YOLA_REDIS_INTEGRATION` 时跳过。
+
+从 `test` 目录运行，Redis 必须是可丢弃专用实例；每个子基准使用随机 service 隔离 binding/epoch 和可丢弃 UID：
+
+```powershell
+$env:YOLA_REDIS_INTEGRATION = '<dedicated-redis>:6379'
+$env:GOMAXPROCS = '4'
+go test ./ludo/internal/biz/table -run '^$' -bench '^BenchmarkTablePush$' -benchtime=3s -count=3 -timeout=180s
+go test ./whot/internal/biz/table -run '^$' -bench '^BenchmarkTablePush$' -benchtime=3s -count=3 -timeout=180s
+```
+
+每桌四人、Payload 为 256B bytes 的 protobuf 消息，8/64 桌分别对照无注入延迟和每条 Push 注入 5ms Gateway 处理延迟。worker 跟随 Ludo/Whot 的 `min(tableNum, 16)` 默认规则，8/64 桌分别为 8/16；闭环并发固定为 `8 × GOMAXPROCS`，上述命令下为 32。接收器只计数、不使用客户端 socket；每轮要求成功投递数等于广播数的四倍。输出各段调用数、均值及直方图分位数所在桶的上界（`p99_le_us`），任何 Push 或 mailbox 调用失败都会使基准失败。历史 8 worker 结果、队列和计时边界见 [性能基线](../docs/performance.md#table-push-分段基线)。
+
 ## 日志
 
 - Gateway 和 Ludo 压测客户端使用 console zapslog，级别分别由 `-log-level` 控制。

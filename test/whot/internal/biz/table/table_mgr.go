@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"runtime"
 	"strconv"
 	"sync"
 	"time"
@@ -27,9 +26,10 @@ var (
 )
 
 const (
-	tableMigrationTimeout    = 2 * time.Second
-	defaultTableQueueSize    = 128
-	defaultTableMailboxBatch = 64
+	tableMigrationTimeout      = 2 * time.Second
+	defaultTableQueueSize      = 128
+	defaultTableMailboxBatch   = 64
+	defaultTableMailboxWorkers = 16
 )
 
 type Manager struct {
@@ -47,19 +47,20 @@ type ClientPusher interface {
 }
 
 func NewManager(room *conf.Room, repo Repo) *Manager {
-	return newManager(room, repo, max(1, runtime.GOMAXPROCS(0)*2), defaultTableQueueSize, defaultTableMailboxBatch)
+	return newManager(room, repo, defaultTableMailboxWorkers, defaultTableQueueSize, defaultTableMailboxBatch)
 }
 
 func newManager(room *conf.Room, repo Repo, workers int, queueSize int, batchSize int) *Manager {
 	if repo == nil {
 		panic("table: repo is required")
 	}
-	mailboxes, err := mailbox.NewGroup(int(room.Table.TableNum), workers, queueSize, batchSize)
+	tableCount := int(room.Table.TableNum)
+	mailboxes, err := mailbox.NewGroup(tableCount, min(tableCount, workers), queueSize, batchSize)
 	if err != nil {
 		panic(fmt.Sprintf("table: create mailboxes: %v", err))
 	}
 	manager := &Manager{
-		tables:    make([]*Table, room.Table.TableNum),
+		tables:    make([]*Table, tableCount),
 		mailboxes: mailboxes,
 		timers:    stdlib.New(),
 	}
