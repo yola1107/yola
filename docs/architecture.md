@@ -46,7 +46,7 @@ flowchart LR
 
 独立的 `test` module 通过 `replace yola => ..` 使用框架；service 依赖 usecase，usecase 组装 player/table/robot，data 和 Node adapter 实现业务定义的存储、投递接口。usecase 拥有玩家和业务任务的生命周期，Table 的 mailbox 串行化桌内操作，框架不承担这些业务状态。
 
-`test/internal/mailbox` 的 `TryPost` 只负责有界准入，已接纳的普通任务不随提交 context 取消；`Post` 的 context 只限制等待容量。`Call`/`PostAndWait` 由 `mailboxCall` 仲裁取消与开始：未开始可取消，已开始须等待结果，避免调用方提前回滚仍在执行的业务操作。
+`test/internal/mailbox` 的 `TryPost` 只负责有界准入，已接纳的普通任务不随提交 context 取消；`Post` 的 context 只限制等待容量。`Call`/`PostAndWait` 由 `mailboxCall` 仲裁取消与开始：未开始可取消，已开始须等待结果，避免调用方提前回滚仍在执行的业务操作。队列、调度权与运行统计由同一把锁保护，在交接 worker 前完成状态更新。
 
 ## 2. 网络与存储
 

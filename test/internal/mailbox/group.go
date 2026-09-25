@@ -31,7 +31,7 @@ type mailboxQueue struct {
 	mu        sync.Mutex
 	queue     []func()
 	scheduled bool
-	running   atomic.Int32
+	running   int
 	space     chan struct{}
 }
 
@@ -260,24 +260,20 @@ func (c *mailboxCall) wait(ctx context.Context) error {
 
 func (mailbox *mailboxQueue) Stats() Stats {
 	mailbox.mu.Lock()
-	queued := len(mailbox.queue)
-	mailbox.mu.Unlock()
+	defer mailbox.mu.Unlock()
 	return Stats{
 		Capacity: mailbox.group.capacity,
-		Running:  int(mailbox.running.Load()),
-		Free:     mailbox.group.capacity - queued,
+		Running:  mailbox.running,
+		Free:     mailbox.group.capacity - len(mailbox.queue),
 	}
 }
 
 func (mailbox *mailboxQueue) drain(batch int) {
-	mailbox.running.Store(1)
-	defer mailbox.running.Store(0)
+	mailbox.mu.Lock()
+	mailbox.running = 1
 	for range batch {
-		mailbox.mu.Lock()
 		if len(mailbox.queue) == 0 {
-			mailbox.scheduled = false
-			mailbox.mu.Unlock()
-			return
+			break
 		}
 		job := mailbox.queue[0]
 		mailbox.queue[0] = nil
@@ -287,8 +283,10 @@ func (mailbox *mailboxQueue) drain(batch int) {
 		mailbox.mu.Unlock()
 		callSafely(job)
 		mailbox.group.changePending(-1)
+		mailbox.mu.Lock()
 	}
-	mailbox.mu.Lock()
+	// 运行状态与调度权一并交接，不能在交接后的 defer 中清零。
+	mailbox.running = 0
 	if len(mailbox.queue) == 0 {
 		mailbox.scheduled = false
 	} else {
