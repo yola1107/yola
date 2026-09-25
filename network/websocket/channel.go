@@ -87,7 +87,7 @@ func (ch *Channel) RemoteAddr() string { return ch.remoteAddr }
 // Closed reports whether the channel is closed.
 func (ch *Channel) Closed() bool { return ch.closed.Load() }
 
-// SendProto queues one Proto as a Binary frame.
+// SendProto 将不可变 Proto 编码为 Binary frame 入队；输入遵守 network.Connection 的所有权契约。
 func (ch *Channel) SendProto(p *v1.Proto) error {
 	return ch.enqueueProto(p, false)
 }

@@ -23,6 +23,9 @@ const ConnectionHandlerOperation = "/network.ConnectionHandler/Handle"
 type Connection interface {
 	ConnID() string
 	RemoteAddr() string
+	// SendProto 接纳一个不可变消息。调用期间及成功返回后，调用方不得修改
+	// Proto、Body 或其他可变字段的任何别名；可将同一不可变消息发给多个连接。
+	// 返回成功不表示已经编码或写入 socket；需修改或复用时先创建独立消息及数据。
 	SendProto(*v1.Proto) error
 	CloseWithProto(context.Context, *v1.Proto) error
 	Close() error

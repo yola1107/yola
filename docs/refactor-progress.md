@@ -6,12 +6,12 @@
 ## 当前快照
 
 - **更新日期**：2026-09-25。
-- **代码审查基线**：起点 `0c8b270`；初始化交接文档 `9378b54`，I49 修复 `1a882f6`，I47 修复 `eb44302`，I52 修复 `a888fcb`，I51 修复 `1ed763b`，I50 修复 `1bacab6`，I46 框架预算修复 `7c12592`；I53 随本提交关闭。
-- **当前验证**：I53 真实 gRPC 元数据回归 20 轮、make check/make lint 和 Node 全包 race 通过，两个 module lint 为 0 issues。I46 框架修复及业务功能回归已通过；完整游戏、真实 Redis/etcd 与同配置容量验收仍未运行。
+- **代码审查基线**：起点 `0c8b270`；初始化交接文档 `9378b54`，I49 修复 `1a882f6`，I47 修复 `eb44302`，I52 修复 `a888fcb`，I51 修复 `1ed763b`，I50 修复 `1bacab6`，I46 框架预算修复 `7c12592`，I53 修复 `731bd1f`；I54 随本提交关闭。
+- **当前验证**：I54 真实连接不可变输入回归及定向 race 各 20 轮、网络三包 race、Gateway 广播 race、最终 make check/lint 通过，两个 module lint 为 0 issues。未修改发送热路径；I46 的完整业务及真实依赖/容量验收仍待后续批次。
 - **工作重点**：根 module 的架构与契约；`test` 是扩展与验收，不再以游戏局部重构替代框架分析。
 - **Git 边界**：用户授权每个已解决 issue 独立提交，后续由用户统一审核；仅提交复审过的任务改动，不要求逐项 /plan 或 /clear。未授权 push 或发布。
 - **当前范围**：B1、B2 已完成，按后续批次持续处理可在现有授权内闭环的问题。固定 Kratos v3.0.0，不修改官方源码；保留唯一共享 Registry 与已确认的条件注册语义，不重做已关闭问题。I48 仍仅调查；生产安全、凭据轮换和容量不足的外部证据须明确保留。
-- **下一步**：继续 B5 的 I54 消息所有权、I55 容量观测；I46 的完整业务验收与 I45/B6 合并安排。I48 仅设计调查；需外部证据的部署与容量项保持真实状态。
+- **下一步**：继续 I55 的在线容量观测；随后安排 B6 的实际负载，并复核 I48 的设计调查与部署约束。I46 的完整业务验收与 I45/B6 合并安排；无外部证据时不提前关闭相应条目。
 
 ## 状态口径
 
@@ -32,8 +32,8 @@
 | ~~[I52 等待注册取消](./issues.md#i52)~~ | 已关闭（a888fcb） | 原实现失败 3/3；屏障回归 20 轮、包测试/race、lint 通过 | 获锁后重查 caller context；未发 SUB，第三次成功；激活后终态及 Close 语义不变 |
 | ~~[I50 心跳调度](./issues.md#i50)~~ | 已关闭（1bacab6） | 两种 transport 各复现 3/3；定向 10 轮、默认周期、FIFO/认证/过载/续租/关闭、内存及最终 race/check/lint 通过 | 仅显式能力启用有界业务 FIFO 与独立心跳；排队满关闭，普通自定义 handler 仍串行；I46/I41 另验收 |
 | [I46 预算所有者](./issues.md#i46) | 待验证（框架修复完成） | 五类耦合各复现 3/3；预算分离、真实 gRPC、make check/lint、根及扩展定向 race 通过并复审 | 代码独立提交；保留逐层上限与既有业务语义；完整游戏与同配置负载目标留待 I45/B6，不提前划线 |
-| ~~[I53 command 元数据](./issues.md#i53)~~ | 已关闭（本提交） | 原 dispatch 缺失 3/3；共享请求类型的真实 gRPC 20 轮、Node race、make check/lint 通过 | 只读 CommandFromContext，operation、Session、顺序及错误身份保持；无重复路由状态 |
-| [I54 消息所有权](./issues.md#i54) | 待设计 | TCP 保留指针、WS 先编码；未运行复用/race 场景 | B5：核对所有调用方，选择不可变契约或隔离编码方案 |
+| ~~[I53 command 元数据](./issues.md#i53)~~ | 已关闭（731bd1f） | 原 dispatch 缺失 3/3；共享请求类型的真实 gRPC 20 轮、Node race、make check/lint 通过 | 只读 CommandFromContext，operation、Session、顺序及错误身份保持；无重复路由状态 |
+| ~~[I54 消息所有权](./issues.md#i54)~~ | 已关闭（本提交） | TCP 原地修改探针失败 3/3、WS 对照通过；库内调用方审计完成；不可变消息真实连接/race 各 20 轮、最终 check/lint 通过 | 统一不可变输入契约，Prepared.Reset 不恢复写入权；运行实现不变，违规写入仍可能导致内容变化或 race |
 | [I55 在线容量观测](./issues.md#i55) | 待设计 | 当前统计边界已核查；未完成分层观测 | B5：按 owner 补指标，为 B6 提供证据 |
 | [I36 Gate 强单活](./issues.md#i36) | 待设计 | 现有 best-effort Kick 的已知限制 | 独立决策：确认是否要求强单活及已开始操作边界 |
 | [I07 历史凭据与安全](./issues.md#i07) | 约束 | 历史暴露记录；轮换未确认，本轮无生产核验 | 部署所有者提供去敏轮换与安全验收证据 |
@@ -164,6 +164,12 @@
 - 真实本机 gRPC 覆盖共享 Empty 请求的 command 11/22、middleware 前后顺序、Session UID、原始 handler error、固定 operation、RawHandler command 0；普通/nil context 返回缺失。check 未注入 Redis/etcd 地址，外部集成/完整游戏的跳过不算通过；无协议、入口、依赖或构建链改动，未触发 build/breaking。测试资源由 cleanup 回收。
 - 全部任务 diff、新增文件及 Forward → dispatch → typed/RawHandler 的调用链已复审；独立提交 `feat(node): 提供请求级业务 command 元数据`，不执行 push。
 
+- I54 基线 `731bd1f`，工作树原先干净。通过 `%TEMP%\yola-b5-20260925-7c12592\i54-overlay.json` 加载两个包的临时 `ownership_probe_test.go`，执行 `go test -overlay <该文件> ./network/tcp ./network/websocket -run '^TestAuditSendProtoReturnDoesNotPromiseSnapshot$' -count=3 -timeout=30s`：TCP 快照假设失败 3/3，WS 对照通过；日志 `i54-probe.log`。探针没有并发写入，仅证明实现差异，不视为受支持的复用契约。
+- 调用链审计：Gateway RPC Push 为新 Proto 且之后不改写入站 Body；Broadcast 先复制 Payload，fanout 后只复用 Prepared 视图；transport 每帧创建独立解码对象，发送后不再改写；客户端 Request 先 marshal 业务参数并新建请求 Proto；benchmark 共享对象保持只读。未发现需要修正的仓库内生产调用方，外部 handler/codec 仍须遵守契约。
+- 选择不可变输入，不改变 TCP/WS 编码位置、buffer、错误时机或分配策略。新真实连接测试覆盖四种组合（TCP/WS × 默认/自定义 codec）、16 个并发发送者共享输入、clone 后修改独立数据，以及 Prepared.Reset 后旧消息可继续发送。`go test ./network -run '^TestSendProtoSharesImmutableInputAcrossTransports$' -count=20 -timeout=60s` 及同筛选 `-race -count=20` 均通过。客户端 PushHandler 提供的是业务 Payload，验收按该接口比较数据；初稿夹具误作完整 Proto 解码，已修正。
+- `go test -race ./network ./network/tcp ./network/websocket -count=1 -timeout=120s`、`go test -race ./gateway -run '^TestBroadcast' -count=3 -timeout=60s` 通过。初轮 lint 指出新增测试的分支可改为 switch，已修正；最终 `make check` 和 `make lint` 均通过，两个 module 0 issues，无存量告警。日志为 `i54-race.log`、`i54-final-check.log`、`i54-final-lint.log`；修改 Go 文件均已格式化。
+- 复审覆盖 SendProto/内部 push/reply、Prepared fallback、Gateway Push/Broadcast、客户端 Request、测试及 benchmark 的所有调用点。库内未发现发送成功后改写的生产路径；没有将文档约束当作违规写入被自动修复。无新生产分配或性能收益声明，无协议、入口或依赖变更，未触发 build/breaking；check 的外部 Redis/etcd/完整游戏跳过仍不算通过。独立提交 `docs(network): 统一 SendProto 不可变消息契约`。
+
 ## 验证环境边界
 
 - 工作目录为 `D:\src\pitaya\yola`，本地 shell 为 PowerShell；根 module 与 `test` module 各自执行其适用命令。
@@ -181,7 +187,7 @@
 1. 先检查 git status --short、暂存/未暂存 diff、新增文件和当前 HEAD；保留已有改动。读取适用 AGENTS.md/AGENTS.override.md、docs/README.md、docs/issues.md、docs/refactor-progress.md，并按当前条目阅读 architecture.md、eventbus.md、performance.md 和相关代码。
 2. 阅读并使用已安装且相关的 skills（至少 codebase-design、code-review；并发、诊断、Go 导航和 lint 按实际任务选用），不要只依据本提示或历史结论改代码。
 3. 以 refactor-progress.md 的当前阶段、证据和下一步恢复。初始化交接基线是 0c8b270，I47～I55 当时只有静态发现、未运行故障复现、未修复；若文档或 Git 已有更新，以新证据为准，不重做已完成项。
-4. 从当前未完成批次推进；B1、B2、I50、I53 已关闭，I46 框架修复已提交但业务验收留待 I45/B6。下一步 I54/I55。用户要求逐 issue 独立提交后统一审核，不逐项停下来要求 /plan 或 /clear。I48 仍只设计调查，不能直接迁移绑定格式。
+4. 从当前未完成批次推进；B1、B2、I50、I53、I54 已关闭，I46 框架修复已提交但业务验收留待 I45/B6。下一步 I55 和 B6。用户要求逐 issue 独立提交后统一审核，不逐项停下来要求 /plan 或 /clear。I48 仍只设计调查，不能直接迁移绑定格式。
 5. 保持现有业务行为、协议及对外接口，优先删除重复和收敛职责，避免 BaseServer、通用 manager 等无独立职责抽象。涉及存储模型、同 ID 重启、强单活、控制帧调度或 timeout 语义的重大变化，准备具体方案后先确认；只暂停相关部分。
 6. 按 AGENTS 的风险要求完成实际测试、lint、race、check、build 或 breaking；先检查 TestMain/环境依赖。可免密 SSH 到 192.168.152.129 用 Docker，但操作前确认资源，使用专用可丢弃实例，避免影响无关服务与数据。
 7. 每完成一个原子步骤，同步两份文档的阶段、证据、命令结果、未完成项、代码基线和下一步；已关闭问题保留原条目，在两份文档同步划线。不要把静态推导、候选方案或旧测试写成当前已验证；遇到代码事实推翻假设时修正文档。

@@ -52,7 +52,7 @@ func TLSConfig(c *tls.Config) ServerOption {
 	return func(s *Server) { s.config.tls = tlsconfig.Clone(c) }
 }
 
-// Codec configures protocol frame encoding. Peers must use the same codec.
+// Codec 配置帧编码；两端须使用相同 codec。Marshal 不得修改输入，返回的 bytes 须保持不可变。
 func Codec(codec encoding.Codec) ServerOption {
 	return func(s *Server) { s.config.codec = codec }
 }

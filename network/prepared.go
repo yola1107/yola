@@ -26,13 +26,14 @@ type preparedState struct {
 	err  error
 }
 
-// Reset starts a new fanout after every user of the previous message has returned.
+// Reset 在上一批 SendPrepared 全部返回后复用视图，不恢复旧 message 的写入权。
+// fallback 连接仍可能持有旧 Proto；新旧消息及其字段都须遵守 SendProto 的不可变契约。
 func (p *PreparedProto) Reset(message *v1.Proto) {
 	p.message = message
 	p.state.Store(nil)
 }
 
-// Message returns the Proto as read-only input for a connection fallback.
+// Message 返回供 fallback 发送的只读 Proto，连接可按 SendProto 契约继续持有它。
 func (p *PreparedProto) Message() *v1.Proto {
 	if p == nil {
 		return nil

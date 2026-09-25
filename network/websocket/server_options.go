@@ -67,8 +67,8 @@ func TLSConfig(c *tls.Config) ServerOption {
 	return func(s *Server) { s.config.tls = tlsconfig.Clone(c) }
 }
 
-// Codec configures protocol frame encoding. Peers must use the same codec.
-// The package-owned protobuf default is not replaced by global codec registration.
+// Codec 配置帧编码；两端须使用相同 codec。Marshal 不得修改输入，返回的 bytes 须保持不可变。
+// 全局 codec 注册不会替换包内默认 protobuf 编码。
 func Codec(codec encoding.Codec) ServerOption {
 	return func(s *Server) { s.config.codec = codec }
 }

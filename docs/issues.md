@@ -5,7 +5,7 @@
 
 - **审查基线**：2026-09-25，代码提交 `0c8b270`。行号均为该基线的定位提示，实施前须按声明名重新核对。
 - **范围**：根 module 的职责、依赖、状态所有权和生命周期；`test` 是接入与验收案例，业务状态仍由业务层拥有。
-- **证据**：I47、I49、I50、I51、I52、I53 已分别完成修复、验证及契约核对；I46 的框架修复已提交，仍待完整业务验收。原故障及验收记录见进度表；存量运行数据只支持其原始配置和场景。
+- **证据**：I47、I49、I50、I51、I52、I53、I54 已分别完成修复或契约闭环及验证；I46 的框架修复已提交，仍待完整业务验收。原故障及验收记录见进度表；存量运行数据只支持其原始配置和场景。
 - **优先级**：P0 为生产前必须闭环的部署风险；P1 为正确性、可用性或容量验收重点；P2 为契约清晰度、扩展能力或已接受限制。
 - **维护**：保留既有 ID；新增问题补齐影响、证据、方案和关闭条件。关闭后保留原条目并为问题标题划线，追加关闭结果，在进度表同步划线并保留验证证据；不得删除已关闭问题。
 
@@ -71,12 +71,14 @@
   - **关闭条件与风险**：调用方可统一使用业务命令信息，不必逐 handler 包装。属于接口增强；是否改变已有 operation 指标标签须先评估调用方和可观测性兼容性。
   - **关闭记录（2026-09-25，随本问题提交）**：增加只读 `node.CommandFromContext`，由 dispatch 按实际 command 注入不可变 context 值；保持现有 Kratos operation，不隐式改变指标标签。共享 Empty 请求的两个 command 经真实 gRPC 验证，在 metadata 注入前缺失 3/3，注入后 20 轮通过；覆盖 Session、middleware 顺序、错误身份、RawHandler 不自动套 typed middleware、0 值及缺失 context。make check、make lint、Node 全包 race 通过，两个 module lint 为 0 issues；完整 diff 与调用链已复审，见 [B5 记录](./refactor-progress.md#b5-results)。
 
-- <a id="i54"></a> **I54 · P2：SendProto 的消息所有权没有统一契约**
+- <a id="i54"></a> **~~I54 · P2：SendProto 的消息所有权没有统一契约~~**
   - **影响**：调用方在 SendProto 返回后复用或修改 Proto/Body，TCP 可能发送修改后的数据或产生竞争，WebSocket 默认路径则已取得编码结果。
   - **证据**：[network/connection.go:23](../network/connection.go#L23) 未说明普通 SendProto 输入所有权；[TCP channel.go:114](../network/tcp/channel.go#L114) 把原指针入队，[WebSocket channel.go:137](../network/websocket/channel.go#L137) 返回前编码；PreparedConnection 已有明确的不可变 bytes 契约。
   - **解决方案**：核对框架、自定义 handler 和 codec 调用方，明确不可变输入/所有权转移规则。若确需返回后立即复用，则比较复制与同步编码；不因接口外观一致就无依据改写编码热路径。
   - **验证方案**：按选定契约覆盖消息共享、Body 别名、广播、custom codec、关闭竞争与 race；若允许返回后复用，增加复用后的内容隔离断言和编码/分配基准。
   - **关闭条件与风险**：两种 transport 的使用约束明确且实际调用方遵守。禁止把修改注释等同于现有竞争已消失；选择复制会产生性能与错误返回时机变化。
+  - **调查与选择（2026-09-25）**：串行探针中，SendProto 返回后修改 Cmd，TCP 队列仍观察到修改值，快照断言失败 3/3；WS 已取得编码结果，对照通过 3/3。审计 Gateway Push/Broadcast、transport 回复、客户端 Request 和测试/benchmark 后，未发现仓库内成功发送后继续写入同一消息的生产路径；广播复制 Payload，Prepared.Reset 只替换视图，不修改旧 Proto。选择统一不可变输入契约，保留当前编码位置和错误时机；调用方需要修改时创建独立消息/数据，不增加未经需求支持的热路径复制。
+  - **关闭记录（2026-09-25，随本问题提交）**：接口及架构文档统一约束 Proto 和所有可变字段别名，明确 Prepared.Reset 不恢复旧消息写入权；运行实现未改变。真实 TCP/WS × 默认/自定义 codec 的共享只读消息、并发发送、clone 和 Prepared 复用回归 20 轮及 race 20 轮通过；网络三包 race、Gateway 广播 race、最终 make check/lint 通过。关闭的是所有权歧义；TCP 仍不自动隔离违规修改，外部 handler/codec 须遵守该契约。详见 [B5 记录](./refactor-progress.md#b5-results)。
 
 - <a id="i55"></a> **I55 · P2：投递链缺少运行中可归属的容量观测**
   - **影响**：无法仅凭 Gateway fanout 统计区分 NATS 上游丢失、handler 堆积、广播队列拒绝和连接发送拥塞；I41/I44 的容量验收证据不完整。

@@ -75,6 +75,10 @@ Gateway 实现可选的 `network.HeartbeatHandler`：认证仍同步执行，成
 
 TCP/WebSocket Client 的 connect、push、Kick 和 disconnect callback 由单一有界队列串行执行。认证期间收到的每个 Push 与 connect callback 都计入容量，并在 worker 启动前作为一个 batch 原子提交；容量不足时连接创建确定失败，不暴露部分 callback。关闭时拒绝新 callback、丢弃尚未开始的普通 callback，让当前 callback 完成后再依次执行 Kick 和 disconnect；连接资源先关闭，再放行 terminal callback，因此 callback 内调用 `Client.Close` 不等待自身。TCP/WebSocket 各自拥有 ticker、I/O 和关闭，只有 `idle → queued → writing → outstanding` 的原子状态迁移由无 transport 依赖的 heartbeat owner 复用。
 
+`Connection.SendProto` 接纳不可变输入：调用期间和成功返回后，不得修改 Proto、Body 或其他可变字段的任何别名；可并发发送同一个只读消息。返回成功不保证已经编码或写入 socket，调用方若要更新内容，应先创建独立消息和数据（例如 proto.Clone），不能依据 WebSocket 当前同步编码的实现假定通用接口允许立即复用。TCP 仍可能保留输入指针，违规修改仍可能改变发送内容或产生 race。
+
+网络 handler 与 middleware 必须在交还发送流程前完成对回复的修改，不得让后台任务继续写入已发送消息。自定义 codec 的 Marshal 须并发安全、在返回前完成对输入的只读访问，返回的编码 bytes 不能复用为可写 scratch。PreparedProto.Reset 只复用同步 fanout 视图，不恢复旧消息写入权；旧 Proto 仍可能由 fallback 连接持有。Gateway.Broadcast 会独立复制调用方 Payload，后续传给连接的消息保持只读。
+
 认证回复的 Push 暂存、容量、op 与拒绝码规则由 `network/internal/auth` 统一处理。TCP/WebSocket 提供每次读取并解码一帧的函数，继续负责各自的帧错误、认证 I/O 取消及 deadline 清理；公共规则不改变 `ErrAuthenticationRejected`、Push 顺序或没有 Push 时的 nil 结果。
 
 TCP/WebSocket 显式 endpoint 是各自 Server 持有的配置副本，`Endpoint()` 返回副本，scheme 必须与是否启用 TLS 一致：TCP 使用 `tcp`/`tcps`，WebSocket 使用 `ws`/`wss`，WebSocket path 必须与 `Path` 完全一致。自动 endpoint 优先使用 `AdvertiseHost`，其次使用非通配 listen host，最后选择 global-unicast interface；不能推导出可发布 host 时直接失败，不发布空地址。
