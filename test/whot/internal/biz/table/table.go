@@ -166,8 +166,6 @@ func (t *Table) RemovePlayer(p *player.Player, isSwitchTable bool) bool {
 
 // ReEnter 重进游戏
 func (t *Table) ReEnter(p *player.Player) {
-	p.SetOffline(false)
-
 	// 广播入座信息
 	t.broadcastUserInfo(p)
 

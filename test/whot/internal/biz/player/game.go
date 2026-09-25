@@ -50,7 +50,6 @@ type GameData struct {
 	chairID   atomic.Int32
 	status    Status
 	idleCount int32
-	isOffline atomic.Bool
 	bet       float64
 	cards     []int32
 }
@@ -110,14 +109,6 @@ func (p *Player) ClearTimeoutCnt() {
 
 func (p *Player) GetTimeoutCnt() int32 {
 	return p.gameData.idleCount
-}
-
-func (p *Player) SetOffline(offline bool) {
-	p.gameData.isOffline.Store(offline)
-}
-
-func (p *Player) IsOffline() bool {
-	return p.gameData.isOffline.Load()
 }
 
 func (p *Player) GetStatus() Status {

@@ -35,19 +35,17 @@ func (uc *Usecase) Disconnect(ctx context.Context, sess player.Session) error {
 	if p == nil {
 		return nil
 	}
-	current := p.GetSession()
-	if current == nil || current.BindingToken() != sess.BindingToken() {
+	bindingToken := sess.BindingToken()
+	if !p.MarkOffline(bindingToken) {
 		return nil
 	}
-	p.SetOffline(true)
 	for range 2 {
 		if p.GetTableID() <= 0 {
 			return nil
 		}
 		err = uc.tm.CallPlayer(ctx, p, func(gameTable *table.Table) error {
 			current := p.GetSession()
-			if current == nil || current.BindingToken() != sess.BindingToken() {
-				p.SetOffline(false)
+			if current == nil || current.BindingToken() != bindingToken {
 				return nil
 			}
 			gameTable.OnOffline(p)

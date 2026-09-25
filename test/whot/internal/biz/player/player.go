@@ -21,6 +21,7 @@ type Player struct {
 	isRobot   bool
 	sessionMu sync.RWMutex
 	session   Session
+	isOffline bool
 	gameData  *GameData
 	baseData  *BaseData
 	exiting   atomic.Bool
@@ -60,10 +61,37 @@ func (p *Player) GetSession() Session {
 	return p.session
 }
 
+// UpdateSession 原子替换连接并恢复在线；登出时保留离线状态。
 func (p *Player) UpdateSession(sess Session) {
 	p.sessionMu.Lock()
 	defer p.sessionMu.Unlock()
 	p.session = sess
+	if sess != nil {
+		p.isOffline = false
+	}
+}
+
+// MarkOffline 仅标记当前连接，避免旧连接通知覆盖重连状态。
+func (p *Player) MarkOffline(bindingToken string) bool {
+	p.sessionMu.Lock()
+	defer p.sessionMu.Unlock()
+	if p.session == nil || p.session.BindingToken() != bindingToken {
+		return false
+	}
+	p.isOffline = true
+	return true
+}
+
+func (p *Player) SetOffline(offline bool) {
+	p.sessionMu.Lock()
+	defer p.sessionMu.Unlock()
+	p.isOffline = offline
+}
+
+func (p *Player) IsOffline() bool {
+	p.sessionMu.RLock()
+	defer p.sessionMu.RUnlock()
+	return p.isOffline
 }
 
 func (p *Player) LogoutGame() {

@@ -190,6 +190,8 @@ Gateway 为 Forward 查询 epoch，Disconnect 仅共用 Node 路由定位，不�
 
 业务处理 Disconnect 时必须在实际状态所有者（例如 actor/mailbox）内比较 `Session.BindingToken()` 与玩家当前 Session；旧 token 的通知不得修改新连接状态。支付、结算和状态写入仍需业务提供幂等、事务条件或串行化。
 
+Whot Player 统一持有 Session 和离线标记：连接替换、恢复在线与按 token 标记离线使用同一把锁，桌内状态仍由 mailbox 串行化。换桌期间也可记录当前连接断线；排队的旧 Disconnect 到达桌任务后只忽略事件，不回写新连接的离线状态。
+
 ## 5. Stateful 粘性路由
 
 `Stateful` 表示业务实例持有玩家状态；`sticky` 是 Yola 的 service 级路由能力。Node 通过 Registry metadata 声明 `sticky=true`，Gateway 不维护业务 service 名单。
