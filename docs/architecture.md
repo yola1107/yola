@@ -194,6 +194,8 @@ Node 对已绑定请求在 handler 前再次查询 binding，承担改绑 fencin
 
 `node.ClientMiddleware` 将 Kratos client middleware 按配置顺序安装到 Node → Gateway RPC，覆盖 `Session.Push` 和 `PushToUID` 的 gRPC 阶段；`node.Middleware` 仍只处理入站 command。Yola 沿用调用方的 Push deadline，不因接入 middleware 增设超时、重试或后台任务。
 
+`node.CommandFromContext(ctx)` 返回实际 Forward 的 `(command int32, present bool)`，typed middleware、typed handler 和 RawHandler 均可读取。同一请求类型用于多个 command 时以此 ID 区分；0 是可存在的合法注册值，未注入元数据的 context（含 nil）返回 false。dispatch 在原有 handler 查找后写入不可变的 context 值，不增加第二套路由表，也不改变 `/cluster.v1.Node/Forward` 的 Kratos operation、Session 或 middleware 顺序；RawHandler 仍不自动应用 node.Middleware。
+
 应用可注入 Kratos OTel metrics/tracing middleware，并自行创建和关闭 exporter/provider；Yola 不设置全局 OTel SDK。`LocateGate`、桌 fanout 和 mailbox 等待不在 RPC middleware 的计时范围内。
 
 Gateway 为 Forward 查询 epoch，Disconnect 仅共用 Node 路由定位，不额外查询 epoch；二者不能合并为失败语义相同的转发流程。

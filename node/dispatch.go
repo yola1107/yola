@@ -10,7 +10,7 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// Handler handles a raw command body. The current Session is available through FromContext.
+// Handler 处理原始 command body；可通过 FromContext 和 CommandFromContext 读取本次请求信息。
 type Handler func(context.Context, []byte) ([]byte, error)
 
 // stickyClaim carries Gateway sticky-routing identity for Stateful Node requests.
@@ -69,6 +69,7 @@ func (s *Server) forwardTo(ctx context.Context, claim stickyClaim, binding locat
 	if handler == nil {
 		return nil, status.Errorf(codes.Unimplemented, "unimplemented Command=%d", command)
 	}
+	ctx = context.WithValue(ctx, commandKey{}, command)
 	return handler(NewContext(ctx, requestSession{binding: binding, server: s}), body)
 }
 

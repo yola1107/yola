@@ -5,7 +5,7 @@
 
 - **审查基线**：2026-09-25，代码提交 `0c8b270`。行号均为该基线的定位提示，实施前须按声明名重新核对。
 - **范围**：根 module 的职责、依赖、状态所有权和生命周期；`test` 是接入与验收案例，业务状态仍由业务层拥有。
-- **证据**：I47、I49、I50、I51、I52 已分别完成修复、验证及契约核对，原故障及验收记录见进度表。其余问题仍以各项记录为准；存量运行数据只支持其原始配置和场景。
+- **证据**：I47、I49、I50、I51、I52、I53 已分别完成修复、验证及契约核对；I46 的框架修复已提交，仍待完整业务验收。原故障及验收记录见进度表；存量运行数据只支持其原始配置和场景。
 - **优先级**：P0 为生产前必须闭环的部署风险；P1 为正确性、可用性或容量验收重点；P2 为契约清晰度、扩展能力或已接受限制。
 - **维护**：保留既有 ID；新增问题补齐影响、证据、方案和关闭条件。关闭后保留原条目并为问题标题划线，追加关闭结果，在进度表同步划线并保留验证证据；不得删除已关闭问题。
 
@@ -63,12 +63,13 @@
   - **关闭条件与风险**：激活前取消不污染 Bus，错误身份与真正激活后的失败语义不变。可独立修复，不依赖 I51 完整重构。
   - **关闭记录（2026-09-25，a888fcb）**：原实现的取消污染稳定复现 3/3；获锁后重查调用方 context，取消者不进入底层激活。可控 PONG 屏障与连续 SID 断言确认第一、第三注册成功，第二返回 Canceled 且未发送 SUB/UNSUB。激活后取消仍进入终态，Close 竞争保持 ErrClosed；定向 20 轮、包测试、race、两个 module lint 通过。等待锁期间不保证立即返回；I51 的错误归属另行处理，命令见 [B2 验证记录](./refactor-progress.md#b2-results)。
 
-- <a id="i53"></a> **I53 · P2：Node middleware 缺少稳定的业务 command 元数据**
+- <a id="i53"></a> **~~I53 · P2：Node middleware 缺少稳定的业务 command 元数据~~**
   - **影响**：业务 protobuf 已解码，transport operation 仍是内部 /cluster.v1.Node/Forward，标准日志、指标、追踪无法统一区分 command；共享请求类型时不能从类型可靠恢复命令。
   - **证据**：[node/register.go:39](../node/register.go#L39) 向 middleware 传递 typed request；[node/dispatch.go:72](../node/dispatch.go#L72) 只注入 Session。[examples/whot/service.go:21](../examples/whot/service.go#L21) 的 Enter/Leave 共用 Empty 请求，属于实际调用证据。
   - **解决方案**：在注册或 dispatch 边界提供不可变 command 元数据，按需映射业务 operation 并保留底层 RPC 信息；不向业务暴露 ForwardRequest、存储模型或第二套路由表。
   - **验证方案**：两个共享请求类型的 command 经真实 gRPC 调用，middleware 可区分它们；验证 Session、错误身份、调用顺序与 RawHandler 不自动应用 typed middleware 的约定不变。
   - **关闭条件与风险**：调用方可统一使用业务命令信息，不必逐 handler 包装。属于接口增强；是否改变已有 operation 指标标签须先评估调用方和可观测性兼容性。
+  - **关闭记录（2026-09-25，随本问题提交）**：增加只读 `node.CommandFromContext`，由 dispatch 按实际 command 注入不可变 context 值；保持现有 Kratos operation，不隐式改变指标标签。共享 Empty 请求的两个 command 经真实 gRPC 验证，在 metadata 注入前缺失 3/3，注入后 20 轮通过；覆盖 Session、middleware 顺序、错误身份、RawHandler 不自动套 typed middleware、0 值及缺失 context。make check、make lint、Node 全包 race 通过，两个 module lint 为 0 issues；完整 diff 与调用链已复审，见 [B5 记录](./refactor-progress.md#b5-results)。
 
 - <a id="i54"></a> **I54 · P2：SendProto 的消息所有权没有统一契约**
   - **影响**：调用方在 SendProto 返回后复用或修改 Proto/Body，TCP 可能发送修改后的数据或产生竞争，WebSocket 默认路径则已取得编码结果。
