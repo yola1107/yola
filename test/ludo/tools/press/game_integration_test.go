@@ -19,13 +19,37 @@ import (
 	"yola/test/ludo/internal/data"
 	"yola/test/ludo/internal/service"
 
+	"github.com/go-kratos/kratos/v3/config"
+	"github.com/go-kratos/kratos/v3/config/file"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 )
 
-// TestGameDelivery 使用原压测玩家驱动完整对局；固定到达率由 BenchmarkTableCadence 单独验证。
+// TestGameDelivery 保留 15s 历史预算对照，固定到达率由 BenchmarkTableCadence 单独验证。
 func TestGameDelivery(t *testing.T) {
+	timeouts := pushbench.RequestTimeouts{Transport: 15 * time.Second, Forward: 15 * time.Second, Node: 15 * time.Second}
+	t.Log("GAME budget profile: historical_15s")
+	runGameDeliveryScenarios(t, timeouts)
+}
+
+// TestConfiguredGameDelivery 使用当前 Gateway 默认请求预算及 YAML 中的 Node handler 预算。
+func TestConfiguredGameDelivery(t *testing.T) {
+	c := config.New(config.WithSource(file.NewSource("../../configs/config.yaml")))
+	t.Cleanup(func() { require.NoError(t, c.Close()) })
+	require.NoError(t, c.Load())
+	var bootstrap conf.Bootstrap
+	require.NoError(t, c.Scan(&bootstrap))
+	timeouts := pushbench.RequestTimeouts{
+		Transport: 3 * time.Second, Forward: 3 * time.Second,
+		Node: bootstrap.GetServer().GetGrpc().GetTimeout().AsDuration(),
+	}
+	t.Log("GAME budget profile: gateway_defaults_and_node_yaml; source=../../configs/config.yaml")
+	runGameDeliveryScenarios(t, timeouts)
+}
+
+func runGameDeliveryScenarios(t *testing.T, timeouts pushbench.RequestTimeouts) {
+	t.Helper()
 	if os.Getenv("YOLA_REDIS_INTEGRATION") == "" || os.Getenv("YOLA_ETCD_INTEGRATION") == "" {
 		t.Skip("set YOLA_REDIS_INTEGRATION and YOLA_ETCD_INTEGRATION to disposable instances")
 	}
@@ -50,7 +74,7 @@ func TestGameDelivery(t *testing.T) {
 		{name: "tables=500", tables: 500},
 		{name: "tables=1000", tables: 1000},
 	} {
-		if !t.Run(scenario.name, func(t *testing.T) { runGameDelivery(t, scenario.tables, scenario.robots, duration) }) {
+		if !t.Run(scenario.name, func(t *testing.T) { runGameDelivery(t, scenario.tables, scenario.robots, duration, timeouts) }) {
 			break
 		}
 	}
@@ -61,11 +85,14 @@ func TestTableAdmission(t *testing.T) {
 	logger := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn})))
 	t.Cleanup(func() { slog.SetDefault(logger) })
-	runGameDelivery(t, 1000, false, 0)
+	t.Log("GAME budget profile: historical_15s")
+	runGameDelivery(t, 1000, false, 0, pushbench.RequestTimeouts{
+		Transport: 15 * time.Second, Forward: 15 * time.Second, Node: 15 * time.Second,
+	})
 }
 
 // runGameDelivery 在 duration 为零时仅验证入座、场景与消息投递，否则继续验证全员开局及对局。
-func runGameDelivery(t *testing.T, tableCount int, robots bool, duration time.Duration) {
+func runGameDelivery(t *testing.T, tableCount int, robots bool, duration time.Duration, timeouts pushbench.RequestTimeouts) {
 	t.Helper()
 	playerCount := tableCount * 4
 	if robots {
@@ -83,7 +110,7 @@ func runGameDelivery(t *testing.T, tableCount int, robots bool, duration time.Du
 	require.NoError(t, err)
 	t.Cleanup(cleanup)
 	game := service.NewService(usecase)
-	probe := pushbench.StartGame(t, "ludo", client, game.RegisterNode, game.Drain, playerCount, 15*time.Second)
+	probe := pushbench.StartGame(t, "ludo", client, game.RegisterNode, game.Drain, playerCount, timeouts)
 	// 到达率由 Batch/Interval 控制，有限玩家集不因压测端启动池满而漏发 Login。
 	runner := NewRunner(Press{
 		URL: probe.Endpoint, Open: true, Scenario: scenarioPlay, Num: int32(playerCount), Batch: []int32{400, 400}, Interval: 10,

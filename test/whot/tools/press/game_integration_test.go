@@ -20,13 +20,37 @@ import (
 	"yola/test/whot/internal/data"
 	"yola/test/whot/internal/service"
 
+	"github.com/go-kratos/kratos/v3/config"
+	"github.com/go-kratos/kratos/v3/config/file"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 )
 
-// TestGameDelivery 保留压测玩家的异步请求及响应 mailbox，使用真实游戏服务验证消息流。
+// TestGameDelivery 保留 3s 历史预算及压测玩家的异步请求、响应 mailbox。
 func TestGameDelivery(t *testing.T) {
+	timeouts := pushbench.RequestTimeouts{Transport: 3 * time.Second, Forward: 3 * time.Second, Node: 3 * time.Second}
+	t.Log("GAME budget profile: historical_3s")
+	runGameDeliveryScenarios(t, timeouts)
+}
+
+// TestConfiguredGameDelivery 使用当前 Gateway 默认请求预算及 YAML 中的 Node handler 预算。
+func TestConfiguredGameDelivery(t *testing.T) {
+	c := config.New(config.WithSource(file.NewSource("../../configs/config.yaml")))
+	t.Cleanup(func() { require.NoError(t, c.Close()) })
+	require.NoError(t, c.Load())
+	var bootstrap conf.Bootstrap
+	require.NoError(t, c.Scan(&bootstrap))
+	timeouts := pushbench.RequestTimeouts{
+		Transport: 3 * time.Second, Forward: 3 * time.Second,
+		Node: bootstrap.GetServer().GetGrpc().GetTimeout().AsDuration(),
+	}
+	t.Log("GAME budget profile: gateway_defaults_and_node_yaml; source=../../configs/config.yaml")
+	runGameDeliveryScenarios(t, timeouts)
+}
+
+func runGameDeliveryScenarios(t *testing.T, timeouts pushbench.RequestTimeouts) {
+	t.Helper()
 	if os.Getenv("YOLA_REDIS_INTEGRATION") == "" || os.Getenv("YOLA_ETCD_INTEGRATION") == "" {
 		t.Skip("set YOLA_REDIS_INTEGRATION and YOLA_ETCD_INTEGRATION to disposable instances")
 	}
@@ -51,13 +75,13 @@ func TestGameDelivery(t *testing.T) {
 		{name: "tables=500", tables: 500},
 		{name: "tables=1000", tables: 1000},
 	} {
-		if !t.Run(scenario.name, func(t *testing.T) { runGameDelivery(t, scenario.tables, scenario.robots, duration) }) {
+		if !t.Run(scenario.name, func(t *testing.T) { runGameDelivery(t, scenario.tables, scenario.robots, duration, timeouts) }) {
 			break
 		}
 	}
 }
 
-func runGameDelivery(t *testing.T, tableCount int, robots bool, duration time.Duration) {
+func runGameDelivery(t *testing.T, tableCount int, robots bool, duration time.Duration, timeouts pushbench.RequestTimeouts) {
 	t.Helper()
 	playerCount := tableCount * 4
 	if robots {
@@ -79,7 +103,7 @@ func runGameDelivery(t *testing.T, tableCount int, robots bool, duration time.Du
 	require.NoError(t, err)
 	t.Cleanup(cleanup)
 	game := service.NewService(usecase)
-	probe := pushbench.StartGame(t, "whot", client, game.RegisterNode, game.Drain, playerCount, 3*time.Second)
+	probe := pushbench.StartGame(t, "whot", client, game.RegisterNode, game.Drain, playerCount, timeouts)
 	// 连接由测试逐个装配观测 codec，后续请求和回调仍由原 User/Runner 执行。
 	runner := NewRunner(t.Context(), &LoadTest{Press: Press{URL: probe.Endpoint, Interval: 100, Num: int32(playerCount)}})
 	require.NoError(t, runner.Start())

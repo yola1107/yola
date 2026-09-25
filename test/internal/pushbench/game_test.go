@@ -1,14 +1,75 @@
 package pushbench
 
 import (
+	"context"
+	"crypto/rand"
 	"errors"
 	"testing"
+	"time"
 
 	"yola/api/protocol/v1"
+	"yola/network/websocket"
+	"yola/node"
 
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/emptypb"
 )
+
+func TestGameRequestTimeoutsAcrossWebSocketAndGRPC(t *testing.T) {
+	client := GameRedis(t)
+	for _, layer := range []string{"transport", "forward", "node"} {
+		t.Run(layer, func(t *testing.T) {
+			timeouts := RequestTimeouts{Transport: time.Second, Forward: time.Second, Node: time.Second}
+			limit := 250 * time.Millisecond
+			switch layer {
+			case "transport":
+				timeouts.Transport = limit
+			case "forward":
+				timeouts.Forward = limit
+			case "node":
+				timeouts.Node = limit
+			}
+			budgets, finished := make(chan time.Duration, 1), make(chan struct{})
+			service := "budget-" + rand.Text()
+			probe := StartGame(t, service, client, func(server *node.Server) {
+				server.RegisterRawHandler(0, func(context.Context, []byte) ([]byte, error) { return nil, nil })
+				server.RegisterRawHandler(1, func(ctx context.Context, _ []byte) ([]byte, error) {
+					defer close(finished)
+					deadline, _ := ctx.Deadline()
+					budgets <- time.Until(deadline)
+					<-ctx.Done()
+					return nil, ctx.Err()
+				})
+			}, nil, 1, timeouts)
+			connection, err := websocket.NewClient(t.Context(), websocket.WithEndpoint(probe.Endpoint),
+				websocket.WithServiceName(service), websocket.WithToken("1"))
+			require.NoError(t, err)
+			t.Cleanup(connection.Close)
+			ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+			defer cancel()
+			_, code, err := connection.Request(ctx, 0, new(emptypb.Empty))
+			require.NoError(t, err)
+			require.Zero(t, code)
+			_, code, err = connection.Request(ctx, 1, new(emptypb.Empty))
+			require.NoError(t, err, "client must receive an error response instead of timing out locally")
+			require.Equal(t, int32(codes.DeadlineExceeded), code)
+			select {
+			case budget := <-budgets:
+				require.Positive(t, budget)
+				require.LessOrEqual(t, budget, limit)
+			default:
+				t.Fatal("request never reached the Node handler")
+			}
+			select {
+			case <-finished:
+			case <-ctx.Done():
+				t.Fatal("Node handler did not observe cancellation")
+			}
+		})
+	}
+}
 
 func TestGameDeliveryRejectsMissingDuplicateReorderedAndChangedMessages(t *testing.T) {
 	for _, test := range []struct {

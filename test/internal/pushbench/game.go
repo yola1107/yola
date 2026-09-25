@@ -25,7 +25,6 @@ import (
 
 	"github.com/go-kratos/kratos/v3/encoding"
 	"github.com/go-kratos/kratos/v3/middleware"
-	"github.com/go-kratos/kratos/v3/registry"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -65,13 +64,24 @@ func GameRedis(t *testing.T) *redis.Client {
 	return client
 }
 
-// StartGame 装配真实 Node、Gateway、Redis Locator 和 etcd Registry，调用者提供游戏注册与排空。
+// RequestTimeouts 分别表达真实投递链各层的请求上限，不改变框架默认值。
+type RequestTimeouts struct {
+	Transport time.Duration
+	Forward   time.Duration
+	Node      time.Duration
+}
+
+// StartGame 通过原生 App.Run 装配 Node、Gateway、Redis 和共享 Registry。
 func StartGame(
 	t *testing.T, service string, client redis.UniversalClient, register func(*node.Server), drain node.DrainFunc,
-	playerCount int, rpcTimeout time.Duration,
+	playerCount int, timeouts RequestTimeouts,
 ) *GameProbe {
 
 	t.Helper()
+	require.Positive(t, timeouts.Transport)
+	require.Positive(t, timeouts.Forward)
+	require.Positive(t, timeouts.Node)
+	t.Logf("GAME request budgets: service=%s transport=%s forward=%s node=%s", service, timeouts.Transport, timeouts.Forward, timeouts.Node)
 	measurements := newMeasurements(t)
 	probe := &GameProbe{measurements: measurements, streams: make(map[string]*messageStream)}
 	suffix := rand.Text()
@@ -83,32 +93,21 @@ func StartGame(
 	store := locateredis.New(client)
 	server, err := node.NewServer(
 		node.Address("127.0.0.1:0"), node.Locator(&measuredLocator{Locator: store, measurements: measurements}),
-		node.HandlerTimeout(rpcTimeout),
+		node.HandlerTimeout(timeouts.Node),
 		node.ClientMiddleware(probe.observePush, measurements.rpc), node.Middleware(probe.observeHandler), node.Drain(drain),
 	)
 	require.NoError(t, err)
 	register(server)
 	probe.server = server
-	startServer(t, server, service, service+"-"+suffix, server.Metadata())
-	endpoint, err := server.Endpoint()
-	require.NoError(t, err)
-	instance := &registry.ServiceInstance{
-		ID: service + "-" + suffix, Name: service, Metadata: server.Metadata(), Endpoints: []string{endpoint.String()},
-	}
-	require.NoError(t, server.Registrar(discovery).Register(t.Context(), instance))
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		require.NoError(t, discovery.Deregister(ctx, instance))
-	})
-	socket := websocket.NewServer(websocket.Address("127.0.0.1:0"), websocket.Timeout(rpcTimeout),
+	startServer(t, server, service, service+"-"+suffix, server.Metadata(), server.Registrar(discovery))
+	socket := websocket.NewServer(websocket.Address("127.0.0.1:0"), websocket.Timeout(timeouts.Transport),
 		websocket.MaxConnLimit(int32(playerCount+1)), websocket.MaxConnPerIP(int32(playerCount+1)))
 	gate, err := gateway.NewServer(
 		gateway.Address("127.0.0.1:0"), gateway.Auth(benchmarkAuthenticator{}), gateway.Locator(store),
-		gateway.Discovery(discovery), gateway.Transport(socket), gateway.RPCTimeout(rpcTimeout),
+		gateway.Discovery(discovery), gateway.Transport(socket), gateway.RPCTimeout(timeouts.Forward),
 	)
 	require.NoError(t, err)
-	startServer(t, gate, "gateway", "gateway-"+suffix, nil)
+	startServer(t, gate, "gateway", "gateway-"+suffix, nil, nil)
 	socketEndpoint, err := socket.Endpoint()
 	require.NoError(t, err)
 	probe.Endpoint = socketEndpoint.String()

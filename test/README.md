@@ -95,24 +95,38 @@ go test -p=1 ./ludo/internal/biz/table ./whot/internal/biz/table -run '^TestTabl
 
 每名接收者必须按序收到全部消息，队列拒绝、缺失、重复、串桌或乱序均使测试失败。`TestTablePushSocketOrdering` 额外覆盖读循环每帧延迟 10ms，以及旧连接关闭后的同 UID 重连，校验 binding token 已更换且序号连续；它不覆盖断线期间的消息重放、并发接管或发送队列溢出。
 
-`TestGameDelivery` 装配真实游戏 Usecase、Redis 玩家仓库、Node、Gateway 和独立 etcd namespace，使用原压测玩家驱动 Login、Scene 和游戏操作。Ludo 保持同步操作，Whot 保持异步请求与响应 mailbox；测试连接接入观测 codec，不修改业务协议。场景包括两桌烟测、一名真人与两名服务器机器人，以及 100、500、1,000 桌各四名真人。
+`TestGameDelivery` 和 `TestConfiguredGameDelivery` 装配真实游戏 Usecase、Redis 玩家仓库、Node、Gateway 和独立 etcd namespace，使用原压测玩家驱动 Login、Scene 和游戏操作。Node/Gateway 均通过原生 Kratos App.Run 启停；Node 使用现有就绪 Registrar，Gateway 只使用同一 Registry 的 Discovery，不重复注册。夹具等待 AfterStart 和 gRPC Ready，失败时由测试 owner 取消、停止并等待 Run 结束，不新增生产 App 层。Ludo 保持同步操作，Whot 保持异步请求与响应 mailbox；测试连接接入观测 codec，不修改业务协议。场景包括两桌烟测、一名真人与两名服务器机器人，以及 100、500、1,000 桌各四名真人。
 
 Ludo 测试按 `tableID = (UID - uidStart) / 4 + 1` 指定入座，每四个连续 UID 对应一桌，1,000 桌对应 4,000 名真人；验证 Login 返回桌号与分配一致，单独输出启动耗时和 Connect/Login/Scene/Ready 指标。每 10ms 新增 400 人，4,000 人计划约 100ms 发起完，实际发起与完成受调度和依赖处理速度影响。启动池容量按本轮玩家总数设置，避免有限 UID 在压测端因池满而漏发；等待全部启动成功或失败后统一统计，拒绝、掉线或响应错误仍使测试失败。普通 press 入口与 Whot 保留自动选桌。
 
 `TestTableAdmission` 只验收 4,000 人进入指定的 1,000 桌，查询每桌 Scene 并核对座位与消息投递；它不要求所有人已经参与本局。`TestGameDelivery` 先检查入座，再等待全员收到开局推送后采集对局指标。两种验收都保留自动准备和既有客户端动作，入座阶段仍可能与已开局桌的操作重叠。Ready 阶段在 Scene 已表明玩家准备或游戏中时直接成功，阶段成功数不等于 Ready RPC 数。
 
-Ludo 夹具的 WebSocket handler、Gateway Forward 和 Node handler 预算均显式设为 15s，配合业务入座/重连等待上限 5s 和独立清理预算 2s；Whot 夹具保持 3s。客户端请求默认 30s。夹具不读取游戏 YAML 的 Node handler 配置；独立运行服务时按 [本地启动](#本地启动) 装配，职责见 [超时预算](../docs/architecture.md#63-请求预算与超时职责)。测试参数和历史 2s、10s 入座预算不同，跨版本比较时须注明超时链路。
+夹具用 `pushbench.RequestTimeouts` 分别配置 WebSocket handler、Gateway Forward 和 Node handler，启动日志输出三项值与预算场景：
+
+| 测试入口 | WebSocket / Forward | Node handler | 用途 |
+| --- | --- | --- | --- |
+| Ludo `TestGameDelivery`、`TestTableAdmission` | 15s / 15s | 15s | 保留历史预算对照 |
+| Whot `TestGameDelivery` | 3s / 3s | 3s | 保留历史预算对照 |
+| 两款游戏 `TestConfiguredGameDelivery` | 3s / 3s | 从各自 `configs/config.yaml` 读取，当前 Ludo 5s、Whot 3s | 当前请求预算场景；3s 对应测试 Gateway 当前 CLI 默认值 |
+
+Configured 只对齐请求预算，room、玩家、到达率仍由合成夹具提供，不等于完整 YAML 部署或容量验收。Ludo 入座/重连仍为 5s、失败清理为 2s，客户端请求默认 30s；日志值是比较依据。直接运行预编译测试二进制时，工作目录须为对应的 `tools/press`，以便读取 `../../configs/config.yaml`。独立服务装配见 [本地启动](#本地启动)，各层 owner 见 [超时预算](../docs/architecture.md#63-请求预算与超时职责)。
+
+`GameProbe.Stop` 保留独立 15s 的 Node 排空检查，让 Gateway 和客户端继续接收至消息流断言完成；App 注销和 Run 退出在测试 cleanup 中完成。早失败路径不保证先排空 Node 再关闭 Gateway。原生 App.Run 也引入原夹具未包含的应用初始化成本，不能直接以跨版本启动/RSS 差值宣称性能收益。
 
 ```powershell
 $env:YOLA_ETCD_INTEGRATION = '<dedicated-etcd>:2379'
 $env:YOLA_GAME_DURATION = '30s'
 go test -p=1 ./ludo/tools/press ./whot/tools/press -run '^TestGameDelivery$' -count=1 -v -timeout=20m
 # 只验证小规模真人和机器人；Linux 可补 -race，race 数据不用于性能比较。
-go test -p=1 ./ludo/tools/press ./whot/tools/press -run '^TestGameDelivery/(smoke|robots)$' -count=1 -v -timeout=5m
+go test -p=1 ./ludo/tools/press ./whot/tools/press -run '^TestGameDelivery$/(smoke|robots)$' -count=1 -v -timeout=5m
+# 按当前请求预算运行；不自动替换上面的历史对照。
+go test -p=1 ./ludo/tools/press ./whot/tools/press -run '^TestConfiguredGameDelivery$/(smoke|robots)$' -count=1 -v -timeout=5m
 # 只验证 Ludo 定桌入座与对局，按 100、500、1,000 桌升档。
-go test ./ludo/tools/press -run '^TestGameDelivery/tables=' -count=1 -v -timeout=10m
+go test ./ludo/tools/press -run '^TestGameDelivery$/tables=' -count=1 -v -timeout=10m
 # 单独验证 4,000 人进入指定的 1,000 桌，核对座位与消息投递，不要求全员已参与本局。
 go test ./ludo/tools/press -run '^TestTableAdmission$' -count=1 -v -timeout=5m
+# 小规模验证最短预算通过真实 WS 和 gRPC 返回 DeadlineExceeded，分别缩短三层。
+go test ./internal/pushbench -run '^TestGameRequestTimeoutsAcrossWebSocketAndGRPC$' -count=3 -v -timeout=60s
 ```
 
 真实游戏测试等待所有玩家收到开局推送后计时，默认 30s、允许 1s～30m；按已有游戏反馈立即操作，属于闭环负载，与每桌每秒一次的固定速率基准分别解释。结束后查询每桌 Scene，核对人数、UID 归属、座位唯一性和在线状态；停止服务生产者后，对每个 UID 的 Node Push 与客户端回调做数量及 SHA-256 流摘要比对，摘要包含 command、长度与内容边界。机器人场景还要求观察到机器人实际动作；结算消息单独计数，短样本不保证每桌完成整局。每款游戏遇到首个失败场景即停止升档；延长采样时间时须按所选场景总时长增大 `-timeout`。

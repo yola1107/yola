@@ -118,7 +118,8 @@
   - **验证方案**：覆盖较短父 deadline、无 deadline、队列中取消、开始/取消竞争、已开始操作、独立失败清理、重连归属及真实 gRPC/外部帧错误传播；单独调整 PushTimeout 不得意外改变经确认的清理预算。与 I50 联合验证心跳，再按同配置复测负载。
   - **关闭条件与风险**：有效预算及所有者可追踪，取消和已开始操作语义明确，同配置业务目标通过。不得简单把所有 background context 换为请求 context；删除现有上限或改变开始后的完成语义须先确认。
   - **框架修复记录（2026-09-25，随本问题提交）**：Gateway 新增各默认 3s 的 ConnectTimeout、LeaseTimeout、CleanupTimeout，Node 新增默认 3s 的 CleanupTimeout；RPCTimeout/PushTimeout 不再控制这些非请求操作。五条 deadline 耦合各复现 3/3，分离后定向 20 轮通过；真实 gRPC 四种最短 deadline、根包 race、make check/lint、扩展 mailbox/入座/重连/清理 race 通过。保留逐层请求上限及已开始操作语义，未改变协议、游戏默认预算或配置标识符。
-  - **剩余验收**：完整游戏与同配置负载目标未运行，不能用上述功能回归关闭整项。`test/internal/pushbench/game.go:71` 的一个参数同时配置 Transport/Forward/Node，且通过手动 BeforeStart/Start 验证业务链；它不等于真实入口的 App.Run。先明确各层实际预算与验收边界，再与 I45/B6 一并验证；不重复实施预算分离，命令见 [B3 记录](./refactor-progress.md#b3-results)。
+  - **验收入口修复（2026-09-26，随本批提交）**：`pushbench` 改为原生 App.Run 启停，使用现有 Node 就绪 Registrar，移除手工 Register；分别配置 Transport/Forward/Node 并输出预算。历史场景保持不变，新增 `TestConfiguredGameDelivery` 从 Node YAML 读取预算，Gateway 两段按当前默认 3s。仅修复测试模块的验收入口，不新增生产 App/Config 或改动业务预算；验证结果见 [当前批次](./refactor-progress.md#request-budget-fixture)。
+  - **剩余验收**：当前请求预算小规模场景不等于全部 YAML 部署；完整游戏、目标规模稳态及已开始业务副作用的完整窗口仍需 I45/B6 验证。I46 保持待验证，不重做已提交的框架预算分离；历史框架验证见 [B3 记录](./refactor-progress.md#b3-results)。
 
 ## 运行与部署限制
 

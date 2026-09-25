@@ -60,11 +60,11 @@ func newSocketPipeline(t testing.TB, address, service string, tableCount int, me
 		gateway.Locator(store), gateway.Discovery(unusedDiscovery{}), gateway.Transport(socket),
 	)
 	require.NoError(t, err)
-	startServer(t, gate, "gateway", service+"-gateway", nil)
+	startServer(t, gate, "gateway", service+"-gateway", nil, nil)
 	server, err := node.NewServer(node.Address("127.0.0.1:0"),
 		node.Locator(&measuredLocator{Locator: store, measurements: measurements}), node.ClientMiddleware(measurements.rpc))
 	require.NoError(t, err)
-	startServer(t, server, service, service+"-node", server.Metadata())
+	startServer(t, server, service, service+"-node", server.Metadata(), nil)
 	endpoint, err := socket.Endpoint()
 	require.NoError(t, err)
 	pipeline := &socketPipeline{

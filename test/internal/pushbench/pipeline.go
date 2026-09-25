@@ -65,14 +65,14 @@ func newPipeline(t testing.TB, address, service string, playerCount int, delay t
 		gateway.Locator(store), gateway.Discovery(unusedDiscovery{}), gateway.LeaseTTL(time.Hour),
 	)
 	require.NoError(t, err)
-	startServer(t, gate, "gateway", service+"-gateway", nil)
+	startServer(t, gate, "gateway", service+"-gateway", nil, nil)
 	server, err := node.NewServer(
 		node.Address("127.0.0.1:0"),
 		node.Locator(&measuredLocator{Locator: store, measurements: measurements}),
 		node.ClientMiddleware(measurements.rpc),
 	)
 	require.NoError(t, err)
-	startServer(t, server, service, service+"-node", server.Metadata())
+	startServer(t, server, service, service+"-node", server.Metadata(), nil)
 	received := new(atomic.Uint64)
 	for playerID := 1; playerID <= playerCount; playerID++ {
 		uid := strconv.Itoa(playerID)
@@ -99,26 +99,46 @@ type applicationServer interface {
 	BeforeStart(context.Context) error
 }
 
-func startServer(t testing.TB, server applicationServer, service, id string, metadata map[string]string) {
+func startServer(t testing.TB, server applicationServer, service, id string, metadata map[string]string, registrar registry.Registrar) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-	appCtx := kratos.NewContext(ctx, kratos.New(kratos.ID(id), kratos.Name(service), kratos.Metadata(metadata)))
-	require.NoError(t, server.BeforeStart(appCtx))
-	done := make(chan error, 1)
-	go func() { done <- server.Start(appCtx) }()
+	ready, done := make(chan struct{}), make(chan struct{})
+	app := kratos.New(
+		kratos.Context(ctx), kratos.ID(id), kratos.Name(service), kratos.Metadata(metadata),
+		kratos.BeforeStart(server.BeforeStart), kratos.Server(server), kratos.Registrar(registrar),
+		kratos.StopTimeout(10*time.Second), kratos.RegistrarTimeout(5*time.Second),
+		kratos.AfterStart(func(context.Context) error { close(ready); return nil }),
+	)
+	var runErr error
+	go func() { runErr = app.Run(); close(done) }()
 	t.Cleanup(func() {
-		cancel()
-		stopCtx, stopCancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer stopCancel()
-		require.NoError(t, server.Stop(stopCtx))
+		var appStopErr error
 		select {
-		case err := <-done:
-			require.NoError(t, err)
-		case <-stopCtx.Done():
-			t.Error("benchmark server did not stop")
+		case <-ready:
+			appStopErr = app.Stop()
+		default:
+			// 未完成注册时沿用应用 owner 的失败回收，不注销未知登记。
 		}
+		cancel()
+		stopCtx, stopCancel := context.WithTimeout(kratos.NewContext(context.Background(), app), 10*time.Second)
+		defer stopCancel()
+		cleanupErr := errors.Join(appStopErr, server.Stop(stopCtx))
+		select {
+		case <-done:
+			cleanupErr = errors.Join(cleanupErr, runErr)
+		case <-stopCtx.Done():
+			cleanupErr = errors.Join(cleanupErr, errors.New("benchmark application did not stop"), stopCtx.Err())
+		}
+		require.NoError(t, cleanupErr)
 	})
+	select {
+	case <-ready:
+	case <-done:
+		require.NoError(t, runErr)
+		t.Fatal("benchmark application exited before startup completed")
+	case <-time.After(10 * time.Second):
+		t.Fatal("benchmark application did not complete startup")
+	}
 	endpoint, err := server.Endpoint()
 	require.NoError(t, err)
 	// 单 endpoint 就绪探针使用 pick_first，避免 Kratos 默认 selector 的初始化顺序约束。
