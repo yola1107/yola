@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"sync"
+	"sync/atomic"
 
 	"yola/api/protocol/v1"
 	"yola/network"
@@ -28,13 +29,15 @@ type channel struct {
 	connID string
 	codec  encoding.Codec
 
-	ip        string
-	cancel    context.CancelFunc
-	mu        sync.RWMutex
-	replyWG   sync.WaitGroup
-	closed    bool
-	stopped   bool
-	writerErr error
+	ip                  string
+	cancel              context.CancelFunc
+	mu                  sync.RWMutex
+	replyWG             sync.WaitGroup
+	closed              bool
+	stopped             bool
+	writerErr           error
+	pendingPayloadBytes atomic.Int64
+	queueDropped        atomic.Uint64
 }
 
 func (c *channel) closeWithProto(ctx context.Context, p *v1.Proto) error {
@@ -51,14 +54,19 @@ func (c *channel) closeWithProto(ctx context.Context, p *v1.Proto) error {
 	close(c.closing)
 	c.mu.Unlock()
 	c.replyWG.Wait()
+	size := int64(len(p.Body))
+	c.pendingPayloadBytes.Add(size)
 	select {
 	case c.outbound <- event:
 	case <-ctx.Done():
+		c.pendingPayloadBytes.Add(-size)
 		c.close()
 		return ctx.Err()
 	case <-c.stop:
+		c.pendingPayloadBytes.Add(-size)
 		return c.writerError()
 	case <-c.writerDone:
+		c.pendingPayloadBytes.Add(-size)
 		return c.writerError()
 	}
 	return c.waitFinal(ctx, event.done)
@@ -110,10 +118,14 @@ func (c *channel) push(p *v1.Proto) error {
 	if c.closed {
 		return network.ErrConnectionClosed
 	}
+	size := int64(len(p.Body))
+	c.pendingPayloadBytes.Add(size)
 	select {
 	case c.outbound <- channelEvent{proto: p}:
 		return nil
 	default:
+		c.pendingPayloadBytes.Add(-size)
+		c.queueDropped.Add(1)
 		return network.ErrSendQueueFull
 	}
 }
@@ -129,14 +141,18 @@ func (c *channel) reply(ctx context.Context, p *v1.Proto) error {
 	}
 	c.replyWG.Add(1)
 	c.mu.Unlock()
+	size := int64(len(p.Body))
+	c.pendingPayloadBytes.Add(size)
 	select {
 	case c.outbound <- channelEvent{proto: p}:
 		c.replyWG.Done()
 		return nil
 	case <-ctx.Done():
+		c.pendingPayloadBytes.Add(-size)
 		c.replyWG.Done()
 		return ctx.Err()
 	case <-c.closing:
+		c.pendingPayloadBytes.Add(-size)
 		c.replyWG.Done()
 		return c.waitClosed(ctx)
 	}
@@ -154,6 +170,7 @@ func (c *channel) waitClosed(ctx context.Context) error {
 func (c *channel) next() (channelEvent, bool) {
 	select {
 	case event := <-c.outbound:
+		c.pendingPayloadBytes.Add(-int64(len(event.proto.Body)))
 		return event, true
 	case <-c.stop:
 		return channelEvent{}, false

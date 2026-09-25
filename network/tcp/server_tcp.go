@@ -254,6 +254,18 @@ type tcpConnection struct {
 func (c tcpConnection) ConnID() string              { return c.ch.connID }
 func (c tcpConnection) RemoteAddr() string          { return c.remoteAddr }
 func (c tcpConnection) SendProto(p *v1.Proto) error { return c.ch.push(p) }
+
+// SendStats 返回连接发送队列的只读快照。
+func (c tcpConnection) SendStats() network.SendStats {
+	return network.SendStats{
+		QueueDepth:          len(c.ch.outbound),
+		QueueCapacity:       cap(c.ch.outbound),
+		PendingPayloadBytes: c.ch.pendingPayloadBytes.Load(),
+		QueueDropped:        c.ch.queueDropped.Load(),
+		Closed:              c.ch.isClosed(),
+	}
+}
+
 func (c tcpConnection) CloseWithProto(ctx context.Context, p *v1.Proto) error {
 	err := c.ch.closeWithProto(ctx, p)
 	if !c.ch.isClosed() {

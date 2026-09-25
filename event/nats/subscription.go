@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"yola/event"
 	"yola/internal/contextwait"
@@ -19,6 +20,9 @@ type subscription struct {
 	maxPayloadBytes int
 	native          *natsgo.Subscription
 	cancel          context.CancelFunc
+	statsMu         sync.Mutex
+	stats           event.SubscriptionStats
+	messages        <-chan *natsgo.Msg
 	dropped         atomic.Uint64
 	stopOnce        sync.Once
 	stopDone        chan struct{}
@@ -41,7 +45,32 @@ func (s *subscription) activate(conn *natsgo.Conn, queueCapacity int) (<-chan *n
 	}
 
 	s.native = native
+	s.messages = messages
+	s.stats.QueueCapacity = queueCapacity
 	return messages, nil
+}
+
+// SubscriptionStats 返回本地订阅快照；原生 drop 失效后保留最后可得值。
+func (s *subscription) SubscriptionStats() event.SubscriptionStats {
+	s.statsMu.Lock()
+	defer s.statsMu.Unlock()
+	s.sampleDropped()
+	stats := s.stats
+	stats.QueueDepth = len(s.messages)
+	stats.PayloadDropped = s.dropped.Load()
+	return stats
+}
+
+// sampleDropped 由 statsMu 保护；不得从原生订阅关闭回调重入原生锁。
+func (s *subscription) sampleDropped() {
+	s.stats.QueueDroppedCurrent = false
+	if s.native == nil {
+		return
+	}
+	if dropped, err := s.native.Dropped(); err == nil {
+		s.stats.QueueDropped = uint64(dropped)
+		s.stats.QueueDroppedCurrent = true
+	}
 }
 
 func (s *subscription) start(parent context.Context, messages <-chan *natsgo.Msg) {
@@ -80,8 +109,24 @@ func (s *subscription) handle(ctx context.Context, message *natsgo.Msg) {
 		// nats.go owns this buffer and does not reuse it after delivery.
 		Payload: message.Data,
 	}
+	s.statsMu.Lock()
+	s.stats.HandlerActive = true
+	s.statsMu.Unlock()
+	started := time.Now()
 	defer func() {
-		if recovered := recover(); recovered != nil {
+		recovered := recover()
+		duration := time.Since(started)
+		s.statsMu.Lock()
+		s.stats.HandlerActive = false
+		s.stats.HandlerCalls++
+		s.stats.HandlerDuration += duration
+		s.stats.LastHandlerDuration = duration
+		s.stats.MaxHandlerDuration = max(s.stats.MaxHandlerDuration, duration)
+		if recovered != nil {
+			s.stats.HandlerPanics++
+		}
+		s.statsMu.Unlock()
+		if recovered != nil {
 			slog.ErrorContext(ctx, "event handler panic", "topic", received.Topic, "panic", recovered)
 		}
 	}()
@@ -89,14 +134,19 @@ func (s *subscription) handle(ctx context.Context, message *natsgo.Msg) {
 }
 
 func (s *subscription) deactivate() (bool, error) {
+	s.statsMu.Lock()
+	s.sampleDropped()
 	native := s.native
 	cancel := s.cancel
 	s.native = nil
 	s.cancel = nil
+	dropped := s.stats.QueueDropped
+	s.stats.QueueDroppedCurrent = false
+	s.statsMu.Unlock()
 
 	var err error
 	if native != nil {
-		if dropped, dropErr := native.Dropped(); dropErr == nil && dropped > 0 {
+		if dropped > 0 {
 			slog.Warn("event dropped", "topic", s.topic, "reason", "queue_full", "dropped", dropped)
 		}
 		err = native.Unsubscribe()
@@ -112,8 +162,7 @@ func (s *subscription) beginStop() {
 		started, err := s.deactivate()
 		s.stopErr = err
 		if !started {
-			s.handler = nil
-			close(s.stopDone)
+			s.complete()
 		}
 	})
 }
@@ -122,7 +171,15 @@ func (s *subscription) finish() {
 	s.stopOnce.Do(func() {
 		_, s.stopErr = s.deactivate()
 	})
+	s.complete()
+}
+
+func (s *subscription) complete() {
 	s.handler = nil
+	s.statsMu.Lock()
+	s.messages = nil
+	s.stats.Closed = true
+	s.statsMu.Unlock()
 	close(s.stopDone)
 }
 

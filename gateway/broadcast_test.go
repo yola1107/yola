@@ -110,6 +110,9 @@ func TestBroadcastQueueIsBounded(t *testing.T) {
 	}
 	require.NoError(t, server.Broadcast(2, nil))
 	require.ErrorIs(t, server.Broadcast(3, nil), ErrBroadcastQueueFull)
+	require.Equal(t, 1, server.BroadcastStats().QueueDepth)
+	require.Equal(t, uint64(1), server.BroadcastStats().QueueDropped)
+	require.Zero(t, server.BroadcastStats().SendDropped)
 	conn.unblock()
 
 	require.Eventually(t, func() bool {
@@ -128,6 +131,8 @@ func TestBroadcastQueueIsBounded(t *testing.T) {
 	require.Zero(t, stats.SendDropped)
 	require.Zero(t, stats.QueueDepth)
 	require.Equal(t, 1, stats.QueueCapacity)
+	require.NoError(t, server.broadcaster.stop(context.Background()))
+	require.Equal(t, stats, server.BroadcastStats())
 }
 
 func TestBroadcastStopTimeoutCanBeWaitedAgain(t *testing.T) {
@@ -229,3 +234,34 @@ func (c *blockingConnection) snapshotCommands() []int32 {
 }
 
 var _ network.Connection = (*blockingConnection)(nil)
+
+func TestBroadcastStatsSeparateSendRejection(t *testing.T) {
+	conn := &queueFullConnection{newTestConnection("full")}
+	sessions := &sessionRegistry{byConnID: map[string]*session{
+		conn.ConnID(): activeSession(conn, testBinding()),
+	}}
+	server := &Server{broadcaster: newBroadcaster(sessions, 1, 1)}
+	require.NoError(t, server.broadcaster.start())
+	t.Cleanup(func() { require.NoError(t, server.broadcaster.stop(context.Background())) })
+	require.NoError(t, server.Broadcast(1, []byte("full")))
+	require.Eventually(t, func() bool { return server.BroadcastStats().Completed == 1 }, time.Second, time.Millisecond)
+	stats := server.BroadcastStats()
+	require.Equal(t, uint64(1), stats.Accepted)
+	require.Equal(t, uint64(1), stats.SendDropped)
+	require.Zero(t, stats.QueueDropped)
+	var readers sync.WaitGroup
+	for range 4 {
+		readers.Go(func() {
+			for range 100 {
+				server.BroadcastStats()
+			}
+		})
+	}
+	require.NoError(t, server.broadcaster.stop(context.Background()))
+	readers.Wait()
+	require.Equal(t, stats, server.BroadcastStats())
+}
+
+type queueFullConnection struct{ *testConnection }
+
+func (*queueFullConnection) SendProto(*protocolv1.Proto) error { return network.ErrSendQueueFull }

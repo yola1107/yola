@@ -81,6 +81,19 @@ New -> Publish/Subscribe/Unsubscribe -> Close
 
 NATS adapter 只暴露两个热路径容量参数：`WithQueueCapacity` 控制单订阅接收队列，`WithMaxPayloadBytes` 同时限制 Publish Payload 并丢弃超限的接收 Payload；默认分别为 256 和 64 KiB，按默认上限计算的单订阅 Payload 积压约为 16 MiB（不含结构和协议开销）。应用组装只需传入 NATS URL；生产值确有不同容量证据时再显式覆盖，并同步对齐 broker `max_payload`。
 
+返回的订阅实现可选的 `event.SubscriptionStatsProvider`。`SubscriptionStats()` 可与消费、退订和 Bus.Close 并发调用，不重置累计值：
+
+| 字段 | 边界 |
+| --- | --- |
+| `QueueDepth` / `QueueCapacity` | 原有接收 channel 的等待条数/容量，不含当前 handler；完全退出后 depth 为 0，释放队列引用 |
+| `QueueDropped` / `QueueDroppedCurrent` | nats.go 本地接收队列满的累计拒绝；Current 为 false 时仅保留最后可得值，关闭竞争期间的增量未知，不承诺精确最终值 |
+| `PayloadDropped` | 消费协程出队后因 Payload 超限而丢弃，不能用它限制已入队内存 |
+| `HandlerCalls` / `HandlerPanics` / `HandlerActive` | 已结束调用数（含 panic）、其中 panic 次数、当前是否正在调用 |
+| `HandlerDuration` / `LastHandlerDuration` / `MaxHandlerDuration` | 已结束 handler 调用的累计、最近和最大耗时，不含队列等待与 panic 日志；不是 p99 |
+| `Closed` | 消费协程已退出；累计值仍可从原订阅句柄读取 |
+
+queue/drop 与 handler 字段是局部快照，不承诺跨字段或跨层原子采样。原生订阅关闭后不能读取 Dropped，adapter 不从关闭回调重入原生锁，也不推断 broker 丢失、断线丢失或关闭时丢弃的消息数。需要 p99 时由应用在 handler 边界采样，不能从累计/最大耗时反推分位数。
+
 ## 5. Gateway 在线 fanout
 
 Gateway 只拥有本地 broadcaster，不拥有外部 Bus。Bus 构造后已可用，应用组装层直接注册订阅，并在 `App.Run` 返回后关闭。启动和停机窗口内的事件可能丢失，属于当前 best-effort 语义。
@@ -138,6 +151,8 @@ fanout 流程：
 Gateway 不为每个 Session 创建 goroutine，也不在 EventBus 内复制 Session 索引。连接发送队列满、连接关闭或停机过程中都允许丢弃，并以限频日志记录 drop。
 
 `Gateway.BroadcastStats()` 返回一个不重置状态的瞬时快照：`QueueDepth` 是读取时的值，`QueueCapacity` 是配置容量，`Accepted` / `Completed` / `QueueDropped` / `SendDropped` 从 Server 创建起累计，`LastFanoutDuration` / `MaxFanoutDuration` 分别是最近一次和当前最大值。它只覆盖 Gateway 本地广播接纳与 fanout，不代表客户端已收到消息。
+
+TCP/WS 的 `network.Connection` 实现可选的 `network.SendStatsProvider`，由 Connection 的持有方读取 `SendStats()`；逻辑 Payload、关闭和采样边界见 [发送观测](./architecture.md#send-stats)。同一次连接队列拒绝可能同时体现在 `BroadcastStats.SendDropped` 与该连接的 `SendStats.QueueDropped`，两者是传播结果和原因，不能相加作为独立丢失数。订阅 `QueueDropped`、广播 `QueueDropped` 和连接 `QueueDropped` 分别属于三个不同接纳点；成功入队或写出均不证明客户端收到。
 
 ## 6. Node 接入
 

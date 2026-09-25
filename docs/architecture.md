@@ -87,6 +87,11 @@ WebSocket Server 私有持有 `http.Server`，调用方只通过 `TLSConfig`、`
 
 WebSocket 默认 codec 由包内 protobuf 实现持有，不受 Kratos 全局同名注册影响；显式 `Codec`/`WithCodec` 使用自定义编码。`PreparedConnection.SendPrepared` 必须在返回前结束对 prepared 对象的访问，只能保留 `Marshal` 返回的不可变 bytes。
 
+<a id="send-stats"></a>
+TCP/WS Connection 提供可选的 `network.SendStatsProvider.SendStats()`，从现有发送队列读取 depth/capacity，累计 `QueueDropped` 仅记录 `ErrSendQueueFull`。`Closed` 表示关闭新发送准入，writer 可能仍在发送最后一帧；关闭、编码和 socket 写出错误不计入 QueueDropped。
+
+`PendingPayloadBytes` 按每次发送的 `len(Proto.Body)` 累加，包含等待入队的回复/最后一帧和已排队帧，writer 取走或入队失败时减去。它不含 writer 当前帧、编码结果、channel/socket 开销，也不区分共享与独立 Payload，不能换算 RSS。关闭后尚未取走的帧仍计入该连接快照；释放连接才释放其队列。累计拒绝不因关闭清零，采样字段不保证同一时刻；观测不增加连接注册表、后台协程或消息队列，不改变发送背压。
+
 ### 2.2 Redis 模型
 
 | Key | 值 | 生命周期 | 用途 |

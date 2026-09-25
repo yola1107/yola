@@ -6,13 +6,13 @@
 ## 当前快照
 
 - **更新日期**：2026-09-25。
-- **代码审查基线**：起点 `0c8b270`；初始化交接文档 `9378b54`，I49 修复 `1a882f6`，I47 修复 `eb44302`，I52 修复 `a888fcb`，I51 修复 `1ed763b`，I50 修复 `1bacab6`，I46 框架预算修复 `7c12592`，I53 修复 `731bd1f`，I54 契约闭环 `2cc1743`。本次只调整清单与交接文档，实际 HEAD 以 Git 为准。
-- **当前验证**：I54 真实连接不可变输入回归及定向 race 各 20 轮、网络三包 race、Gateway 广播 race、最终 make check/lint 通过，两个 module lint 为 0 issues。未修改发送热路径；I46 的完整业务及真实依赖/容量验收仍待后续批次。
+- **代码审查基线**：起点 `0c8b270`；初始化交接文档 `9378b54`，I49 修复 `1a882f6`，I47 修复 `eb44302`，I52 修复 `a888fcb`，I51 修复 `1ed763b`，I50 修复 `1bacab6`，I46 框架预算修复 `7c12592`，I53 修复 `731bd1f`，I54 契约闭环 `2cc1743`。本轮从干净的 `346cfaa` 恢复并完成 I55；实际 HEAD 以 Git 为准。
+- **当前验证**：I55 分层观测、慢 writer、取消、关闭和并发读取通过；定向 race 20 轮、五包 race、最终 make check/lint 通过，两个 module lint 为 0 issues。热路径成本已对照，见下方记录；外部 Redis/etcd 和完整游戏验收仍未运行。
 - **工作重点**：根 module 的架构与契约；`test` 是扩展与验收，不再以游戏局部重构替代框架分析。
 - **Git 边界**：用户授权每个已解决 issue 独立提交，后续由用户统一审核；仅提交复审过的任务改动，不要求逐项 /plan 或 /clear。未授权 push 或发布。
 - **当前范围**：B1、B2 已完成。固定 Kratos v3.0.0，不修改官方源码；保留唯一共享 Registry 与已确认的条件注册语义，不重做已关闭问题。I48 仍仅调查；其他未完成项维持表中边界。
-- **清单调整与本轮终点**：用户确认项目未上线、仅用于本地 Docker 开发，明确要求删除 I07；已从问题清单和进度表移除，不作为验收通过。用户确认本轮删除后交接，I55 留到下个窗口，未实施代码改动。
-- **下一步**：新会话先处理 I55 的在线容量观测；已有两组本地基准，尚待最小方案和分层验收，见 [I55 基线](#i55-baseline)。随后安排 B6 的实际负载，并复核 I48 的设计调查与部署约束。I46 的完整业务验收与 I45/B6 合并安排；无外部证据时不提前关闭相应条目。
+- **清单边界**：用户确认项目未上线、仅用于本地 Docker 开发，明确要求删除 I07；不恢复，也不将删除视为验收通过。
+- **下一步**：B5 已完成。用户确认当前没有容量 SLO，优先优化代码架构；继续根 module 的状态所有权、职责与生命周期复审，B6 只做支撑架构判断的诊断，不自行宣布安全容量。I46 的完整业务验收仍待 I45/B6，I48 限于调查与具体方案证据。
 
 ## 状态口径
 
@@ -35,7 +35,7 @@
 | [I46 预算所有者](./issues.md#i46) | 待验证（框架修复完成） | 五类耦合各复现 3/3；预算分离、真实 gRPC、make check/lint、根及扩展定向 race 通过并复审 | 代码独立提交；保留逐层上限与既有业务语义；完整游戏与同配置负载目标留待 I45/B6，不提前划线 |
 | ~~[I53 command 元数据](./issues.md#i53)~~ | 已关闭（731bd1f） | 原 dispatch 缺失 3/3；共享请求类型的真实 gRPC 20 轮、Node race、make check/lint 通过 | 只读 CommandFromContext，operation、Session、顺序及错误身份保持；无重复路由状态 |
 | ~~[I54 消息所有权](./issues.md#i54)~~ | 已关闭（2cc1743） | TCP 原地修改探针失败 3/3、WS 对照通过；库内调用方审计完成；不可变消息真实连接/race 各 20 轮、最终 check/lint 通过 | 统一不可变输入契约，Prepared.Reset 不恢复写入权；运行实现不变，违规写入仍可能导致内容变化或 race |
-| [I55 在线容量观测](./issues.md#i55) | 待设计 | 统计所有者、原生关闭边界和两组基准已核查；未实施、未完成分层验收 | 下一会话先处理；按 owner 补指标并测量成本，为 B6 提供证据 |
+| ~~[I55 在线容量观测](./issues.md#i55)~~ | 已关闭（随本问题提交） | 本地分层观测、关闭/取消/并发读、定向 race 20 轮及五包 race、check/lint 通过 | 可选只读能力；复用 BroadcastStats；原生最终 drop 未知、逻辑积压非 RSS；三组成本见 I55 记录 |
 | [I36 Gate 强单活](./issues.md#i36) | 待设计 | 现有 best-effort Kick 的已知限制 | 独立决策：确认是否要求强单活及已开始操作边界 |
 | [I40 NATS 生产安全](./issues.md#i40) | 约束 | 2026-08-20 开发环境观测，非当前环境结论 | 获准后核查目标 broker，验收认证、mTLS 与 ACL |
 | [I03 binding TTL](./issues.md#i03) | 约束 | 固定 6h 与显式刷新契约 | 验证长业务刷新；若新增能力，与 I48 联合设计 |
@@ -57,7 +57,7 @@
 | B2（已完成） | I52、I51：取消者无底层副作用；异步错误独立报告 | I51 经确认改为原生异步边界，保留单连接和同步失败终态 | 定向 20 轮、真实 ACL/上限/重连、协议交错、Close、race、check、lint |
 | B3（框架修复完成） | I50、I46：连接存活与请求/清理预算职责 | I50 已关闭；I46 框架预算分离已验收，完整业务负载待 I45/B6 | 真实 TCP/WS/gRPC、慢请求、顺序、停止与预算功能已通过；保留业务容量未完成项 |
 | B4 | I48：旧进程不能破坏新 binding | 高；须确认存储格式、原 ID 重启及条件更新方案，结合 I47 | 迟到 Bind/Unbind、新旧代交错、真实存储与 Cluster 约束 |
-| B5 | I53、I54、I55：补齐扩展接口与观测 | 低至中；按独立职责拆分原子改动，不建通用管理层 | command 区分、消息所有权/race、分层统计及热路径成本 |
+| B5（已完成） | I53、I54、I55：补齐扩展接口与观测 | 低至中；按独立职责拆分原子改动，不建通用管理层 | command 区分、消息所有权/race、分层统计及热路径成本已验收 |
 | B6 | I41、I44、I04、I34，再按需 I45：容量与优化验收 | 先有观测及固定预算；生产部署约束另行处理 | 固定代码/配置/资源，记录 p99、drop、RSS 与资源归还 |
 
 ## 每批交接与验证记录
@@ -172,14 +172,25 @@
 - 复审覆盖 SendProto/内部 push/reply、Prepared fallback、Gateway Push/Broadcast、客户端 Request、测试及 benchmark 的所有调用点。库内未发现发送成功后改写的生产路径；没有将文档约束当作违规写入被自动修复。无新生产分配或性能收益声明，无协议、入口或依赖变更，未触发 build/breaking；check 的外部 Redis/etcd/完整游戏跳过仍不算通过。独立提交 `docs(network): 统一 SendProto 不可变消息契约`。
 
 <a id="i55-baseline"></a>
-### I55 调查与基准（未实施）
+### I55 调查与基准（实施前）
 
 - 基线 `2cc1743`，基准运行前工作树干净；本轮按用户确认停在交接，不新增观测接口或修改运行逻辑。以下是后续设计输入，不是已冻结方案或修复通过的证据。
 - [NATS 订阅](../event/nats/subscription.go#L41) 拥有有界消息 channel；现有超限计数私有，原生 Dropped 主要在退订前读取。固定 nats.go v1.53.1 在关闭后调用 Delivered/Dropped 返回 ErrBadSubscription；ChanSubscribe 在退订的 removeSub 路径中于订阅锁内执行关闭回调，不能在回调里重入这些方法（依赖源码 nats.go:5102、5810、5826）。后续须区分实时读数、最后可得快照和关闭竞争下未知的增量，不能承诺原生最终 drop 精确值或由此推断 broker 上游丢失。
 - TCP/WS 各自拥有发送队列，Gateway 已有 BroadcastStats。先明确每层计数及字节口径、累计值的生命周期和读取并发，再选择最小只读扩展；复用现有 owner，不为观测新增通用 manager、第二套连接注册表或消息队列。不得把逻辑排队字节当作 RSS，或把写出成功当作客户端已收到。
 - 根目录实际运行：`go test ./event/nats -run '^$' -bench '^BenchmarkDispatch$' -benchmem -benchtime=1s -count=3`，三次为 11.44/10.96/10.69 ns/op，均 0 B/op、0 allocs/op；`go test ./network/tcp -run '^$' -bench '^BenchmarkTCPSlowConsumerBackpressure$' -benchmem -benchtime=1s -count=3`，三次为 2906/2733/2650 ns/op，均 1136 B/op、7 allocs/op。
 - 环境：Go 1.26.6、windows/amd64、Intel i7-9700K；两条命令均只运行指定 benchmark，不运行功能测试，不需要外部 broker/Redis/etcd。前者直接调用空 handler，后者仅填充本地发送队列，均不代表端到端吞吐或慢 socket 验收。原始日志为 `%TEMP%\yola-b5-20260925-7c12592\i55-dispatch-before.log`、`i55-send-before.log`；临时日志可能被系统清理，后续对比前须确认代码、工具、配置和环境一致。
-- 下一步：通过可控屏障分别制造订阅积压、广播拒绝及慢连接，先定义可验收的观测边界，再按 owner 最小实现。覆盖运行中读取、不同 Payload、关闭累计值、并发/race 和热路径成本；I55 完成后才进入 I41/I44 等容量验收。当前尚无 I55 修复后测试、race、lint 或性能对比结果。
+- 当时下一步为分层屏障验收与最小实现；该基准本身不是修复后验证。后续实施及当前结果见下节。
+
+<a id="i55-results"></a>
+### ~~I55 在线容量观测~~
+
+- 基线为干净 `346cfaa`；先只增加观测类型与能力断言，NATS/TCP/WS 原实现缺少只读能力各失败 3/3（`red.log`），不将该断言写成已运行真实容量验收。实现只修改原有 owner，Gateway 生产路径未变；新接口均为可选能力，不扩展原 Subscription/Connection 必需方法。
+- NATS 从原 bounded channel 读 depth，锁保护原生 drop 最后快照及 handler 累计/最近/最大耗时，沿用超限原子计数。关闭释放 channel/handler 引用，原生读取失效时 Current=false；不从原生关闭回调重入锁，不承诺最终 drop、上游丢失或关闭丢弃计数。TCP/WS 用原子计数记录待入队和排队的逻辑 Body 字节及队列满拒绝，取消回滚，writer 取走即扣除；关闭后的残留队列仍可观测，不代表 RSS 或客户端送达。
+- 真实内嵌 NATS v2.14.5 的阻塞 handler 验收固定 2 条积压、3 次原生拒绝，并验证超限仅在出队时计数、panic、正常关闭及原生先失效的快照保留。TCP net.Pipe、WS 真实 framing 加受控 writer 验证慢发送、不同 Payload、取消回复/最后帧回滚。Gateway 屏障分别验证广播队列拒绝与连接拒绝，保留现有 BroadcastStats 累计值；同一次连接拒绝不能跨层相加。
+- 根目录命令：`go test ./event/nats ./network/tcp ./network/websocket ./gateway -run '^(TestSubscriptionStats|TestSendStats|TestBroadcastQueueIsBounded|TestBroadcastStats)' -count=20 -timeout=60s` 通过；最终增强并发关闭交错后同筛选 `-race -count=20` 通过。`go test -race ./event/nats ./network ./network/tcp ./network/websocket ./gateway -count=1 -timeout=120s` 通过；最终 `make check`、`make lint` 通过，两个 module 0 issues，无存量告警。所有修改 Go 文件已格式化。首版夹具未超过 Windows 时钟分辨率，耗时断言偶发为 0；增加单独计时窗口后通过，拥塞时序仍用屏障。
+- 环境为 Go 1.26.6、Windows/amd64、i7-9700K、golangci-lint 2.13.2；race 在命令内前置 MSYS2 GCC 路径。日志保存于 `%TEMP%\yola-i55-20260925-346cfaa`：`stats-tests.log`、`race.log`、`final-stats-race.log`、`final-check.log`、`final-lint.log`。check 中外部 Redis/etcd/完整游戏按未设置环境变量跳过，不计为通过；无协议、入口或依赖改动，不触发 build/breaking。
+- 三组基准顺序执行且无并行检查；具体命令及成本见 [I55 性能记录](./performance.md#i55-observation-cost)。NATS dispatch 中位数 10.62→38.91 ns/op，保持 0 B/0 alloc；TCP 32 帧入队再拒绝一次 2582→2793 ns/op，1136→1152 B/op、均 7 alloc；WS 4KB 往返 87.734→88.954µs、均 20 alloc，不能把单机波动当吞吐承诺。
+- 完整 diff 已复审，覆盖 NATS 注册/消费/退订、TCP push/reply/final/next、WS 普通/Prepared/heartbeat/final/writeLoop，以及 Gateway 发送失败传播；没有引入第二套注册表、manager、消息队列或修改 Kratos/Registry。I55 按已验证的观测边界关闭，I41/I44 的真实负载、RSS 与业务 SLO 仍待 B6。
 
 ## 验证环境边界
 
@@ -197,8 +208,8 @@
 
 1. 先检查 git status --short、暂存/未暂存 diff、新增文件和当前 HEAD；保留已有改动。读取适用 AGENTS.md/AGENTS.override.md、docs/README.md、docs/issues.md、docs/refactor-progress.md，并按当前条目阅读 architecture.md、eventbus.md、performance.md 和相关代码。
 2. 阅读并使用 codebase-design、code-review；复现与修复使用 diagnosing-bugs，并发/取消/生命周期使用 golang-concurrency，Go 检查使用 golang-lint，符号追踪按需使用 golang-gopls。不机械叠加流程或新增审批。
-3. 以 Git 和进度文档恢复。上轮代码提交为 2cc1743（I54），之后仅有清单与交接文档提交；I47、I49、I50、I51、I52、I53、I54 已关闭，不重做。I46 框架修复已提交，完整业务/同配置负载验收留待 I45/B6。项目尚未上线、仅本地 Docker，I07 已按用户明确要求删除，不自行恢复该条目。
-4. 先处理 I55，再按依赖推进 B6。I55 只核查了统计所有者/固定依赖边界并收集两组本地 benchmark，尚未实施；详细命令和结果见进度文档的 I55 基线。先用可控屏障验收订阅积压、广播拒绝和慢连接的分层归属，再最小实现只读观测。区分原生关闭前最后可得快照与精确最终值，复用 BroadcastStats，不建通用 manager、重复注册表或第二套消息队列；验证关闭、race 和热路径成本，不把入队/写出成功视为客户端收到。
+3. 以 Git 和进度文档恢复。I55 在 346cfaa 基线上完成，本节之后的实际提交以 Git 为准；I47、I49、I50、I51、I52、I53、I54、I55 已关闭，不重做。I46 框架修复已提交，完整业务/同配置负载验收留待 I45/B6。项目尚未上线、仅本地 Docker，I07 已按用户明确要求删除，不自行恢复该条目。
+4. 用户确认当前没有容量 SLO，先优化根 module 架构，B6 只做支撑架构判断的诊断。I55 已有分层只读观测、关闭/race 和成本验证；原生 drop 关闭后是最后可得值，连接逻辑 Payload 不代表 RSS，同一次连接拒绝不能跨层相加。复用 BroadcastStats，不建通用 manager、重复注册表或第二套消息队列，不把入队/写出成功视为客户端收到。没有实际负载与 SLO 证据时保持 I41/I44 未关闭。
 5. 固定 Kratos v3.0.0，不修改官方依赖源码或擅自升级；保留唯一共享 Registry 和已确认的条件注册语义。保持业务行为、协议、标识符及现有接口契约。I48 只做设计调查，不直接迁移 binding 格式或存储布局；重大行为/存储变化先准备具体方案与证据并确认，只暂停相关部分。
 6. 按 AGENTS 的风险要求完成实际测试、lint、race、check、build 或 breaking；先检查 TestMain/环境依赖。可免密 SSH 到 192.168.152.129 用 Docker，但操作前确认资源，使用专用可丢弃实例，避免影响无关服务与数据。
 7. 每完成一个原子步骤，同步两份文档的阶段、证据、命令结果、未完成项、代码基线和下一步；已关闭问题保留原条目，在两份文档同步划线。不要把静态推导、候选方案或旧测试写成当前已验证；遇到代码事实推翻假设时修正文档。

@@ -5,7 +5,7 @@
 
 - **审查基线**：2026-09-25，代码提交 `0c8b270`。行号均为该基线的定位提示，实施前须按声明名重新核对。
 - **范围**：根 module 的职责、依赖、状态所有权和生命周期；`test` 是接入与验收案例，业务状态仍由业务层拥有。
-- **证据**：I47、I49、I50、I51、I52、I53、I54 已分别完成修复或契约闭环及验证；I46 的框架修复已提交，仍待完整业务验收。原故障及验收记录见进度表；存量运行数据只支持其原始配置和场景。
+- **证据**：I47、I49、I50、I51、I52、I53、I54、I55 已分别完成修复或契约闭环及验证；I46 的框架修复已提交，仍待完整业务验收。原故障及验收记录见进度表；存量运行数据只支持其原始配置和场景。
 - **优先级**：P0 为生产前必须闭环的部署风险；P1 为正确性、可用性或容量验收重点；P2 为契约清晰度、扩展能力或已接受限制。
 - **维护**：保留既有 ID；新增问题补齐影响、证据、方案和关闭条件。关闭后保留原条目并为问题标题划线，追加关闭结果，在进度表同步划线并保留验证证据；不得删除已关闭问题。
 
@@ -80,13 +80,13 @@
   - **调查与选择（2026-09-25）**：串行探针中，SendProto 返回后修改 Cmd，TCP 队列仍观察到修改值，快照断言失败 3/3；WS 已取得编码结果，对照通过 3/3。审计 Gateway Push/Broadcast、transport 回复、客户端 Request 和测试/benchmark 后，未发现仓库内成功发送后继续写入同一消息的生产路径；广播复制 Payload，Prepared.Reset 只替换视图，不修改旧 Proto。选择统一不可变输入契约，保留当前编码位置和错误时机；调用方需要修改时创建独立消息/数据，不增加未经需求支持的热路径复制。
   - **关闭记录（2026-09-25，随本问题提交）**：接口及架构文档统一约束 Proto 和所有可变字段别名，明确 Prepared.Reset 不恢复旧消息写入权；运行实现未改变。真实 TCP/WS × 默认/自定义 codec 的共享只读消息、并发发送、clone 和 Prepared 复用回归 20 轮及 race 20 轮通过；网络三包 race、Gateway 广播 race、最终 make check/lint 通过。关闭的是所有权歧义；TCP 仍不自动隔离违规修改，外部 handler/codec 须遵守该契约。详见 [B5 记录](./refactor-progress.md#b5-results)。
 
-- <a id="i55"></a> **I55 · P2：投递链缺少运行中可归属的容量观测**
+- <a id="i55"></a> **~~I55 · P2：投递链缺少运行中可归属的容量观测~~**
   - **影响**：无法仅凭 Gateway fanout 统计区分 NATS 上游丢失、handler 堆积、广播队列拒绝和连接发送拥塞；I41/I44 的容量验收证据不完整。
-  - **证据**：[event/nats/subscription.go:99](../event/nats/subscription.go#L99) 主要在退订时读取 Dropped；[subscription.go:136](../event/nats/subscription.go#L136) 的超限计数私有且采样记录日志；[gateway/broadcast.go:21](../gateway/broadcast.go#L21) 只描述本地接纳与 fanout。
+  - **修复前证据（346cfaa）**：`event/nats/subscription.go:99` 主要在退订时读取 Dropped，`:136` 的超限计数私有且采样记录日志；[gateway/broadcast.go:21](../gateway/broadcast.go#L21) 只描述本地接纳与 fanout。
   - **解决方案**：由各状态 owner 提供只读统计或观测注入点，覆盖订阅 queue/drop/handler 耗时、连接排队字节和 drop，退出时保留累计值。复用现有 BroadcastStats，避免暴露原生 subscription/channel 或引入统一监控管理层。
   - **验证方案**：分别阻塞 handler、填满广播队列、制造慢连接并改变 Payload 大小；运行中即可识别丢弃层级，计数不重复且并发读取安全；测量新增观测对热路径的成本。
   - **关闭条件与风险**：能为 I41/I44 输出可重复的分层容量证据，仍不能把“入队成功”计为客户端已收到。此项完成不自动关闭容量问题。
-  - **交接状态（2026-09-25）**：基于 `2cc1743` 核查统计所有者及固定 nats.go 的关闭边界，并收集两组本地基准；尚未实施观测接口或运行分层拥塞验收，维持待设计。用户确认留到下一会话，数据与设计注意事项见 [I55 基线](./refactor-progress.md#i55-baseline)。
+  - **关闭记录（2026-09-25，随本问题提交）**：由原订阅和连接 owner 实现可选 SubscriptionStatsProvider/SendStatsProvider，复用 BroadcastStats，未新增 manager、注册表或消息队列。缺少观测能力各复现 3/3；内嵌真实 NATS、慢 writer 屏障、Payload/取消/关闭/并发读及分层拒绝验收完成，定向 race 20 轮、五包 race、最终 make check/lint 通过。关闭后保留本地累计值；原生 drop 明确标记最后可得值，连接逻辑 Payload 不代表 RSS，跨层错误不相加。三组热路径成本已对照，详见 [I55 验证](./refactor-progress.md#i55-results)；本项不关闭 I41/I44。
 
 ## 功能与语义缺口
 

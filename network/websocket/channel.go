@@ -48,13 +48,16 @@ type Channel struct {
 	connOnce  sync.Once
 	connErr   error
 	// writerErr is published by closing writerDone and read only after that close.
-	writerErr  error
-	writerDone chan struct{}
+	writerErr           error
+	writerDone          chan struct{}
+	pendingPayloadBytes atomic.Int64
+	queueDropped        atomic.Uint64
 }
 
 type outboundFrame struct {
-	body      []byte
-	heartbeat bool
+	body         []byte
+	payloadBytes int64
+	heartbeat    bool
 	// done is non-nil only for the final frame, so it also marks writer termination.
 	done chan error
 }
@@ -87,6 +90,17 @@ func (ch *Channel) RemoteAddr() string { return ch.remoteAddr }
 // Closed reports whether the channel is closed.
 func (ch *Channel) Closed() bool { return ch.closed.Load() }
 
+// SendStats 返回连接发送队列的只读快照。
+func (ch *Channel) SendStats() network.SendStats {
+	return network.SendStats{
+		QueueDepth:          len(ch.outbound),
+		QueueCapacity:       cap(ch.outbound),
+		PendingPayloadBytes: ch.pendingPayloadBytes.Load(),
+		QueueDropped:        ch.queueDropped.Load(),
+		Closed:              ch.closed.Load(),
+	}
+}
+
 // SendProto 将不可变 Proto 编码为 Binary frame 入队；输入遵守 network.Connection 的所有权契约。
 func (ch *Channel) SendProto(p *v1.Proto) error {
 	return ch.enqueueProto(p, false)
@@ -101,7 +115,7 @@ func (ch *Channel) SendPrepared(message *network.PreparedProto) error {
 	if !canOptimizeFrames(ch.codec) {
 		return ch.SendProto(message.Message())
 	}
-	return ch.enqueueFrame(false, func() ([]byte, error) {
+	return ch.enqueueFrame(len(message.Message().Body), false, func() ([]byte, error) {
 		body, err := message.Marshal()
 		if err != nil {
 			return nil, err
@@ -120,18 +134,19 @@ func (ch *Channel) enqueueProto(p *v1.Proto, heartbeat bool) error {
 	if p == nil {
 		return errNilPayload
 	}
-	return ch.enqueueFrame(heartbeat, func() ([]byte, error) {
+	return ch.enqueueFrame(len(p.Body), heartbeat, func() ([]byte, error) {
 		return marshalFrame(ch.codec, p)
 	})
 }
 
-func (ch *Channel) enqueueFrame(heartbeat bool, encode func() ([]byte, error)) error {
+func (ch *Channel) enqueueFrame(payloadBytes int, heartbeat bool, encode func() ([]byte, error)) error {
 	ch.sendMu.Lock()
 	defer ch.sendMu.Unlock()
 	if ch.closed.Load() {
 		return network.ErrConnectionClosed
 	}
 	if len(ch.outbound) == cap(ch.outbound) {
+		ch.queueDropped.Add(1)
 		return network.ErrSendQueueFull
 	}
 	body, err := encode()
@@ -139,7 +154,8 @@ func (ch *Channel) enqueueFrame(heartbeat bool, encode func() ([]byte, error)) e
 		return err
 	}
 	// sendMu serializes producers, so the capacity check above remains valid.
-	ch.outbound <- outboundFrame{body: body, heartbeat: heartbeat}
+	ch.pendingPayloadBytes.Add(int64(payloadBytes))
+	ch.outbound <- outboundFrame{body: body, payloadBytes: int64(payloadBytes), heartbeat: heartbeat}
 	return nil
 }
 
@@ -156,12 +172,15 @@ func (ch *Channel) CloseWithProto(ctx context.Context, p *v1.Proto) error {
 	}
 	ch.closed.Store(true)
 	ch.sendMu.Unlock()
-	frame := outboundFrame{body: body, done: make(chan error, 1)}
+	frame := outboundFrame{body: body, payloadBytes: int64(len(p.Body)), done: make(chan error, 1)}
+	ch.pendingPayloadBytes.Add(frame.payloadBytes)
 	select {
 	case ch.outbound <- frame:
 	case <-ch.writerDone:
+		ch.pendingPayloadBytes.Add(-frame.payloadBytes)
 		return ch.writerError()
 	case <-ctx.Done():
+		ch.pendingPayloadBytes.Add(-frame.payloadBytes)
 		return errors.Join(ctx.Err(), ch.abort())
 	}
 	return ch.waitFinal(ctx, frame.done)
@@ -257,6 +276,7 @@ func (ch *Channel) writeLoop() {
 			writeErr = ch.ctx.Err()
 			return
 		case frame := <-ch.outbound:
+			ch.pendingPayloadBytes.Add(-frame.payloadBytes)
 			writeErr = ch.writeOutbound(frame)
 			if frame.done != nil {
 				writeErr = errors.Join(writeErr, ch.closeWithReason("kicked"))

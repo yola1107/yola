@@ -60,6 +60,21 @@ TCP Reader/Writer buffer 均按最大合法帧 `MaxProtoSize + 4B` 创建，即�
 
 测量仅含调度器、context、空队列及 worker，不含真实 socket、业务负载或 Gateway 其他对象；不能据此宣布 I41/I44 容量通过。原始日志和常驻内存探针位于 `%TEMP%\yola-b3-20260925-1ed763b` 的 `i50-dispatcher-bench.log`、`memory_probe_test.go`、`memory-overlay.json`、`i50-memory.log`；在对应 I50 代码上执行 `go test -overlay <该目录>/memory-overlay.json ./network/internal/inbound -run '^TestAuditDispatcherRetainedMemory$' -count=1 -v` 可复核，换 checkout 时调整 overlay 的 Replace key。
 
+<a id="i55-observation-cost"></a>
+## I55 观测成本
+
+2026-09-25，基线 `346cfaa` 与 I55 工作树，Windows/amd64、i7-9700K、Go 1.26.6、默认 GOMAXPROCS=8。同机顺序执行，无并行检查或压测；下表为三次中位数，完整验证及口径见 [I55 记录](./refactor-progress.md#i55-results)。
+
+| 场景 | 修改前 → 修改后 | 分配 |
+| --- | --- | --- |
+| NATS 空 handler dispatch | 10.62 → 38.91 ns/op | 均 0 B/op、0 allocs/op |
+| TCP 新建队列、填满 32 帧并拒绝一次 | 2582 → 2793 ns/op | 1136 → 1152 B/op，均 7 allocs/op |
+| WS 4KB request 往返 | 87.734 → 88.954 µs/op | 约 19.17KB/op，均 20 allocs/op |
+
+前两项使用 `go test ./event/nats -run '^$' -bench '^BenchmarkDispatch$' -benchmem -benchtime=1s -count=3` 和 `go test ./network/tcp -run '^$' -bench '^BenchmarkTCPSlowConsumerBackpressure$' -benchmem -benchtime=1s -count=3`。WS 使用 `go test ./network/websocket -run '^$' -bench '^BenchmarkWebSocketServer/request/payload=4000$' -benchmem -benchtime=2s -count=3`；修改前通过 overlay 恢复该包 `346cfaa` 的 channel.go 并屏蔽新增 stats 测试，只运行相同的已有 benchmark。
+
+NATS 新增计时和同步，TCP 每次成功排队/出队各增加一次字节原子更新。WS 每个 outboundFrame 增加一个 8B 的 Payload 长度字段；默认 32 帧槽位增加 256B 原始结构容量，另有两个计数器，未把它称为实测 RSS。以上只量化本地观测成本，不证明慢连接容量或端到端吞吐。原始日志和 WS overlay 位于 `%TEMP%\yola-i55-20260925-346cfaa` 的 `dispatch-before/after.log`、`send-before/after.log`、`ws-before/after.log`、`ws-before.json`。
+
 ## 最近基线
 
 以下为 2026-08-21 在 macOS/arm64、Apple M1 Pro、Go 1.26.5、commit `3035fb8` 上的单次进程内复测；TCP 使用 `-benchtime=1s`，WebSocket 使用 `-benchtime=2s`。测试不包含真实 Redis、etcd、跨机网络、TLS 和业务 handler，只用于回归比较。
