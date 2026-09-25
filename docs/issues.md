@@ -7,7 +7,7 @@
 - **范围**：根 module 的职责、依赖、状态所有权和生命周期；`test` 是接入与验收案例，业务状态仍由业务层拥有。
 - **证据**：I47、I49、I50、I51、I52、I53、I54、I55 已分别完成修复或契约闭环及验证；I46 的框架修复已提交，仍待完整业务验收。原故障及验收记录见进度表；存量运行数据只支持其原始配置和场景。
 - **优先级**：P0 为生产前必须闭环的部署风险；P1 为正确性、可用性或容量验收重点；P2 为契约清晰度、扩展能力或已接受限制。
-- **维护**：保留既有 ID；新增问题补齐影响、证据、方案和关闭条件。关闭后保留原条目并为问题标题划线，追加关闭结果，在进度表同步划线并保留验证证据；不得删除已关闭问题。
+- **维护**：保留既有 ID；新增问题补齐影响、证据、方案和关闭条件。关闭后保留原条目并为问题标题划线，追加关闭结果，在进度表同步划线并保留验证证据；不得删除已关闭问题。部分完成时只划掉已完成子项，父 issue 保持未关闭，并列明剩余条件。
 
 ## 整体处置边界
 
@@ -117,8 +117,8 @@
   - **解决方案**：在装配处表达请求预算，内部继承 deadline 并按职责缩短；分别确定 Push、Auth、租约、失败清理与停服预算所有者。比较现有每层上限与“无 deadline 才补默认值”的行为差异，不新增一个统管所有职责的全局超时。
   - **验证方案**：覆盖较短父 deadline、无 deadline、队列中取消、开始/取消竞争、已开始操作、独立失败清理、重连归属及真实 gRPC/外部帧错误传播；单独调整 PushTimeout 不得意外改变经确认的清理预算。与 I50 联合验证心跳，再按同配置复测负载。
   - **关闭条件与风险**：有效预算及所有者可追踪，取消和已开始操作语义明确，同配置业务目标通过。不得简单把所有 background context 换为请求 context；删除现有上限或改变开始后的完成语义须先确认。
-  - **框架修复记录（2026-09-25，随本问题提交）**：Gateway 新增各默认 3s 的 ConnectTimeout、LeaseTimeout、CleanupTimeout，Node 新增默认 3s 的 CleanupTimeout；RPCTimeout/PushTimeout 不再控制这些非请求操作。五条 deadline 耦合各复现 3/3，分离后定向 20 轮通过；真实 gRPC 四种最短 deadline、根包 race、make check/lint、扩展 mailbox/入座/重连/清理 race 通过。保留逐层请求上限及已开始操作语义，未改变协议、游戏默认预算或配置标识符。
-  - **验收入口修复（2026-09-26，随本批提交）**：`pushbench` 改为原生 App.Run 启停，使用现有 Node 就绪 Registrar，移除手工 Register；分别配置 Transport/Forward/Node 并输出预算。历史场景保持不变，新增 `TestConfiguredGameDelivery` 从 Node YAML 读取预算，Gateway 两段按当前默认 3s。仅修复测试模块的验收入口，不新增生产 App/Config 或改动业务预算；验证结果见 [当前批次](./refactor-progress.md#request-budget-fixture)。
+  - **~~已完成子项：框架非请求预算分离~~（2026-09-25，7c12592）**：Gateway 新增各默认 3s 的 ConnectTimeout、LeaseTimeout、CleanupTimeout，Node 新增默认 3s 的 CleanupTimeout；RPCTimeout/PushTimeout 不再控制这些非请求操作。五条 deadline 耦合各复现 3/3，分离后定向 20 轮通过；真实 gRPC 四种最短 deadline、根包 race、make check/lint、扩展 mailbox/入座/重连/清理 race 通过。保留逐层请求上限及已开始操作语义，未改变协议、游戏默认预算或配置标识符。
+  - **~~已完成子项：原生应用与分层预算验收入口~~（2026-09-26，b1976ed）**：`pushbench` 改为原生 App.Run 启停，使用现有 Node 就绪 Registrar，移除手工 Register；分别配置 Transport/Forward/Node 并输出预算。历史场景保持不变，新增 `TestConfiguredGameDelivery` 从 Node YAML 读取预算，Gateway 两段按当前默认 3s。仅修复测试模块的验收入口，不新增生产 App/Config 或改动业务预算；验证结果见 [当前批次](./refactor-progress.md#request-budget-fixture)。
   - **剩余验收**：当前请求预算小规模场景不等于全部 YAML 部署；完整游戏、目标规模稳态及已开始业务副作用的完整窗口仍需 I45/B6 验证。I46 保持待验证，不重做已提交的框架预算分离；历史框架验证见 [B3 记录](./refactor-progress.md#b3-results)。
 
 ## 运行与部署限制
@@ -161,6 +161,7 @@
   - **解决方案**：框架边界修复后再量化排队、LocateGate、RPC 和发送成本；保留每桌顺序、逐 UID 结果及失败反馈时机。是否定向批量定位/投递须有证据，不直接增加 outbox、并发桌内广播或放大队列。
   - **验证方案**：1,000 桌固定到达率、完整对局、客户端失败窗口、百人热点桌、长期 SLO；记录 mailbox wait/reject、Push 分段耗时和客户端到达，使用与 I46 一致的预算。
   - **关闭条件**：完整业务与稳定负载目标通过；突发入座成功不能关闭。此项属于扩展层验收，不作为当前框架审查的主线。
+  - **~~已完成子项：原生应用与分层预算验收入口~~（2026-09-26，b1976ed）**：与 I46 共用同一修复和证据，当前预算 smoke/robots、历史 smoke、消息流核对及 race 已完成；不重复实施。目标规模、完整对局和稳态尾延迟仍待验收，后续步骤见 [执行清单](./refactor-progress.md#next-actions)。
 
 - <a id="i44"></a> **I44 · P1：NATS 排队内存与 broker Payload 上限尚未闭环**
   - **影响与证据**：默认每订阅 256 条、业务 Payload 64 KiB，理论 Payload 积压约 16 MiB；已有外置 NATS 试验显示 Go heap 随排队 Payload 增长。超限接收消息出队时才校验，实际上限受 broker max_payload 影响；见 [EventBus 容量](./eventbus.md#4-nats-生命周期)。
