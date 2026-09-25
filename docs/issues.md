@@ -17,7 +17,7 @@
 | --- | --- | --- |
 | I48、I03 | 存储修改权缺口与业务绑定存续策略 | 共同区分建立、保活、改绑、撤销；结合 I36 的目标强度比较原子边界，再选择布局 |
 | I36、I08、I29 | 单活强度、模式迁移和代理信任的契约选择 | 保持当前 best-effort、模式固定及 peer 语义；需求未改变时不自动增加机制 |
-| I46、I45 | 框架预算修复后的验收缺口、同步业务投递成本 | 先对齐真实装配与夹具预算，验证已开始副作用；不重做已提交的预算分离 |
+| I46、I45 | 框架预算修复后的验收缺口、同步业务投递成本 | 根框架预算与可控交错已验收；继续完整游戏副作用窗口、目标规模与稳态 |
 | I41、I44 | 连接发送与订阅接收各自的容量证据缺口 | 复用 I55 分层观测；先取得可归属的排队/释放证据，再决定是否改机制 |
 | I04、I34 | Stateful 查询成本与 Gate 续租波次 | 诊断可独立进行；只有改变 fencing、布局或保活原语才与身份设计形成硬依赖 |
 | I40 | 生产部署安全约束 | 在明确目标环境验收；本地开发状态不自动要求改写框架或现有共享服务 |
@@ -119,7 +119,8 @@
   - **关闭条件与风险**：有效预算及所有者可追踪，取消和已开始操作语义明确，同配置业务目标通过。不得简单把所有 background context 换为请求 context；删除现有上限或改变开始后的完成语义须先确认。
   - **~~已完成子项：框架非请求预算分离~~（2026-09-25，7c12592）**：Gateway 新增各默认 3s 的 ConnectTimeout、LeaseTimeout、CleanupTimeout，Node 新增默认 3s 的 CleanupTimeout；RPCTimeout/PushTimeout 不再控制这些非请求操作。五条 deadline 耦合各复现 3/3，分离后定向 20 轮通过；真实 gRPC 四种最短 deadline、根包 race、make check/lint、扩展 mailbox/入座/重连/清理 race 通过。保留逐层请求上限及已开始操作语义，未改变协议、游戏默认预算或配置标识符。
   - **~~已完成子项：原生应用与分层预算验收入口~~（2026-09-26，b1976ed）**：`pushbench` 改为原生 App.Run 启停，使用现有 Node 就绪 Registrar，移除手工 Register；分别配置 Transport/Forward/Node 并输出预算。历史场景保持不变，新增 `TestConfiguredGameDelivery` 从 Node YAML 读取预算，Gateway 两段按当前默认 3s。仅修复测试模块的验收入口，不新增生产 App/Config 或改动业务预算；验证结果见 [当前批次](./refactor-progress.md#request-budget-fixture)。
-  - **剩余验收**：当前请求预算小规模场景不等于全部 YAML 部署；完整游戏、目标规模稳态及已开始业务副作用的完整窗口仍需 I45/B6 验证。I46 保持待验证，不重做已提交的框架预算分离；历史框架验证见 [B3 记录](./refactor-progress.md#b3-results)。
+  - **~~已完成子项：真实连接取消与已开始任务排空~~（2026-09-26，本批提交）**：真实 TCP/WS Client→Gateway→Node 覆盖本地 cancel/deadline、迟到回复与下一请求重叠、断连/Forward 超时后的业务完成与原生 App.Stop 排空，以及旧 Unbind/Disconnect 迟到的新 Session 归属。测试使用 miniredis、静态 Discovery 和可控业务 handler；生产改动仅为两种 Client.Request 的取消契约注释，未改变运行语义。命令、结果及边界见 [生命周期验收](./refactor-progress.md#request-lifecycle-results)。
+  - **剩余验收**：当前请求预算小规模场景不等于全部 YAML 部署；完整游戏中的副作用/重连窗口、目标规模和稳态仍需 I45/B6 验证。根框架可控交错已补齐，I46 保持待验证，不重做预算分离；历史框架验证见 [B3 记录](./refactor-progress.md#b3-results)。
 
 ## 运行与部署限制
 

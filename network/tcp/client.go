@@ -125,7 +125,8 @@ func dialGateway(ctx context.Context, endpoint string, c *tls.Config) (net.Conn,
 	return (&tls.Dialer{NetDialer: dialer, Config: c}).DialContext(ctx, "tcp", endpoint)
 }
 
-// Request sends one request and waits for its response, cancellation, timeout, or disconnect.
+// Request 发送请求并等待响应、取消、超时或断连。
+// 取消或超时只结束本地等待；已发送请求仍可能执行，迟到响应按序号丢弃。
 func (c *Client) Request(ctx context.Context, command int32, msg proto.Message) ([]byte, int32, error) {
 	if ctx == nil {
 		return nil, 0, errors.New("tcp: request context is nil")

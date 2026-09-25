@@ -6,13 +6,13 @@
 ## 当前快照
 
 - **更新日期**：2026-09-26。
-- **代码审查基线**：起点 `0c8b270`；初始化交接文档 `9378b54`，I49 修复 `1a882f6`，I47 修复 `eb44302`，I52 修复 `a888fcb`，I51 修复 `1ed763b`，I50 修复 `1bacab6`，I46 框架预算修复 `7c12592`，I53 修复 `731bd1f`，I54 契约闭环 `2cc1743`，I55 修复 `0883c00`，I48 调查 `57a9dfc`，组件边界 `cf85f6e`，I46/I45 验收入口修复 `b1976ed`。之后为完成标记和步骤同步，实际 HEAD 以 Git 为准。
-- **最近代码验证（b1976ed）**：原夹具断言失败 3/3；修复后的原生接入、注册/注销、失败回收、真实 WS→gRPC 三段预算、两款游戏当前预算 smoke/robots 及适用 race/check/lint 通过，两个 module lint 为 0。完整目标规模与稳态仍未验收，I46/I45 不关闭。本次仅同步文档标记和后续步骤，未重跑 Go 检查。
+- **代码审查基线**：起点 `0c8b270`；初始化交接文档 `9378b54`，I49 修复 `1a882f6`，I47 修复 `eb44302`，I52 修复 `a888fcb`，I51 修复 `1ed763b`，I50 修复 `1bacab6`，I46 框架预算修复 `7c12592`，I53 修复 `731bd1f`，I54 契约闭环 `2cc1743`，I55 修复 `0883c00`，I48 调查 `57a9dfc`，组件边界 `cf85f6e`，I46/I45 验收入口修复 `b1976ed`。本批从干净的 `80b4084` 补齐根框架生命周期验收，实际 HEAD 以 Git 为准。
+- **最近代码验证（本批）**：真实 TCP/WS 的取消、迟到回复、已开始任务排空及重连收尾共 10 个场景完成定向 race 20 轮；Gateway/Node/TCP/WS 包级 race、make check、make lint 通过，两个 module lint 为 0。当前批次未运行完整游戏或容量负载，I46/I45 保持待验证。
 - **工作重点**：根 module 的架构与契约；`test` 是扩展与验收，不再以游戏局部重构替代框架分析。
 - **Git 边界**：用户授权每个已解决 issue 独立提交，后续由用户统一审核；仅提交复审过的任务改动，不要求逐项 /plan 或 /clear。未授权 push 或发布。
 - **当前范围**：外层原生 Kratos App 是唯一应用，Gate/Node 是内嵌组件；不新增 App/Config、运行器或掩盖原生覆盖关系的组合入口。固定 Kratos v3.0.0，不修改官方源码；保留唯一共享 Registry 与条件注册，不重做已关闭问题。I48/I03 进入联合契约设计，尚未批准布局迁移。
 - **清单边界**：用户确认项目未上线、仅用于本地 Docker 开发，明确要求删除 I07；不恢复，也不将删除视为验收通过。
-- **下一步**：I46/I45 的原生应用与分层预算入口已修复，下一步继续其目标规模、已开始副作用和稳态验收；先前大规模历史结果不能直接用于新夹具。I48/I03 继续联合设计，A 未选定；I04/I34 的独立诊断不必等待迁移。用户暂无容量 SLO，不能因此阻塞架构核查，也不能自行宣布安全容量。
+- **下一步**：根框架的请求取消、已开始任务排空和重连收尾已补齐；完整游戏副作用窗口、目标规模和稳态仍未完成，先前大规模历史结果不能直接用于新夹具。I48/I03 继续联合设计，A 未选定；I04/I34/I41/I44 的独立诊断不必等待迁移。用户暂无容量 SLO，不能因此阻塞架构核查，也不能自行宣布安全容量。
 
 ## 状态口径
 
@@ -32,7 +32,7 @@
 | ~~[I51 NATS 激活归属](./issues.md#i51)~~ | 已关闭（1ed763b） | 五种原故障各 3/3；新契约定向 20 轮、包 race、check、lint 通过 | 经确认取消同步 ACL/上限承诺；每个异步错误独立记录，不再使用 LastError；同步失败仍终态 |
 | ~~[I52 等待注册取消](./issues.md#i52)~~ | 已关闭（a888fcb） | 原实现失败 3/3；屏障回归 20 轮、包测试/race、lint 通过 | 获锁后重查 caller context；未发 SUB，第三次成功；激活后终态及 Close 语义不变 |
 | ~~[I50 心跳调度](./issues.md#i50)~~ | 已关闭（1bacab6） | 两种 transport 各复现 3/3；定向 10 轮、默认周期、FIFO/认证/过载/续租/关闭、内存及最终 race/check/lint 通过 | 仅显式能力启用有界业务 FIFO 与独立心跳；排队满关闭，普通自定义 handler 仍串行；I46/I41 另验收 |
-| [I46 预算所有者](./issues.md#i46) | 待验证（框架与验收入口已修复） | 预算分离历史证据保留；本轮真实 App.Run、三段独立输入、WS→gRPC deadline、当前预算小场景/race/check/lint 通过 | 未改变生产预算；完整目标规模及已开始副作用窗口仍待验收，不提前划线 |
+| [I46 预算所有者](./issues.md#i46) | 待验证（框架与根链路验收已完成） | 预算与入口修复证据保留；本批 TCP/WS 本地取消、迟到回复、远端取消后排空与重连收尾完成 | 未改变生产预算；完整游戏副作用窗口、目标规模与稳态仍待验收，不提前划线 |
 | ~~[I53 command 元数据](./issues.md#i53)~~ | 已关闭（731bd1f） | 原 dispatch 缺失 3/3；共享请求类型的真实 gRPC 20 轮、Node race、make check/lint 通过 | 只读 CommandFromContext，operation、Session、顺序及错误身份保持；无重复路由状态 |
 | ~~[I54 消息所有权](./issues.md#i54)~~ | 已关闭（2cc1743） | TCP 原地修改探针失败 3/3、WS 对照通过；库内调用方审计完成；不可变消息真实连接/race 各 20 轮、最终 check/lint 通过 | 统一不可变输入契约，Prepared.Reset 不恢复写入权；运行实现不变，违规写入仍可能导致内容变化或 race |
 | ~~[I55 在线容量观测](./issues.md#i55)~~ | 已关闭（0883c00） | 本地分层观测、关闭/取消/并发读、定向 race 20 轮及五包 race、check/lint 通过 | 可选只读能力；复用 BroadcastStats；原生最终 drop 未知、逻辑积压非 RSS；三组成本见 I55 记录 |
@@ -53,6 +53,7 @@
 | --- | --- | --- |
 | ~~已完成子项：框架非请求预算分离~~ | I46 | `7c12592`；[B3 验证](#b3-results) |
 | ~~已完成子项：原生应用与分层预算验收入口~~ | I46、I45 | `b1976ed`；[验收入口验证](#request-budget-fixture)，仍缺父问题的完整关闭条件 |
+| ~~已完成子项：真实连接取消与已开始任务排空~~ | I46 | 本批提交；[生命周期验收](#request-lifecycle-results)，不替代完整游戏或存储故障验收 |
 
 ## 建议批次与实施边界
 
@@ -60,7 +61,7 @@
 
 1. **接入边界（本轮文档补全）**：保留原生 Kratos App，明确组件、业务、依赖创建者和 endpoints 的职责；补充失败回收限制并修正过期口径。不新增应用包装，也不以减少 Option 行数为重构目标。
 2. **绑定所有权（B4 联合设计）**：I48 的进程修改权与 I03 的条件保活共同设计，明确 I36 当前采用的单活强度。设计共同完成后，能独立交付的能力按 issue 独立提交；不可拆的存储原语按职责形成原子批次，分别列明关闭证据。
-3. **验收入口（I46/I45，本批已修复）**：已接入原生 App.Run、分别表达三段预算，完成真实 WS→gRPC deadline 与当前预算 smoke/robots。后续补齐已开始副作用/重连窗口、目标规模与稳态；不得把小场景通过写成整项关闭。
+3. **验收入口与根链路（I46/I45，部分完成）**：已接入原生 App.Run、分别表达三段预算，完成真实 WS→gRPC deadline 与当前预算 smoke/robots；本批补齐 TCP/WS 已开始副作用、停止与重连收尾。后续验收完整游戏对应窗口、目标规模与稳态，不把小场景通过写成整项关闭。
 4. **分层诊断（B6）**：I04 查询、I34 续租、I41 发送、I44 订阅各自测量，复用现有 owner 与 I55 观测；有具体成本证据后才优化。I40/I29/I08 保留部署与行为选择边界，不混入前述代码重构。
 
 | 批次 | 目标与收益 | 风险 / 依赖 | 验证出口 |
@@ -73,12 +74,12 @@
 | B6 | I41、I44、I04、I34，再按需 I45：容量与优化验收 | 先有观测及固定预算；生产部署约束另行处理 | 固定代码/配置/资源，记录 p99、drop、RSS 与资源归还 |
 
 <a id="next-actions"></a>
-### 后续执行清单（待执行）
+### 后续执行清单
 
 | 顺序 / 状态 | 操作与边界 | 交付与进入下一步的条件 |
 | --- | --- | --- |
-| 1 · 下一步 | 在真实 TCP/WS→Gateway→Node 链路补齐客户端超时/取消、已开始业务副作用、重连和停止的可控交错；保留已开始任务的完成语义 | 小规模屏障用例可重复，区分客户端结果、业务最终状态与资源退出；完成受影响测试/race 和完整 diff 复审 |
-| 2 · 联合设计 | I48/I03 定义建立、条件保活、改绑、撤销；区分连接归属、进程修改权、业务 owner，并明确沿用的 I36 强度 | 给出候选原子边界、失败语义和迁移代价；布局或重大行为获确认后才能实施，未决部分不阻塞独立工作 |
+| 1 · 已完成子项 | 真实 TCP/WS→Gateway→Node 的本地超时/取消、迟到回复、远端取消后任务完成、停止和重连收尾；保留原有完成语义 | [10 个屏障场景及验证](#request-lifecycle-results)；使用 miniredis/静态 Discovery，不代表完整业务或真实存储故障验收 |
+| 2 · 下一步联合设计 | I48/I03 定义建立、条件保活、改绑、撤销；区分连接归属、进程修改权、业务 owner，并明确沿用的 I36 强度 | 给出候选原子边界、失败语义和迁移代价；布局或重大行为获确认后才能实施，未决部分不阻塞独立工作 |
 | 3 · 可独立推进 | I04 按请求组成测 Redis 查询与 pool wait；I34 分离心跳调度和续租 I/O 波次；I41/I44 各自验证队列积压、拒绝与释放 | 固定代码/配置/资源，保留原始指标；只有证据支持才实施对应 owner 内的最小优化，不扩大缓存或队列 |
 | 4 · 前置验收齐备后 | 使用新夹具的明确预算，分别执行目标规模入座、固定到达率、完整对局与长期稳态，记录客户端失败窗口和逐 UID 消息结果 | 数据能对应真实预算与负载；没有业务 SLO 时只报告曲线和失败边界，不宣布安全容量，不提前关闭 I46/I45/I41 |
 | 5 · 部署需求明确后 | I40 安全、I29 代理信任、I08 模式迁移分别验收 | 不把本地 Docker 条件外推为生产保证，也不无需求新增框架机制 |
@@ -104,6 +105,7 @@
 | 2026-09-25 | B2 / I52 | 获锁后补 caller context 校验，协议屏障验证取消者无底层副作用 | 复现 3/3；定向 20 轮、包测试/race、两个 module lint 通过；完整 diff 及调用链已复审 |
 | 2026-09-25 | B2 / I51 | 复现并核实依赖后，按用户确认改为本地注册+Flush、异步错误独立报告 | 原故障各 3/3；新契约定向 20 轮、包 race、check、lint 通过；完整 diff 和调用链已复审 |
 | 2026-09-25 | 清单调整与窗口交接 | 按用户要求删除 I07，保留其他问题 ID；补录 I54 提交和 I55 基准，更新续接提示词 | 根目录 PowerShell 核对 93 个本地链接/锚点/行号、两份文档的 20 个 ID 和 7 个关闭标记通过；diff 检查通过。仅文档，未重跑 Go 检查；I55 未实施，I46 完整业务/负载验收仍未完成；提交 `docs(audit): 移除 I07 并更新后续交接` |
+| 2026-09-26 | I46 根框架生命周期验收 | 补齐真实 TCP/WS 取消、迟到回复、已开始任务排空及重连收尾；完善 Client.Request 与架构文档的取消边界 | 10 个场景定向 race 20 轮、四包 race、check/lint 通过；完成子项同步划线，父 issue 保持待验证，见下方记录 |
 
 前序 `470a4fa`、`7959b58`、`a83ccb2`、`0c8b270` 已提交 mailbox/Whot 局部修复；它们不关闭本表新增架构问题。历史测试或性能文档不能直接证明后续代码通过，复用结果须核对源码、依赖、配置和环境均未变化。
 
@@ -127,6 +129,19 @@
 - 环境：Go 1.26.6 windows/amd64、golangci-lint 2.13.2，race 在命令内前置 MSYS2 GCC 路径；VM 专用 Redis 8.6.1、etcd 3.5.21，仅 VM 回环 16379/12379，经本轮 SSH 转发访问。容器分别限 0.5 CPU/128MiB、0.5 CPU/256MiB，使用 tmpfs、独占 Redis DB 0、随机 service/UID/etcd prefix。收尾核对任务 label、完整 ID、挂载和隧道参数后删除本轮两容器与隧道；未操作既有服务，etcd 测试 prefix 收尾查询为空。
 - 日志为 `%TEMP%\yola-i46-fixture-cf85f6e` 下 `repro.log`、`local-tests.log`、`wire-timeouts.log`、`fixture-race.log`、`configured-games.log`、`historical-games.log`、`configured-race.log`、`package-race.log`、`check.log`、`lint.log`。计时样本未与编译/检查并行，不宣称性能优化。`GameProbe.Stop` 仍先排空 Node 验消息，App cleanup 后结束；关闭阶段可能出现已有 best-effort Disconnect 到已停止 Node 的告警。
 - 完整 diff 已核对所有 startServer/StartGame 调用方、注册和资源关闭顺序；两份文档保留未关闭状态。当前结果不覆盖完整 YAML 部署、TCP 同场景、1,000 桌与长期 SLO；10s smoke 也不保证每桌完成完整对局。I46/I45 仍待验证，I48/I03 未实施迁移。
+
+<a id="request-lifecycle-results"></a>
+### ~~已完成子项：真实连接取消与已开始任务排空~~（2026-09-26，本批提交）
+
+- 基线 `80b4084`，接手时工作树与暂存区均为空。沿 Request tracker、连接 dispatcher、Gateway Forward/Close、Node dispatch/Stop 核对后，未发现本窗口需要修改的生产行为；本批补齐缺失的跨层验收并澄清公共注释，不将它写成生产故障修复。
+- 根 `gateway/request_lifecycle_test.go` 使用真实 TCP/WS Client、Gateway、Stateful Node 和原生 App.Run，Locator 为 miniredis、Discovery 为静态实例。每种 transport 包含本地 cancel/deadline、断连/Forward deadline 后排空、迟到连接清理，共 10 个场景。Client 请求预算 5s；本地/Forward 截断场景 250ms；服务端其余请求上限与 Node Stop 为 3s。
+- 本地取消只移除本次等待，Node context 仍有效；客户端编码屏障确保第二 pending 已建立后才释放旧 handler，核对旧响应不串给下一请求。断连/Forward deadline 已取消 Node context 时，已开始副作用仍可完成；真实请求返回 Unavailable 证明停止准入已关闭，Drain 和 App.Run 仍等待 handler，完成一次后才排空并释放 epoch。
+- 旧 Unbind 被屏障延迟，新认证和业务 Session 更新后才放行；旧 Disconnect 携带旧 token，测试业务 owner 在同一锁内比较 token 并忽略旧事件。新 Gate binding 与 Node binding 保留，保存的旧 Session.Push 返回 NotFound，新 Session.Push 到达客户端。该测试不证明跨 Gateway Kick 失败时强单活，也不覆盖 I48 的迟到 binding 写入。
+- 初稿 `go test ./gateway -run 'Test(ClientCancellationLeavesStartedRequestRunning|CanceledForwardRemainsInNodeDrain|ReconnectSurvivesLateConnectionCleanup)$' -count=1 -timeout=60s` 通过。复审补强第二 pending 与旧回复重叠屏障后，最终 `go test -race ./gateway -run 'Test(ClientCancellationLeavesStartedRequestRunning|CanceledForwardRemainsInNodeDrain|ReconnectSurvivesLateConnectionCleanup)$' -count=20 -timeout=120s` 通过。未使用初稿的 race 结果代替最终检查。
+- 根目录 `go test -race ./gateway ./node ./network/tcp ./network/websocket -timeout=180s`、`make check`、`make lint` 通过。lint 初次仅报告本批测试中的变量遮蔽，已修正；最终两个 module 均 0 issues，无存量告警。修改的三个 Go 文件已用 `golangci-lint fmt --config .golangci.yml` 格式化。无入口、依赖或协议变化，不触发 build/breaking。
+- 工具为 Go 1.26.6 windows/amd64、golangci-lint 2.13.2；race 仅在命令内前置 `D:\soft\msys64\mingw64\bin`。本批未连接 VM、未创建外部容器，真实 Redis/etcd 环境变量未设置，check 中对应测试的跳过不计为验收通过。日志位于 `%TEMP%\yola-i46-lifecycle-80b4084`：`initial.log`、`targeted-race.log`（初稿）、`lint.log`（初次告警）、`final-targeted-race.log`、`final-lint.log`、`check.log`、`package-race.log`。
+- 完整 diff 与相关调用链已复审，含测试屏障、错误身份、失败清理、资源交接及两处 Request 注释。这里只验收可控业务 handler，未运行完整 Ludo/Whot 副作用窗口、目标规模或稳态；不关闭 I46/I45，不改变 Registry、binding 布局、协议或已开始操作的完成语义。后续按 [执行清单](#next-actions) 继续联合设计与独立分层诊断。
+- 根目录 PowerShell 核对三份修改文档的 126 个本地链接、两份清单的 20 个 issue ID、8 个关闭标记及 3 个完成子项一致；`git diff --check`、`git diff --cached --check` 通过。概览、当前阶段、详细证据和后续清单同步，不恢复 I07，不将本批子项完成写成父问题关闭。
 
 <a id="b1-results"></a>
 ## B1 本轮验证记录
@@ -264,9 +279,9 @@
 
 1. 先检查 git status --short、暂存/未暂存 diff、新增文件和当前 HEAD；保留已有改动。读取适用 AGENTS.md/AGENTS.override.md、docs/README.md、docs/issues.md、docs/refactor-progress.md，并按当前条目阅读 architecture.md、eventbus.md、performance.md 和相关代码。
 2. 阅读已安装且与任务相关的 skills；整体架构评估使用 improve-codebase-architecture、codebase-design、code-review，复现与修复使用 diagnosing-bugs，并发/生命周期使用 golang-concurrency，检查使用 golang-lint，符号追踪按需使用 golang-gopls。不机械叠加流程或新增审批。
-3. 以 Git 和进度文档恢复。I55 提交 0883c00，组件边界 cf85f6e，I46/I45 共用验收入口 b1976ed；实际 HEAD 以 Git 为准。I47、I49、I50、I51、I52、I53、I54、I55 已关闭，保留划线，不重做。I46/I45 已完成子项也须在两份文档同步划线，但父 issue 保持待验证。先执行进度文档的后续清单，不以旧窗口的下一步覆盖它；I48/I03 仍联合设计，A 未选定。项目未上线、仅本地 Docker，I07 不恢复。
+3. 以 Git 和进度文档恢复。I55 提交 0883c00，组件边界 cf85f6e，I46/I45 共用验收入口 b1976ed；80b4084 后补齐根框架真实连接取消、排空和重连收尾验收，实际 HEAD 以 Git 为准。I47、I49、I50、I51、I52、I53、I54、I55 已关闭，保留划线，不重做。I46/I45 已完成子项也须在两份文档同步划线，但父 issue 保持待验证。先执行进度文档的后续清单，不以旧窗口的下一步覆盖它；I48/I03 仍联合设计，A 未选定。项目未上线、仅本地 Docker，I07 不恢复。
 4. 用户明确外层原生 Kratos App 是唯一应用入口，Gate/Node 是内嵌组件；不新增 App/Config、运行器或隐藏覆盖语义的组合入口。沿调用链理解根因和职责后再实施，不按 issue 编号机械修复。当前没有容量 SLO，不阻塞独立架构诊断，也不自行宣布容量通过。
-5. 固定 Kratos v3.0.0，不修改官方源码或升级；保留唯一共享 Registry 与条件注册。I48/I03 先联合设计建立、保活、改绑和撤销，明确 I36 边界；候选 A 未选定，不直接迁移格式/slot。I46/I45 先对齐真实装配和夹具预算；I04 测量不必等 I48，改变 fencing 原语才依赖联合契约。重大行为/存储变化先准备具体方案与证据并确认。
+5. 固定 Kratos v3.0.0，不修改官方源码或升级；保留唯一共享 Registry 与条件注册。I48/I03 先联合设计建立、保活、改绑和撤销，明确 I36 边界；候选 A 未选定，不直接迁移格式/slot。I46/I45 的原生装配、三段预算与根框架取消/排空已经补齐，继续完整游戏窗口和同配置负载；I04 测量不必等 I48，改变 fencing 原语才依赖联合契约。重大行为/存储变化先准备具体方案与证据并确认。
 6. 按 AGENTS 的风险要求完成实际测试、lint、race、check、build 或 breaking；先检查 TestMain/环境依赖。可免密 SSH 到 192.168.152.129 用 Docker，但操作前确认资源，使用专用可丢弃实例，避免影响无关服务与数据。
 7. 每完成一个原子步骤，同步两份文档的阶段、证据、命令结果、未完成项、代码基线和下一步；已关闭问题保留原条目，在两份文档同步划线。不要把静态推导、候选方案或旧测试写成当前已验证；遇到代码事实推翻假设时修正文档。
 8. 在已授权范围内持续推进，不只停留在计划；每步简述结果。每个问题完成复现、契约核对、最小修复、必要验证、完整 diff 复审和文档后独立 git commit，格式 <type>(<scope>): <中文摘要>，由用户最后统一审核；不要求逐项 /plan 或 /clear。不授权 push 或发布。

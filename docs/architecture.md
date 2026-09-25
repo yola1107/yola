@@ -310,7 +310,7 @@ Gateway 不缓存玩家 Node binding 或未绑定结果。Gate close、takeover 
 
 | 位置与所有者 | 当前预算 | 覆盖范围与传递边界 |
 | --- | --- | --- |
-| WebSocket Client `Request` | 默认 30s | 限制客户端等待响应；外部 `Proto` 没有 deadline 字段，客户端请求截止时间不随消息传入服务端 |
+| TCP/WebSocket Client `Request` | 默认 30s | 限制客户端等待响应；外部 `Proto` 没有 deadline 或取消帧，客户端请求截止时间不随消息传入服务端 |
 | TCP/WebSocket `NewInvoker` | 默认 3s；测试 Gateway 由 `-rpc-timeout` 覆盖 | 为单条入站消息创建 handler context，Gateway Forward 继承它 |
 | Gateway `Forward` | `RPCTimeout` 默认 3s | 从入站 context 派生，覆盖路由定位和 Node RPC；内部 gRPC Client 已关闭 Kratos 隐式 2s 上限 |
 | Gateway 依赖准备与 backend 创建 | `ConnectTimeout` 默认 3s | BeforeStart 的 Locator Ping 服从更短父 deadline；共享 backend 创建使用 pool 自有 context，调用方只控制自身等待 |
@@ -335,7 +335,11 @@ Ludo 入座预算不包含创建玩家和 BindNode，且 `Seat` 中多次同步 
 3. mailbox 尚未开始的工作允许取消；已开始的业务按现有契约等待完成或回滚。Ludo/Whot 的独立入座与清理预算保持不变，不直接替换为已过期的请求 context。取消客户端等待不能撤销已经发送或已开始的操作。
 4. 非请求预算按 owner 分离。Gateway 的依赖准备、续租、清理分别由 ConnectTimeout、LeaseTimeout、CleanupTimeout 限制；Node 启动失败回滚由 CleanupTimeout 限制，epoch 注册/续租仍有独立 3s I/O 上限。正常 Stop 的总预算由调用方持有，外部依赖仍由应用关闭。
 
-根包已验证真实 gRPC 上 transport/Forward/Node/父 deadline 各自最短时的预算和响应 Code，以及独立清理、续租和共享建连；扩展包已验证排队取消、开始后完成、独立清理和重连 Session 归属。完整游戏及同配置负载未在本轮运行，因此不调整游戏默认预算、不宣称 I46/I45 的部署验收完成。跟踪项见 [I46](./issues.md#功能与语义缺口)。
+客户端 `Request` 返回 context error 只表示本地停止等待；已发出的帧仍可能排队或执行，迟到响应按 Seq 丢弃。物理断连会取消 Gateway 的在途 Forward，Gateway deadline 也会传播到 Node；这两者都不能撤销已经开始的业务写入。Node 在 handler 真正返回前持续跟踪该请求，正常 Stop 必须等它完成后才进入业务 Drain、释放 epoch。业务自行启动的后台任务则由其 Drain 负责等待，不能依靠 RPC 返回推断业务已经结束。
+
+重连创建新的 Session 和 BindingToken；旧连接 Unbind 按完整 binding 比较，旧 Disconnect 携带旧 token。业务在状态 owner 内比较 token 后决定是否更新在线状态；保存的旧 Session.Push 仍指向旧物理连接，不会自动转投新连接。这一边界不保证远端 Kick 失败时的强单活，也不解决 I48 的迟到 binding 写入。
+
+根包已有分层 deadline、清理、续租和共享建连验证；[请求生命周期用例](../gateway/request_lifecycle_test.go) 进一步连接真实 TCP/WS Client、Gateway、Node 和原生 App.Run，覆盖本地取消、迟到回复、断连/Forward 超时后的已开始任务排空及重连收尾。Locator 使用 miniredis、Discovery 使用静态实例，测试业务只实现可控副作用与 token 比较，不代替真实存储或完整游戏验收。当前证据见 [生命周期验收](./refactor-progress.md#request-lifecycle-results)，I46/I45 的完整业务及同配置负载仍待验证。
 
 ## 7. 部署与安全约束
 
