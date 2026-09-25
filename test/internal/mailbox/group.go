@@ -131,7 +131,7 @@ func (g *Group) Post(ctx context.Context, index int, job func()) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		err := mailbox.post(context.Background(), job)
+		err := mailbox.TryPost(job)
 		if err != ErrFull {
 			return err
 		}
@@ -170,18 +170,8 @@ func (g *Group) run() {
 }
 
 func (mailbox *mailboxQueue) TryPost(job func()) error {
-	return mailbox.post(context.Background(), job)
-}
-
-func (mailbox *mailboxQueue) post(ctx context.Context, job func()) error {
 	if job == nil {
 		return ErrNilJob
-	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	if err := ctx.Err(); err != nil {
-		return err
 	}
 	mailbox.group.mu.RLock()
 	defer mailbox.group.mu.RUnlock()
@@ -197,11 +187,7 @@ func (mailbox *mailboxQueue) post(ctx context.Context, job func()) error {
 		mailbox.mu.Unlock()
 		return ErrFull
 	}
-	mailbox.queue = append(mailbox.queue, func() {
-		if ctx.Err() == nil {
-			job()
-		}
-	})
+	mailbox.queue = append(mailbox.queue, job)
 	mailbox.group.changePending(1)
 	if !mailbox.scheduled {
 		mailbox.scheduled = true
@@ -216,7 +202,7 @@ func (mailbox *mailboxQueue) Call(ctx context.Context, job func() error) error {
 	if err != nil {
 		return err
 	}
-	err = mailbox.post(context.Background(), call.run)
+	err = mailbox.TryPost(call.run)
 	if err != nil {
 		return err
 	}
@@ -296,7 +282,8 @@ func (mailbox *mailboxQueue) drain(batch int) {
 		job := mailbox.queue[0]
 		mailbox.queue[0] = nil
 		mailbox.queue = mailbox.queue[1:]
-		mailbox.notifySpaceLocked()
+		close(mailbox.space)
+		mailbox.space = make(chan struct{})
 		mailbox.mu.Unlock()
 		callSafely(job)
 		mailbox.group.changePending(-1)
@@ -326,11 +313,6 @@ func (mailbox *mailboxQueue) waitForSpace(ctx context.Context) error {
 	case <-space:
 		return nil
 	}
-}
-
-func (mailbox *mailboxQueue) notifySpaceLocked() {
-	close(mailbox.space)
-	mailbox.space = make(chan struct{})
 }
 
 func (g *Group) changePending(delta int64) {

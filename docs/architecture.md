@@ -44,6 +44,10 @@ flowchart LR
 
 应用组装层创建并关闭进程专用的 `event.Bus`。Node usecase 只依赖 `event.Publisher`，Gateway 订阅 handler 固定 Topic 到客户端 command 的映射并调用 `gate.Broadcast`；Gateway/Node 不持有 Bus。事件在线可丢失，不重试、不重放、不补发离线消息，完整边界见 [EventBus 接入](./eventbus.md)。
 
+独立的 `test` module 通过 `replace yola => ..` 使用框架；service 依赖 usecase，usecase 组装 player/table/robot，data 和 Node adapter 实现业务定义的存储、投递接口。usecase 拥有玩家和业务任务的生命周期，Table 的 mailbox 串行化桌内操作，框架不承担这些业务状态。
+
+`test/internal/mailbox` 的 `TryPost` 只负责有界准入，已接纳的普通任务不随提交 context 取消；`Post` 的 context 只限制等待容量。`Call`/`PostAndWait` 由 `mailboxCall` 仲裁取消与开始：未开始可取消，已开始须等待结果，避免调用方提前回滚仍在执行的业务操作。
+
 ## 2. 网络与存储
 
 ### 2.1 连接方向
