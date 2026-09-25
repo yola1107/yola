@@ -8,7 +8,8 @@ Yola 是基于 Kratos 的分布式长连接接入框架。Gateway 持有 TCP/Web
 
 - [架构设计](./architecture.md)：组件边界、网络与存储、生命周期、请求链路、粘性路由、默认参数与超时职责。
 - [EventBus 接入](./eventbus.md)：Gateway/Node 在线实时 Pub/Sub、NATS 生命周期和 Gateway 有界并行 fanout。
-- [当前限制](./issues.md)：未关闭的部署约束及待验证、待设计事项。
+- [问题清单与解决方案](./issues.md)：未关闭问题、代码证据、候选解决方案、验证方案及关闭条件。
+- [架构审查与修复进度](./refactor-progress.md)：当前阶段、实施批次、验证记录、下一步和新会话提示词。
 - [性能基线](./performance.md)：当前热路径成本、诊断优先级、可复现 benchmark 和容量验收口径。
 - [示例说明](../examples/README.md)：Gateway、Stateful Whot、Stateless Ludo 和 Client 的本地运行方式。
 - [测试模块](../test/README.md)：测试服务的配置与启动；Ludo 压测见 [Ludo README](../test/ludo/README.md)。
@@ -37,7 +38,7 @@ Gateway 保存物理 Session。Locator 保存带租约的 `(service, UID) -> Gat
 5. `node/push.go` → `gateway/cluster.go`：Push 回程与目标路由校验
 6. `gateway/lifecycle.go` / `node/lifecycle.go`：BeforeStart / Start / Stop（读完热路径后再看）
 
-包职责与不变量见 [架构设计](./architecture.md)；未关闭问题集中在 [当前限制](./issues.md)，历史审查与实施过程由 Git 保留。
+包职责与不变量见 [架构设计](./architecture.md)；未关闭问题集中在 [问题清单](./issues.md)，当前实施状态与交接见 [进度表](./refactor-progress.md)，历史细节由 Git 保留。
 
 ## 快速开始
 
