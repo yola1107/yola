@@ -75,6 +75,49 @@ TCP Reader/Writer buffer 均按最大合法帧 `MaxProtoSize + 4B` 创建，即�
 
 NATS 新增计时和同步，TCP 每次成功排队/出队各增加一次字节原子更新。WS 每个 outboundFrame 增加一个 8B 的 Payload 长度字段；默认 32 帧槽位增加 256B 原始结构容量，另有两个计数器，未把它称为实测 RSS。以上只量化本地观测成本，不证明慢连接容量或端到端吞吐。原始日志和 WS overlay 位于 `%TEMP%\yola-i55-20260925-346cfaa` 的 `dispatch-before/after.log`、`send-before/after.log`、`ws-before/after.log`、`ws-before.json`。
 
+<a id="i44-capacity"></a>
+## I44 NATS 积压与释放验收
+
+2026-09-26，基于 `eb182b0` 加本批验收代码，在同一 4 vCPU、约 7.5 GiB RAM 的 Linux VM 上运行。两个专用 NATS 2.10.29 broker 分别设置 `max_payload=65536/1048576`、`max_pending=67108864`，各限 0.5 CPU/256 MiB。接收进程及独立发布子进程共用一个专用容器，限 2 CPU/1536 MiB、`GOMAXPROCS=2`，Go 1.26.6 linux/amd64；进程 RSS 不包含发布子进程和 broker。宿主机仍运行原有服务。
+
+每格使用独立进程，顺序运行 3 轮。业务 Payload 上限固定 64 KiB、每订阅队列固定 256；首条 1B primer 阻塞 handler 后取 GC 基线，再按最多 16 条一批发布，等待每个订阅的接收/拒绝计数追上累计发送数。最后精确确认队列满及全部 overflow，避免把发布 Flush 当作接收完成、或把 broker 断连当作本地队列拒绝。消息使用普通 PUB，以下各数值分别取三轮中位数。
+
+| 场景 | broker 上限 / Payload / 订阅数 | GC 后满队列 heap 增量 MiB | 接收进程峰值 RSS MiB | queue drop / payload drop | handler p99 ms（样本数） |
+| --- | --- | ---: | ---: | ---: | --- |
+| 小消息排空 | 64 KiB / 256B / 1 | 0.099 | 15.617 | 0 / 0 | 3.984（256） |
+| 默认上限排空 | 64 KiB / 64 KiB / 1 | 16.040 | 35.609 | 64 / 0 | 3.621（256） |
+| 四订阅排空 | 64 KiB / 64 KiB / 4 | 64.144 | 96.039 | 256 / 0 | 3.647（1,024） |
+| 合法积压直接关闭 | 64 KiB / 64 KiB / 1 | 16.039 | 35.730 | 64 / 0 | 不适用（0） |
+| 超业务上限后出队 | 1 MiB / 1 MiB / 1 | 256.036 | 310.059 | 64 / 256 | 不适用（0） |
+| 超限积压直接关闭 | 1 MiB / 1 MiB / 1 | 256.037 | 308.012 | 64 / 0 | 不适用（0） |
+
+`full` 是 GC 后的保留积压；峰值是各阶段 `/proc/self/status` 的 VmHWM 最大读数，包含整个接收测试进程的基线和运行开销，不是队列增量或通用安全容量。handler 使用固定 2ms、响应取消的诊断模型，p99 排除 primer 的人为阻塞，不包含队列等待，不能代替业务 p99。三个合法排空档分别耗时约 747/743/752ms；超限出队档约 1.667ms。直接 Close 只结束 primer、丢弃排队消息，因此 PayloadDropped 为 0 是预期结果。
+
+| 场景 | Close 后自然等待 100ms RSS MiB | 再 GC 后 live heap MiB | 再 GC 后 RSS MiB | 主动 FreeOSMemory 后 RSS MiB |
+| --- | ---: | ---: | ---: | ---: |
+| 小消息排空 | 15.605 | 0.358 | 15.617 | 15.359 |
+| 默认上限排空 | 35.594 | 0.360 | 35.609 | 15.398 |
+| 四订阅排空 | 96.031 | 0.370 | 96.039 | 16.500 |
+| 合法积压直接关闭 | 35.730 | 0.356 | 35.730 | 15.488 |
+| 超业务上限后出队 | 310.047 | 0.356 | 310.059 | 16.820 |
+| 超限积压直接关闭 | 307.938 | 0.365 | 308.012 | 16.793 |
+
+保留关闭后的 Subscription 句柄时，Closed 为 true、QueueDepth 为 0，积压对象仍能被 GC 回收；Close 不保证 OS RSS 立即回落。主动 `FreeOSMemory` 的结果单独列示，不能写成自然关闭的保证。关闭中位耗时为 0.161～0.598ms，仅适用于本次协作 handler。
+
+边界用例另验证业务上限、业务上限+1、broker 上限及 broker 上限+1：nats.go 的本地预检与原始 PUB 协议触发的 broker `Maximum Payload Violation` 分别验收。真实两个 broker 各 3 轮通过；内嵌 NATS 2.14.5 两档及 Windows race 20 轮也通过。Linux 多订阅、带超限积压关闭的独立进程 race 通过，其内存数字不作为上表证据。
+
+结论是容量预算必须按 **订阅数 × 队列容量 × 实际 broker Payload 上限，加结构、连接和运行时余量** 评估。默认 16 MiB 只描述 broker 同样限制为 64 KiB 时的单订阅 Payload；业务出队校验不能约束其他发布者已入队的数据。本批不改队列、默认参数或生产处理路径；部署仍须对齐 broker 上限和订阅数。这组结果关闭 I44，不关闭 I40/I41 或任意业务 SLO。
+
+Linux 复现时，每次进程只选一格；`small/default/four/close_default` 对应 64 KiB broker，`oversized/close_oversized` 对应 1 MiB broker。以下两段正则须分别锚定，不能误将 `close_default` 一同选入：
+
+```sh
+GOMAXPROCS=2 YOLA_NATS_URL='nats://<dedicated-broker>:4222' ./nats.test \
+  -test.run='^$' -test.bench='^BenchmarkSubscriptionCapacity$/^default$' \
+  -test.benchtime=1x -test.count=1 -test.timeout=60s
+```
+
+基准源码为 [capacity_benchmark_test.go](../event/nats/capacity_benchmark_test.go)，边界用例为 [payload_limits_test.go](../event/nats/payload_limits_test.go)。本次非 race 二进制 SHA-256：`3bcb2b098f90d832dce12ddee6f3b22776b933f406f83c77c9974cf297612f2d`；准确命令、失败修正与原始产物见 [I44 交接](./refactor-progress.md#i44-results)。旧 `BenchmarkSubscriptionBacklogMemory` 也复用分批接收屏障，其历史计时不可解释为本批相同输入节奏。
+
 ## 最近基线
 
 以下为 2026-08-21 在 macOS/arm64、Apple M1 Pro、Go 1.26.5、commit `3035fb8` 上的单次进程内复测；TCP 使用 `-benchtime=1s`，WebSocket 使用 `-benchtime=2s`。测试不包含真实 Redis、etcd、跨机网络、TLS 和业务 handler，只用于回归比较。

@@ -141,28 +141,24 @@ func measureSubscriptionBacklog(b *testing.B, url string, capacity, payloadSize 
 
 	overflow := max(16, capacity/4)
 	b.StartTimer()
-	for range capacity + overflow {
-		if err = bus.Publish(context.Background(), published); err != nil {
-			b.Fatal(err)
+	fillSubscriptionBacklog(b, []event.SubscriptionStatsProvider{registered}, capacity, overflow, func(count int) {
+		for range count {
+			if err = bus.Publish(context.Background(), published); err != nil {
+				b.Fatal(err)
+			}
 		}
-	}
-	require.NoError(b, bus.conn.Flush())
-	native := registered.native
-	var dropCount int
-	require.Eventually(b, func() bool {
-		currentDropped, dropErr := native.Dropped()
-		dropCount = currentDropped
-		return dropErr == nil && currentDropped > 0
-	}, 5*time.Second, time.Millisecond)
+		require.NoError(b, bus.conn.Flush())
+	})
+	dropCount := registered.SubscriptionStats().QueueDropped
 	b.StopTimer()
 	b.ReportMetric(float64(capacity*payloadSize), "payload-pending-B")
 
 	runtime.GC()
 	runtime.ReadMemStats(&after)
 	if after.HeapAlloc <= before.HeapAlloc {
-		return 0, uint64(dropCount)
+		return 0, dropCount
 	}
-	return after.HeapAlloc - before.HeapAlloc, uint64(dropCount)
+	return after.HeapAlloc - before.HeapAlloc, dropCount
 }
 
 func benchmarkURL(t testing.TB) string {

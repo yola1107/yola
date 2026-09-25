@@ -81,6 +81,8 @@ New -> Publish/Subscribe/Unsubscribe -> Close
 
 NATS adapter 只暴露两个热路径容量参数：`WithQueueCapacity` 控制单订阅接收队列，`WithMaxPayloadBytes` 同时限制 Publish Payload 并丢弃超限的接收 Payload；默认分别为 256 和 64 KiB，按默认上限计算的单订阅 Payload 积压约为 16 MiB（不含结构和协议开销）。应用组装只需传入 NATS URL；生产值确有不同容量证据时再显式覆盖，并同步对齐 broker `max_payload`。
 
+[I44 实测](./performance.md#i44-capacity) 已验证：业务上限仍为 64 KiB、broker 放行 1 MiB 时，256 条队列可保留约 256 MiB Payload；broker 同样限制为 64 KiB 时，四个默认订阅可保留约 64 MiB。关闭后队列引用释放、live heap 可回收，但 RSS 不保证立即归还 OS。容量配置须共同记录 broker 上限、订阅数和队列容量，不能单独把 `WithMaxPayloadBytes` 当作接收内存限制。
+
 返回的订阅实现可选的 `event.SubscriptionStatsProvider`。`SubscriptionStats()` 可与消费、退订和 Bus.Close 并发调用，不重置累计值：
 
 | 字段 | 边界 |
