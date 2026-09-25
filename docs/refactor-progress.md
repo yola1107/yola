@@ -6,11 +6,11 @@
 ## 当前快照
 
 - **更新日期**：2026-09-25。
-- **代码审查基线**：`0c8b270`；此提交记录初始化交接快照，不包含 I47～I55 的代码修复，后续随各问题提交更新。
-- **初始化交接的文档检查**：相对路径、锚点、代码行号范围与问题字段校验通过；原 12 个 ID 完整保留，21 个问题与 21 行进度一一对应。已核对 Makefile/AGENTS 命令及完整改动，两个 diff 检查通过；未运行新的 Go 测试、lint、race、压测或 VM 操作。
+- **代码审查基线**：代码起点 `0c8b270`，交接文档 `9378b54`；I49 随本提交关闭，I47 及其余代码修复尚未纳入本提交。
+- **当前验证**：I49 定向回归 20 次、Node 包测试和 race、两个 module 的 make lint 通过；关闭记录与未完成项见 B1 验证记录。
 - **工作重点**：根 module 的架构与契约；`test` 是扩展与验收，不再以游戏局部重构替代框架分析。
 - **Git 边界**：用户已授权按问题独立提交；交接文档初始化与各问题修复分别提交。未授权 push 或发布。
-- **下一步**：从 B1 开始，先为 I47 构造 `kratos.App.Run` 的就绪/注册交错回归，并验证 I49 的后台 Session 排空边界；比较最小方案后实施不改变现有路由与存储契约的修复。I48 可调查设计，不能直接迁移绑定格式。
+- **下一步**：继续 B1 的 I47，就真实 Kratos App 的就绪/注册交错复现并设计最小兼容修复；I48 只调查设计，不迁移绑定格式。
 
 ## 状态口径
 
@@ -25,7 +25,7 @@
 | 问题 | 当前阶段 | 已有证据与验证边界 | 下一步 / 关闭记录 |
 | --- | --- | --- | --- |
 | [I47 就绪与注册](./issues.md#i47) | 待复现 | 固定版本依赖与调用链已静态核查；未运行 App 注册交错 | B1：复现旧准备者覆盖新注册，比较就绪/注册所有权方案 |
-| [I49 Session 副作用排空](./issues.md#i49) | 待复现 | 未计数路径已确认；同步 handler 有 requests 保护 | B1：后台绑定、Drain、Stop、超时及 epoch 释放回归 |
+| ~~[I49 Session 副作用排空](./issues.md#i49)~~ | 已关闭（本提交） | 保存 Session 的后台 Bind/Unbind 已接入现有 deliveries；定向、包测试、race、lint 通过并复审 | Drain 内可操作；停止后拒绝；超时/重复 Stop 不释放 epoch；不解决 I48 |
 | [I48 binding 代次保护](./issues.md#i48) | 待设计 | 存储只比较 NodeID；未运行迟到写入交错 | B1 开始调查，B4 单独实施；先明确重启继承及 Cluster 条件更新 |
 | [I51 NATS 激活归属](./issues.md#i51) | 待复现 | LastError 覆盖与文本比较已静态核查；未运行错误交错 | B2：重复 ACL 和异步错误交错，验证底层能力后设计 |
 | [I52 等待注册取消](./issues.md#i52) | 待复现 | 获锁后缺取消检查；未运行三次注册回归 | B2：先复现再修复，激活前取消不污染 Bus |
@@ -74,6 +74,15 @@
 | 2026-09-25 | 文档交接 | 整理 21 个未关闭问题及候选方案，建立进度表和恢复提示词 | 根目录 PowerShell 校验相对链接/锚点/行号、ID 与字段通过；git diff --check、git diff --cached --check 通过；未运行新 Go 检查，无新提交 |
 
 前序 `470a4fa`、`7959b58`、`a83ccb2`、`0c8b270` 已提交 mailbox/Whot 局部修复；它们不关闭本表新增架构问题。历史测试或性能文档不能直接证明后续代码通过，复用结果须核对源码、依赖、配置和环境均未变化。
+
+<a id="b1-results"></a>
+## B1 / I49 验证记录
+
+- 基线：`0c8b270` + 本提交的 I49 改动；实现范围为 `node/session.go` 的两处准入及对应职责注释，回归见 `node/session_lifecycle_test.go`。复审确认同步 handler、Drain 内操作、无 Locator 错误、epoch 失效取消和 Push 流程保持原契约；关闭后的绑定调用统一拒绝为 `Unavailable`。
+- 根目录先执行 `go test ./node -run 'Test(StopWaitsForSavedSessionBinding|SessionBindingDrainTimeoutKeepsEpoch|BusinessDrainCanBindAndUnbindSavedSession|EpochLossCancelsSavedSessionBinding)$' -count=1 -timeout=30s`：原实现中两种后台写入均导致 Stop 提前成功，超时断言均失败。增加屏障后相同四组测试 `-count=20 -timeout=60s` 通过。
+- `golangci-lint fmt --config .golangci.yml node/session.go node/server.go node/lifecycle.go node/session_lifecycle_test.go`；`go test ./node -count=1 -timeout=120s`；`go test -race ./node -count=1 -timeout=120s`；`make lint` 均通过。lint 初次发现新增测试 helper 的 context 参数顺序问题，已修正；最终根/test module 均为 0 issues，无存量告警。
+- 工具：Go 1.26.6 windows/amd64、golangci-lint 2.13.2、MSYS2 GCC 15.2.0。首次 race 因 cgo 编译器运行失败未完成；最小 C 程序也失败，在当前命令内前置 `D:\soft\msys64\mingw64\bin` 到 PATH 后 C 编译和 race 均通过，未改机器持久环境。
+- 本提交只修复 Session 本地排空，未改变 Registry、协议、Locator 接口或 binding 格式；I47/I48 仍待后续处理。源码、依赖版本、配置、工具和环境与上述验证时一致；提交前完整复审本问题 diff，两项 diff 检查通过。
 
 ## 验证环境边界
 

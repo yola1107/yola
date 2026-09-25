@@ -71,7 +71,7 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 }
 
-// Stop 排空请求、业务和投递，仅在全部完成后主动释放 epoch。
+// Stop 排空请求、业务、绑定写入和投递，仅在全部完成后主动释放 epoch。
 func (s *Server) Stop(ctx context.Context) error {
 	ctx = normalizeContext(ctx)
 	var firstStop bool
@@ -98,7 +98,7 @@ func (s *Server) shutdown(ctx context.Context) (error, error) {
 	if requestErr == nil && s.drain != nil {
 		drainErr = s.drain(ctx)
 	}
-	// 业务 Drain 负责停止推送生产者，投递能力在此之前继续服务已接纳业务。
+	// 业务 Drain 负责停止绑定与推送生产者，出站副作用在此之前仍可接纳。
 	deliveryErr := s.deliveries.stopAndWait(ctx)
 	canRelease := requestErr == nil && drainErr == nil && deliveryErr == nil
 	var renewalErr error

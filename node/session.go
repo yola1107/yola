@@ -54,6 +54,10 @@ func (s requestSession) BindNode(ctx context.Context) error {
 	if s.server.locator == nil {
 		return status.Error(codes.FailedPrecondition, "node locator is not configured")
 	}
+	if !s.server.deliveries.admit() {
+		return status.Error(codes.Unavailable, "node is stopping or stopped")
+	}
+	defer s.server.deliveries.done()
 	identity, err := s.validatedIdentity()
 	if err != nil {
 		return err
@@ -69,6 +73,10 @@ func (s requestSession) UnbindNode(ctx context.Context) error {
 	if s.server.locator == nil {
 		return status.Error(codes.FailedPrecondition, "node locator is not configured")
 	}
+	if !s.server.deliveries.admit() {
+		return status.Error(codes.Unavailable, "node is stopping or stopped")
+	}
+	defer s.server.deliveries.done()
 	identity, err := s.validatedIdentity()
 	if err != nil {
 		return err

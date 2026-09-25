@@ -126,7 +126,7 @@ app := kratos.New(
 )
 ```
 
-Stateless Node 不配置 Locator，`Metadata()` 为 nil；Stateful Node instance ID 必须稳定且在线唯一。入口在 `Run` 返回后取消 App context，以独立、有界的 context 停止 Server，再关闭外部依赖；完整代码见 [Whot 入口](../examples/whot/main.go)。持有 Table、玩家或后台任务的 Node 通过 `node.Drain` 注入业务关闭：Drain 期间仍可推送，返回前必须停止推送生产者。启动核验、租约失效和排空契约见 [生命周期](./architecture.md#3-生命周期)。
+Stateless Node 不配置 Locator，`Metadata()` 为 nil；Stateful Node instance ID 必须稳定且在线唯一。入口在 `Run` 返回后取消 App context，以独立、有界的 context 停止 Server，再关闭外部依赖；完整代码见 [Whot 入口](../examples/whot/main.go)。持有 Table、玩家或后台任务的 Node 通过 `node.Drain` 注入业务关闭：Drain 期间仍可绑定、解绑和推送，返回前必须停止这些操作的生产者。启动核验、租约失效和排空契约见 [生命周期](./architecture.md#3-生命周期)。
 
 ## 开发与验证
 

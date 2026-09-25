@@ -5,7 +5,7 @@
 
 - **审查基线**：2026-09-25，代码提交 `0c8b270`。行号均为该基线的定位提示，实施前须按声明名重新核对。
 - **范围**：根 module 的职责、依赖、状态所有权和生命周期；`test` 是接入与验收案例，业务状态仍由业务层拥有。
-- **证据**：I47～I55 来自代码、固定版本依赖和现有测试的静态审查，尚未运行对应故障复现。存量运行数据只支持其原始配置和场景。
+- **证据**：I49 已完成复现、修复和验证；I47、I48、I50～I55 仍是静态发现，详见各项与进度表。存量运行数据只支持其原始配置和场景。
 - **优先级**：P0 为生产前必须闭环的部署风险；P1 为正确性、可用性或容量验收重点；P2 为契约清晰度、扩展能力或已接受限制。
 - **维护**：保留既有 ID；新增问题补齐影响、证据、方案和关闭条件。关闭后保留原条目并为问题标题划线，追加关闭结果，在进度表同步划线并保留验证证据；不得删除已关闭问题。
 
@@ -25,12 +25,13 @@
   - **验证方案**：分别阻塞旧 Bind、旧 Unbind，在新代完成绑定后释放旧写；覆盖相同/不同 NodeID、TTL 失效、取消后迟到完成、进程恢复、旧 Gateway 快照及原 ID 重启。替身复现后验证真实存储条件更新与 Redis Cluster slot 约束。
   - **关闭条件与风险**：已失去修改权的操作不能破坏新绑定，并保持经确认的重启、改绑语义。仅给 Unbind 增加 epoch 比较不能阻止旧 Bind；[decode.go:134](../locate/redis/decode.go#L134) 的 UID binding 与 Node epoch 不同 slot，不能直接增加跨 key Lua。属于存储契约设计，实施前确认重大语义变化。
 
-- <a id="i49"></a> **I49 · P2：Session 绑定副作用未纳入框架排空屏障**
+- <a id="i49"></a> **~~I49 · P2：Session 绑定副作用未纳入框架排空屏障~~**
   - **影响**：保存 Session 后发起的后台 Bind/Unbind 没有独立在途计数，Stop 是否等待完全取决于业务 Drain。同步 handler 内的调用已经由 requests 保护，不能据此声称所有正常停机都会提前释放 epoch。
   - **证据**：[node/session.go:53](../node/session.go#L53) 的 Bind/Unbind 与 [session.go:83](../node/session.go#L83) 的 Push 准入不同；[node/lifecycle.go:96](../node/lifecycle.go#L96) 只综合 requests、业务 Drain、deliveries 决定释放。[lifecycle_test.go:493](../node/lifecycle_test.go#L493) 覆盖的是仍在 Forward 内的绑定。
   - **解决方案**：优先扩展现有出站副作用屏障，使 Drain 期间所需的 Bind/Unbind/Push 可用，Drain 后关闭准入并等待；相应名称与注释按真实职责收敛。业务仍负责停止自身后台生产者，不增加第三套没有独立职责的 tracker。
   - **验证方案**：保存 Session，阻塞 Locator 写入，检查 Stop 不提前释放 epoch；覆盖 Drain 内操作、关闭准入后拒绝、等待超时、重复 Stop、epoch 失效及同步 handler 原行为，执行受影响包 race。
   - **关闭条件与风险**：框架接纳的绑定副作用均被等待，排空失败不主动释放 epoch，Drain 能力保持。此项只修复本地生命周期覆盖，不能替代 I48 的存储侧保护。
+  - **关闭记录（2026-09-25，工作树）**：Bind/Unbind 已纳入现有 deliveries 屏障，Drain 期间仍可使用，关闭准入后返回 Unavailable。保存 Session 后的后台写入、等待超时、重复 Stop、epoch 失效及同步 handler 回归通过；排空失败不主动释放 epoch。此项不替代 I48；验证命令见 [B1 验证记录](./refactor-progress.md#b1-results)。
 
 - <a id="i50"></a> **I50 · P1：串行业务处理阻塞心跳与连接存活判断**
   - **影响**：慢 Forward 或连续请求排队会阻挡心跳读取、回复和 Gate lease 续租。TCP 默认 5s 的心跳检查下，放宽业务预算可能引起误断线；即使每次请求限制为 3s，多条排队也会累计等待。

@@ -120,14 +120,14 @@ command 与 disconnect handler 必须在 `BeforeStart` 前注册，运行期不�
 
 Stateful Node 的 `Start` 先检查本地有效期并完成首次续租核验，再开放 gRPC；任一核验失败都拒绝启动。自身启动失败以独立的 `PushTimeout` 预算调用完整 Stop，保留业务 Drain 和 epoch 释放条件。[node/lifecycle.go](../node/lifecycle.go)
 
-两个 `requestAdmission` 分别拥有入站请求和出站投递的终态、在途计数及排空信号，停止等待本身会关闭对应准入。`Stop` 按顺序执行：
+两个 `requestAdmission` 分别拥有入站请求和出站副作用（Bind/Unbind/Push）的终态、在途计数及排空信号，停止等待本身会关闭对应准入。`Stop` 按顺序执行：
 
 1. 拒绝新的 Forward/Disconnect，等待已接收请求返回。
-2. 执行业务 Drain；期间 `PushToUID` 和 `Session.Push` 仍可使用，Drain 返回前必须停止自身的推送生产者。
-3. 关闭投递准入，等待已接纳的 Push 完成。
+2. 执行业务 Drain；期间 Session 的 Bind/Unbind/Push 及 `PushToUID` 仍可使用，Drain 返回前必须停止自身的绑定与推送生产者。
+3. 关闭出站副作用准入，等待已接纳的绑定写入与 Push 完成；保存 Session 后发起的后台操作也纳入此屏障。
 4. 停止 gRPC，按排空结果处理 epoch，最后关闭 Gateway ClientConn。
 
-只有请求、业务 Drain 和投递均排空，才撤下可服务 identity、停止并等待续租任务、按固定代次注销 epoch。任一排空失败或超时则停止续租，保留 epoch 到 TTL 回收，重复 Stop 不会绕过失败排空提前释放。已经获准释放、但等待续租任务退出超时或注销失败的凭据，可由后续 Stop 重试；NotFound/Conflict 视为本代已不再持有 key。
+只有请求、业务 Drain 和出站副作用均排空，才撤下可服务 identity、停止并等待续租任务、按固定代次注销 epoch。任一排空失败或超时则停止续租，保留 epoch 到 TTL 回收，重复 Stop 不会绕过失败排空提前释放。已经获准释放、但等待续租任务退出超时或注销失败的凭据，可由后续 Stop 重试；NotFound/Conflict 视为本代已不再持有 key。
 
 Node 不持有 EventBus、Table、玩家或业务后台任务。Session 使用时读取当前身份，不缓存永久有效的 identity；正常停机后保存的 Session 也不能继续绑定或推送。Registry 摘流传播期间，旧路由可能收到 `Unavailable`，Gateway 不做补偿重试。
 

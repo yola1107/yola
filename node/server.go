@@ -59,12 +59,13 @@ type Server struct {
 	preparationDone chan struct{}
 	lease           atomic.Pointer[epochLease]
 	requests        requestAdmission
-	deliveries      requestAdmission
-	stopOnce        sync.Once
-	stopErr         error
+	// deliveries 覆盖绑定写入与 Push；业务 Drain 返回后才关闭准入。
+	deliveries requestAdmission
+	stopOnce   sync.Once
+	stopErr    error
 }
 
-// DrainFunc 在入站请求排空后执行一次；返回前须停止业务的推送生产者。
+// DrainFunc 在入站请求排空后执行一次；返回前须停止业务的绑定与推送生产者。
 type DrainFunc func(ctx context.Context) error
 
 type nodeIdentity struct {
