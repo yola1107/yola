@@ -13,8 +13,7 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// kickPrevious runs inside the admitted authentication. It outlives a disconnected
-// caller so locally accepted takeover work is attempted within RPCTimeout.
+// kickPrevious 位于已接纳的认证内，断线后的接管清理由 CleanupTimeout 限时。
 func (s *Server) kickPrevious(ctx context.Context, previous locate.GateBinding) {
 	if previous.GateID == s.identity.id {
 		_ = s.kick(ctx, previous, v1.KickCodeSessionReplaced)

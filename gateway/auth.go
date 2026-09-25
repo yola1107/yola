@@ -136,7 +136,7 @@ func (s *Server) heartbeat(ctx context.Context, sess *session) error {
 	if !due {
 		return nil
 	}
-	renewCtx, cancel := context.WithTimeout(ctx, s.rpcTimeout)
+	renewCtx, cancel := context.WithTimeout(ctx, s.leaseTimeout)
 	defer cancel()
 	lease, err := s.locator.RenewGateLease(renewCtx, binding, s.leaseTTL)
 	if err == nil {

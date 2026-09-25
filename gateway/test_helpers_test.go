@@ -573,11 +573,12 @@ func newDisconnectTrackingServer(t *testing.T) (*Server, locate.Locator, *testCo
 	t.Cleanup(backendPool.close)
 	binding := testBinding()
 	gateway := &Server{
-		identity:   identity{id: binding.GateID, endpoint: binding.GateEndpoint},
-		locator:    store,
-		backends:   backendPool,
-		rpcTimeout: time.Second,
-		sessions:   &sessionRegistry{byConnID: make(map[string]*session)},
+		identity:       identity{id: binding.GateID, endpoint: binding.GateEndpoint},
+		locator:        store,
+		backends:       backendPool,
+		rpcTimeout:     time.Second,
+		cleanupTimeout: time.Second,
+		sessions:       &sessionRegistry{byConnID: make(map[string]*session)},
 	}
 	conn := newTestConnection("conn-a")
 	_, _, err = store.BindGate(context.Background(), binding, time.Minute)

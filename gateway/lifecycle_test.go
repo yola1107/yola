@@ -272,7 +272,7 @@ func TestDrainSessionsSendsShutdownKick(t *testing.T) {
 		sessions: &sessionRegistry{byConnID: map[string]*session{
 			conn.ConnID(): {conn: conn},
 		}},
-		rpcTimeout: time.Second,
+		cleanupTimeout: time.Second,
 	}
 
 	require.NoError(t, gate.drainSessions(context.Background()))
@@ -346,7 +346,7 @@ func TestDrainSessionsRedistributesWorkFromBlockedWorker(t *testing.T) {
 		}
 		registry.byConnID[connID] = &session{conn: conn}
 	}
-	gate := &Server{sessions: registry, rpcTimeout: time.Second}
+	gate := &Server{sessions: registry, cleanupTimeout: time.Second}
 	drained := make(chan struct{})
 	drainResult := make(chan error, 1)
 	go func() {
@@ -371,10 +371,10 @@ func TestDrainSessionsPreservesShutdownDeadlineForCleanup(t *testing.T) {
 	conn := newTestConnection(binding.ConnID)
 	store := &blockingUnbindLocator{Locator: testLocator(t), called: make(chan context.Context, 1)}
 	gate := &Server{
-		locator:    store,
-		backends:   newBackends(staticDiscovery{}, nil, 300*time.Millisecond),
-		sessions:   &sessionRegistry{byConnID: map[string]*session{binding.ConnID: activeSession(conn, binding)}},
-		rpcTimeout: 300 * time.Millisecond,
+		locator:        store,
+		backends:       newBackends(staticDiscovery{}, nil, 300*time.Millisecond),
+		sessions:       &sessionRegistry{byConnID: map[string]*session{binding.ConnID: activeSession(conn, binding)}},
+		cleanupTimeout: 300 * time.Millisecond,
 	}
 	t.Cleanup(gate.backends.close)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
@@ -424,7 +424,7 @@ func TestGatewayTransportPreparationFailurePreventsRegistration(t *testing.T) {
 			return nil
 		},
 	}
-	gate := newTestServer(t, RPCTimeout(20*time.Millisecond), Transport(prepared, failing))
+	gate := newTestServer(t, CleanupTimeout(20*time.Millisecond), Transport(prepared, failing))
 	t.Cleanup(func() { require.NoError(t, gate.Stop(context.Background())) })
 	registrar := new(countingRegistrar)
 	app := kratos.New(

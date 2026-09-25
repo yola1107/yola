@@ -50,13 +50,16 @@ type Server struct {
 	grpcServer   *kgrpc.Server
 	grpcListener *listener.Owner
 
-	authenticator Authenticator
-	locator       locate.Locator
-	rpcTimeout    time.Duration
-	authTimeout   time.Duration
-	leaseTTL      time.Duration
-	broadcaster   *broadcaster
-	transports    []ClientTransport
+	authenticator  Authenticator
+	locator        locate.Locator
+	rpcTimeout     time.Duration
+	connectTimeout time.Duration
+	leaseTimeout   time.Duration
+	cleanupTimeout time.Duration
+	authTimeout    time.Duration
+	leaseTTL       time.Duration
+	broadcaster    *broadcaster
+	transports     []ClientTransport
 
 	identity identity
 	backends *backends
@@ -96,15 +99,18 @@ func NewServer(opts ...Option) (*Server, error) {
 	}
 	sessions := &sessionRegistry{byConnID: make(map[string]*session)}
 	server := &Server{
-		authenticator: o.auth,
-		locator:       o.locator,
-		rpcTimeout:    o.rpcTimeout,
-		authTimeout:   o.authTimeout,
-		leaseTTL:      o.leaseTTL,
-		transports:    o.transports,
-		backends:      newBackends(o.discovery, o.clientTLS, o.rpcTimeout),
-		sessions:      sessions,
-		gateways:      gateclient.New(o.clientTLS),
+		authenticator:  o.auth,
+		locator:        o.locator,
+		rpcTimeout:     o.rpcTimeout,
+		connectTimeout: o.connectTimeout,
+		leaseTimeout:   o.leaseTimeout,
+		cleanupTimeout: o.cleanupTimeout,
+		authTimeout:    o.authTimeout,
+		leaseTTL:       o.leaseTTL,
+		transports:     o.transports,
+		backends:       newBackends(o.discovery, o.clientTLS, o.connectTimeout),
+		sessions:       sessions,
+		gateways:       gateclient.New(o.clientTLS),
 	}
 	server.broadcaster = newBroadcaster(sessions, o.broadcastWorkers, o.broadcastQueueCapacity)
 	server.grpcListener = listener.New(o.network, o.address, o.listener)

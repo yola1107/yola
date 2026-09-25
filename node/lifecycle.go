@@ -177,6 +177,7 @@ func (s *Server) BeforeStart(ctx context.Context) (err error) {
 		"sticky", lease != nil,
 		"handlers", handlerCount,
 		"push_timeout", s.pushTimeout.String(),
+		"cleanup_timeout", s.cleanupTimeout.String(),
 	)
 	return nil
 }
@@ -190,7 +191,7 @@ func (s *Server) rollbackPreparation(ctx context.Context, lease *epochLease, cau
 	s.lifecycleMu.Lock()
 	s.lease.Store(lease)
 	s.lifecycleMu.Unlock()
-	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(normalizeContext(ctx)), s.pushTimeout)
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(normalizeContext(ctx)), s.cleanupTimeout)
 	defer cancel()
 	if err := lease.release(cleanupCtx); err != nil {
 		return errors.Join(cause, fmt.Errorf("node: roll back epoch: %w", err))
@@ -200,7 +201,7 @@ func (s *Server) rollbackPreparation(ctx context.Context, lease *epochLease, cau
 
 // rollbackStart 使用独立的有界 context，按完整 Stop 顺序清理启动失败。
 func (s *Server) rollbackStart(ctx context.Context) error {
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(normalizeContext(ctx)), s.pushTimeout)
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(normalizeContext(ctx)), s.cleanupTimeout)
 	defer cancel()
 	return s.Stop(ctx)
 }

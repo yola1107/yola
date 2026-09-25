@@ -45,6 +45,9 @@ type options struct {
 	discovery              registry.Discovery
 	clientTLS              *tls.Config
 	rpcTimeout             time.Duration
+	connectTimeout         time.Duration
+	leaseTimeout           time.Duration
+	cleanupTimeout         time.Duration
 	authTimeout            time.Duration
 	leaseTTL               time.Duration
 	network                string
@@ -62,6 +65,9 @@ type options struct {
 func resolveOptions(opts ...Option) (options, error) {
 	o := options{
 		rpcTimeout:             3 * time.Second,
+		connectTimeout:         3 * time.Second,
+		leaseTimeout:           3 * time.Second,
+		cleanupTimeout:         3 * time.Second,
 		authTimeout:            15 * time.Second,
 		leaseTTL:               60 * time.Second,
 		network:                "tcp",
@@ -250,13 +256,47 @@ func ClientTLS(config *tls.Config) Option {
 	}
 }
 
-// RPCTimeout sets the internal client RPC timeout.
+// RPCTimeout 限制单次 Forward 的路由查询与 Node RPC，不控制建连、续租或清理。
 func RPCTimeout(timeout time.Duration) Option {
 	return func(o *options) error {
 		if timeout <= 0 {
 			return errors.New("gateway: RPC timeout must be positive")
 		}
 		o.rpcTimeout = timeout
+		return nil
+	}
+}
+
+// ConnectTimeout 限制启动依赖核验和共享 backend 的创建；单个请求取消不终止共享创建。
+func ConnectTimeout(timeout time.Duration) Option {
+	return func(o *options) error {
+		if timeout <= 0 {
+			return errors.New("gateway: connect timeout must be positive")
+		}
+		o.connectTimeout = timeout
+		return nil
+	}
+}
+
+// LeaseTimeout 限制单次 Gate lease 续租，仍服从调用方更短的 deadline。
+func LeaseTimeout(timeout time.Duration) Option {
+	return func(o *options) error {
+		if timeout <= 0 {
+			return errors.New("gateway: lease timeout must be positive")
+		}
+		o.leaseTimeout = timeout
+		return nil
+	}
+}
+
+// CleanupTimeout 限制独立的断线清理、Kick、单 Session 排空及每项启动回滚。
+// 正常 Stop 的总预算仍由调用方 context 控制。
+func CleanupTimeout(timeout time.Duration) Option {
+	return func(o *options) error {
+		if timeout <= 0 {
+			return errors.New("gateway: cleanup timeout must be positive")
+		}
+		o.cleanupTimeout = timeout
 		return nil
 	}
 }

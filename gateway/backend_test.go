@@ -100,7 +100,7 @@ func TestBackendsBoundConnectionAndCancelOnClose(t *testing.T) {
 		close   bool
 		want    error
 	}{
-		{name: "RPC timeout", timeout: 20 * time.Millisecond, want: context.DeadlineExceeded},
+		{name: "connect timeout", timeout: 20 * time.Millisecond, want: context.DeadlineExceeded},
 		{name: "pool close", timeout: time.Second, close: true, want: errBackendsClosed},
 	} {
 		t.Run(test.name, func(t *testing.T) {

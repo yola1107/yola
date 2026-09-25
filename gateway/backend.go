@@ -22,12 +22,12 @@ const backendServiceConfig = `{"loadBalancingConfig":[{"` + backendBalancerName 
 var errBackendsClosed = fmt.Errorf("gateway: backends are closed")
 
 type backends struct {
-	discovery  registry.Discovery
-	tlsConfig  *tls.Config
-	rpcTimeout time.Duration
-	ctx        context.Context
-	cancel     context.CancelFunc
-	loads      singleflight.Group
+	discovery      registry.Discovery
+	tlsConfig      *tls.Config
+	connectTimeout time.Duration
+	ctx            context.Context
+	cancel         context.CancelFunc
+	loads          singleflight.Group
 
 	mu        sync.RWMutex
 	byService map[string]*backend
@@ -76,18 +76,18 @@ func (s *backendState) load() backendSnapshot {
 	return *snapshot
 }
 
-func newBackends(discovery registry.Discovery, tlsConfig *tls.Config, rpcTimeout time.Duration) *backends {
+func newBackends(discovery registry.Discovery, tlsConfig *tls.Config, connectTimeout time.Duration) *backends {
 	if tlsConfig != nil {
 		tlsConfig = tlsConfig.Clone()
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	return &backends{
-		discovery:  discovery,
-		tlsConfig:  tlsConfig,
-		rpcTimeout: rpcTimeout,
-		ctx:        ctx,
-		cancel:     cancel,
-		byService:  make(map[string]*backend),
+		discovery:      discovery,
+		tlsConfig:      tlsConfig,
+		connectTimeout: connectTimeout,
+		ctx:            ctx,
+		cancel:         cancel,
+		byService:      make(map[string]*backend),
 	}
 }
 
@@ -124,7 +124,7 @@ func (b *backends) connectAndCache(serviceName string) (*backend, error) {
 	if cached != nil || err != nil {
 		return cached, err
 	}
-	connectCtx, cancel := context.WithTimeout(b.ctx, b.rpcTimeout)
+	connectCtx, cancel := context.WithTimeout(b.ctx, b.connectTimeout)
 	defer cancel()
 	connected, err := b.connectBackend(connectCtx, serviceName)
 	if err != nil {

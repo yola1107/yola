@@ -25,11 +25,11 @@ func BenchmarkGateLeaseRenewalFailureWave(b *testing.B) {
 	})
 }
 
-func benchmarkRenewalWave(b *testing.B, connectionCount int, delay, rpcTimeout time.Duration) {
+func benchmarkRenewalWave(b *testing.B, connectionCount int, delay, leaseTimeout time.Duration) {
 	b.Helper()
 	store := &renewalWaveLocator{delay: delay}
 	store.failing.Store(true)
-	server := &Server{locator: store, rpcTimeout: rpcTimeout, leaseTTL: time.Minute}
+	server := &Server{locator: store, leaseTimeout: leaseTimeout, leaseTTL: time.Minute}
 	sessions := renewalWaveSessions(connectionCount, server.leaseTTL)
 
 	b.ReportAllocs()

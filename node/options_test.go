@@ -21,6 +21,7 @@ func TestResolveOptionsDefaultsAndZeroHandlerTimeout(t *testing.T) {
 
 	require.NoError(t, err)
 	require.Equal(t, 3*time.Second, o.pushTimeout)
+	require.Equal(t, 3*time.Second, o.cleanupTimeout)
 }
 
 func TestResolveOptionsPropagatesOptionError(t *testing.T) {
@@ -146,6 +147,7 @@ func TestConstructionRejectsInvalidConfiguration(t *testing.T) {
 		want   string
 	}{
 		{name: "push timeout", option: PushTimeout(0), want: "node: push timeout must be positive"},
+		{name: "cleanup timeout", option: CleanupTimeout(0), want: "node: cleanup timeout must be positive"},
 		{name: "client TLS", option: ClientTLS(nil), want: "node: gRPC TLS config is required"},
 		{name: "server TLS", option: ServerTLS(nil), want: "node: TLS config is required"},
 		{

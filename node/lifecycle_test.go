@@ -260,7 +260,7 @@ func TestRollbackPreparationPreservesCauseAndEpochForRetry(t *testing.T) {
 
 func TestRollbackPreparationBoundsUncanceledEpochCleanup(t *testing.T) {
 	locator := &blockingEpochUnregisterLocator{Locator: newMemoryLocator()}
-	server := newTestServer(t, Locator(locator), PushTimeout(20*time.Millisecond))
+	server := newTestServer(t, Locator(locator), CleanupTimeout(20*time.Millisecond))
 	t.Cleanup(func() { require.NoError(t, server.Stop(context.Background())) })
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()

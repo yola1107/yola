@@ -150,7 +150,7 @@ func TestServerKickUsesSingleCleanupTimeout(t *testing.T) {
 		Auth(testAuthenticator{}),
 		Locator(store),
 		Discovery(staticDiscovery{}),
-		RPCTimeout(30*time.Millisecond),
+		CleanupTimeout(30*time.Millisecond),
 		LeaseTTL(time.Minute),
 	)
 	initTestGateway(t, gateway)

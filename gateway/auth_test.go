@@ -260,7 +260,7 @@ func TestHeartbeatClassifiesLocatorFailures(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			store := &renewLeaseLocator{Locator: testLocator(t), err: test.err}
-			gateway := &Server{locator: store, rpcTimeout: time.Second, leaseTTL: time.Minute}
+			gateway := &Server{locator: store, leaseTimeout: time.Second, leaseTTL: time.Minute}
 			conn := newTestConnection("conn-a")
 			sess := activeSession(conn, testBinding())
 			sess.leaseDeadline = time.Now().Add(gateway.leaseTTL / 2)
@@ -276,7 +276,7 @@ func TestHeartbeatClassifiesLocatorFailures(t *testing.T) {
 
 func TestHeartbeatRenewsAtHalfTTLAndRetriesTransientFailure(t *testing.T) {
 	store := &renewLeaseLocator{Locator: testLocator(t), errors: []error{context.DeadlineExceeded, nil}}
-	gateway := &Server{locator: store, rpcTimeout: time.Second, leaseTTL: time.Minute}
+	gateway := &Server{locator: store, leaseTimeout: time.Second, leaseTTL: time.Minute}
 	sess := activeSession(newTestConnection("conn-a"), testBinding())
 	sess.leaseDeadline = time.Now().Add(gateway.leaseTTL / 2)
 	initialDeadline := sess.leaseDeadline

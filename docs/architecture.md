@@ -65,7 +65,7 @@ Node 回程不经过服务发现。`GateRoute.gate_endpoint` 是认证时写入 
 
 Gateway backend 按 service 复用发现连接，回程 gateclient 按 Gate endpoint 管理在途引用和空闲淘汰，二者不合并为通用连接池。Registry 实例集合与 picker 的 Ready SubConn 集合表示不同事实，不能互相替代。
 
-每个 service 只创建一个 WRR ClientConn。backend pool 与 Gateway 同生命周期，service 名称来自有限的部署目录，因此不做按时间淘汰；首次连接由 pool 自有 context 和 `RPCTimeout` 约束，单个请求取消只结束自身等待，不会取消其他等待者共享的连接创建，Gateway Stop 会取消全部在途连接。Registry 更新负责增删 SubConn；实例集合为空时必须清空旧 SubConn，使请求立即 fail closed。`gateway/balancer.go` 自建 balancer，`gateway/resolver.go` 自建 resolver，是因为 Kratos v3 内置 selector 的初始化顺序不能稳定取得 WRR builder，且内置 discovery resolver 会在空实例集合时沿用旧地址。Gateway 在请求入口创建 `RPCTimeout`，Node ClientConn 直接使用该 context，不再叠加第二个 client timeout。
+每个 service 只创建一个 WRR ClientConn。backend pool 与 Gateway 同生命周期，service 名称来自有限的部署目录，因此不做按时间淘汰；首次连接由 pool 自有 context 和 `ConnectTimeout` 约束，单个请求取消只结束自身等待，不会取消其他等待者共享的连接创建，Gateway Stop 会取消全部在途连接。Registry 更新负责增删 SubConn；实例集合为空时必须清空旧 SubConn，使请求立即 fail closed。`gateway/balancer.go` 自建 balancer，`gateway/resolver.go` 自建 resolver，是因为 Kratos v3 内置 selector 的初始化顺序不能稳定取得 WRR builder，且内置 discovery resolver 会在空实例集合时沿用旧地址。Gateway 在请求入口创建 `RPCTimeout`，Node ClientConn 直接使用该 context，不再叠加第二个 client timeout。
 
 TCP/WebSocket 在接纳连接与 Stop 之间使用同一 lifecycle owner：Stop 先禁止新连接，再关闭已提交连接并等待 handler/writer 退出；已 Accept 或完成 Upgrade、但尚未提交的连接必须在 Stop 后拒绝。listener 的临时 bind 失败不写入永久状态，独立 transport 可以在端口释放后重新执行 `BeforeStart`。
 
@@ -252,8 +252,10 @@ Gateway 不缓存玩家 Node binding 或未绑定结果。Gate close、takeover 
 | 层 | 配置 | 默认值 |
 | --- | --- | --- |
 | Gateway | gRPC handler / `RPCTimeout` / `AuthTimeout` / `LeaseTTL` | 3s / 3s / 15s / 60s |
+| Gateway 非请求预算 | `ConnectTimeout` / `LeaseTimeout` / `CleanupTimeout` | 3s / 3s / 3s |
 | Gateway broadcast | worker / queue | `min(8, GOMAXPROCS)` / 256 |
 | Node | gRPC handler / `PushTimeout` | 3s / 3s |
+| Node 启动失败回滚 | `CleanupTimeout` | 3s |
 | TCP Server | handler / handshake / heartbeat / write / send queue | 3s / 15s / 15s / 10s / 32 |
 | TCP Client | ping / read / write / send queue | 5s / 15s / 10s / 100 |
 | WebSocket Server | handler / handshake / read / write / send queue | 3s / 15s / 60s / 10s / 32 |
@@ -273,25 +275,29 @@ Gateway 不缓存玩家 Node binding 或未绑定结果。Gate close、takeover 
 | WebSocket Client `Request` | 默认 30s | 限制客户端等待响应；外部 `Proto` 没有 deadline 字段，客户端请求截止时间不随消息传入服务端 |
 | TCP/WebSocket `NewInvoker` | 默认 3s；测试 Gateway 由 `-rpc-timeout` 覆盖 | 为单条入站消息创建 handler context，Gateway Forward 继承它 |
 | Gateway `Forward` | `RPCTimeout` 默认 3s | 从入站 context 派生，覆盖路由定位和 Node RPC；内部 gRPC Client 已关闭 Kratos 隐式 2s 上限 |
+| Gateway 依赖准备与 backend 创建 | `ConnectTimeout` 默认 3s | BeforeStart 的 Locator Ping 服从更短父 deadline；共享 backend 创建使用 pool 自有 context，调用方只控制自身等待 |
+| Gateway Gate lease 续租 | `LeaseTimeout` 默认 3s | 单次续租 I/O 上限，仍服从 heartbeat handler 更短的 deadline；不随 RPCTimeout 改变 |
+| Gateway 断线/Kick/回滚/Session 排空 | `CleanupTimeout` 默认 3s | 断线和 Kick 清理独立于调用方取消；单 Session 排空服从 Stop 的总 deadline，每项启动回滚有独立预算 |
 | Node gRPC handler | 框架默认 3s；Ludo YAML 为 5s；Ludo 压测夹具为 15s | gRPC 传播上游 deadline，Node `HandlerTimeout` 进一步限制处理时间 |
 | Ludo 首次入座、重连 | `playerEnterTimeout = 5s` | BindNode 后从独立 background context 创建；截止时只能取消尚未开始的 mailbox 任务，已开始则等待结果 |
 | Ludo 入座失败清理 | `playerCleanupTimeout = 2s` | 失败后创建新的独立 context 执行解绑，不能复用已过期的入座 context |
 | Whot 首次入座、重连 | `playerEnterTimeout = 2s` | BindNode 后使用独立 context 等待桌任务；未开始可取消，已开始等待完成 |
 | Whot 入座失败清理 | `playerCleanupTimeout = 2s` | 入座或重连失败后重新创建独立 context 执行解绑，保留入座与清理的错误链 |
 | Node `PushToUID` / Session `Push` | `PushTimeout` 默认 3s | 覆盖单次 LocateGate 与回程 RPC；桌推送当前从 background context 发起，每次 Push 分别计时 |
+| Node 准备与启动失败回滚 | `CleanupTimeout` 默认 3s | 独立于失败的 caller context 和 PushTimeout；正常 Stop 仍使用调用方 context |
 
-代码入口为 [请求封套](../api/protocol/v1/protocol.proto)、[入站 handler](../network/invoke.go)、[Gateway Forward](../gateway/forward.go)、[Node 装配](../node/server.go)、[Ludo 入座](../test/ludo/internal/biz/handle.go)、[mailbox 等待](../test/internal/mailbox/group.go) 和 [Node Push](../node/push.go)。测试 Gateway 已把同一参数传给 WebSocket handler 和 Gateway RPC；游戏 Node 仍由各自配置装配。Gateway 的 `RPCTimeout` 还用于建连、续租和部分生命周期操作，直接修改它会影响这些路径。
+代码入口为 [请求封套](../api/protocol/v1/protocol.proto)、[入站 handler](../network/invoke.go)、[Gateway Forward](../gateway/forward.go)、[Node 装配](../node/server.go)、[Ludo 入座](../test/ludo/internal/biz/handle.go)、[mailbox 等待](../test/internal/mailbox/group.go) 和 [Node Push](../node/push.go)。测试 Gateway 已把同一参数传给 WebSocket handler 和 Gateway RPC；游戏 Node 仍由各自配置装配。调整 RPCTimeout/PushTimeout 不再连带修改非请求预算；部署确有不同依赖或清理窗口时，分别配置对应 Option。
 
 Ludo 入座预算不包含创建玩家和 BindNode，且 `Seat` 中多次同步 Push 可以使已开始的任务超过 5s。外层 deadline 到期也不能撤销已开始的桌内操作；Node handler 与入座等待都为 5s 时，不能保证排队后还有足够时间执行、清理和返回。单 Gateway 四轮成功数据使用的 WebSocket/Gateway/Node 预算均为 15s，不能据此证明 YAML 的 5s Node 配置具有相同突发容量，详见 [参数对照](./performance.md#ludo-单-gateway-参数对照)。
 
-下一步收敛方案为 **待设计，尚未实施**：
+当前采用以下预算策略；完整游戏和同配置负载仍按 I46/I45 验收：
 
-1. 先在应用装配处集中表达请求预算，明确入口、Forward 和 Node 的有效值及覆盖关系；复用现有参数，不新增一个涵盖所有超时的全局配置。跨进程按同一部署策略设置，框架不依赖 Ludo 的入座常量。
-2. 请求链以传入 deadline 为准，内部仅按职责缩短；是否将“每层默认上限”改为“无 deadline 时才补默认值”，须单独确定 Node 独立调用及现有 `HandlerTimeout` 契约。删除现有上限会改变行为，不能作为等价清理直接实施。
-3. 明确排队准入与已开始操作的边界，再评估未开始任务是否使用 `min(请求剩余时间, 入座等待上限)`。保持桌内串行、开始后完成或回滚的语义；不能直接把所有 background context 换成请求 context。
-4. 失败清理继续使用独立且有界的预算。Push、Auth、读写、租约和停服保留各自职责；梳理 `RPCTimeout` 的非请求用途后再决定是否分离，避免改请求预算时连带改变生命周期。
+1. 应用装配分别表达 transport、Forward 与 Node 的上限；测试 Gateway 的同一请求参数只配置 WebSocket handler 和 Gateway RPC。跨进程按部署策略对齐，框架不依赖游戏入座常量，不新增覆盖全部职责的全局 timeout。
+2. 保留每层上限；有效 deadline 是父 context 与本层上限的较早值，不改为“只有无 deadline 才补默认值”。Node 独立调用仍受 HandlerTimeout 保护。客户端等待 deadline 不进入现有 Proto；I50 的业务 FIFO 等待时间也不计入从实际调用开始的 handler 上限。
+3. mailbox 尚未开始的工作允许取消；已开始的业务按现有契约等待完成或回滚。Ludo/Whot 的独立入座与清理预算保持不变，不直接替换为已过期的请求 context。取消客户端等待不能撤销已经发送或已开始的操作。
+4. 非请求预算按 owner 分离。Gateway 的依赖准备、续租、清理分别由 ConnectTimeout、LeaseTimeout、CleanupTimeout 限制；Node 启动失败回滚由 CleanupTimeout 限制，epoch 注册/续租仍有独立 3s I/O 上限。正常 Stop 的总预算由调用方持有，外部依赖仍由应用关闭。
 
-验收须覆盖较短父 deadline、无 deadline 的调用、排队期间取消、开始与取消竞争、独立清理、重连 Session 归属，以及真实 WebSocket/gRPC 的错误传播和逐 UID 顺序；补齐同配置负载验证后再选择默认预算。跟踪项见 [I46](./issues.md#功能与语义缺口)。
+根包已验证真实 gRPC 上 transport/Forward/Node/父 deadline 各自最短时的预算和响应 Code，以及独立清理、续租和共享建连；扩展包已验证排队取消、开始后完成、独立清理和重连 Session 归属。完整游戏及同配置负载未在本轮运行，因此不调整游戏默认预算、不宣称 I46/I45 的部署验收完成。跟踪项见 [I46](./issues.md#功能与语义缺口)。
 
 ## 7. 部署与安全约束
 

@@ -89,10 +89,10 @@ func TestTakeoverKickSurvivesCanceledAuthentication(t *testing.T) {
 	binding := testBinding()
 	binding.ConnID = conn.ConnID()
 	gateway := &Server{
-		identity:   identity{id: binding.GateID, endpoint: binding.GateEndpoint},
-		locator:    testLocator(t),
-		sessions:   &sessionRegistry{byConnID: map[string]*session{binding.ConnID: activeSession(conn, binding)}},
-		rpcTimeout: time.Second,
+		identity:       identity{id: binding.GateID, endpoint: binding.GateEndpoint},
+		locator:        testLocator(t),
+		sessions:       &sessionRegistry{byConnID: map[string]*session{binding.ConnID: activeSession(conn, binding)}},
+		cleanupTimeout: time.Second,
 	}
 	authCtx, cancel := context.WithCancel(context.Background())
 	cancel()

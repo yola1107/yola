@@ -38,10 +38,11 @@ const (
 
 // Server is the Yola Node transport for a Kratos application.
 type Server struct {
-	grpcServer   *grpc.Server
-	grpcListener *listener.Owner
-	pushTimeout  time.Duration
-	drain        DrainFunc
+	grpcServer     *grpc.Server
+	grpcListener   *listener.Owner
+	pushTimeout    time.Duration
+	cleanupTimeout time.Duration
+	drain          DrainFunc
 
 	handlers     map[int32]Handler
 	middlewares  []middleware.Middleware
@@ -85,14 +86,15 @@ func NewServer(opts ...Option) (*Server, error) {
 	}
 	fatalCtx, fatalCancel := context.WithCancelCause(context.Background())
 	server := &Server{
-		pushTimeout: o.pushTimeout,
-		drain:       o.drain,
-		middlewares: o.middlewares,
-		locator:     o.locator,
-		handlers:    make(map[int32]Handler),
-		fatalCtx:    fatalCtx,
-		fatalCancel: fatalCancel,
-		ready:       make(chan struct{}),
+		pushTimeout:    o.pushTimeout,
+		cleanupTimeout: o.cleanupTimeout,
+		drain:          o.drain,
+		middlewares:    o.middlewares,
+		locator:        o.locator,
+		handlers:       make(map[int32]Handler),
+		fatalCtx:       fatalCtx,
+		fatalCancel:    fatalCancel,
+		ready:          make(chan struct{}),
 	}
 	server.gateways = gateclient.New(o.clientTLS, o.clientMiddlewares...)
 	server.grpcListener = listener.New(o.network, o.address, o.listener)

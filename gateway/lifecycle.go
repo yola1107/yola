@@ -92,7 +92,7 @@ func (s *Server) BeforeStart(ctx context.Context) (err error) {
 		return errors.New("gateway: valid gRPC application endpoint is required")
 	}
 	endpoint := resolved.String()
-	pingCtx, stopPing := context.WithTimeout(ctx, s.rpcTimeout)
+	pingCtx, stopPing := context.WithTimeout(ctx, s.connectTimeout)
 	err = s.locator.Ping(pingCtx)
 	stopPing()
 	if err != nil {
@@ -124,6 +124,9 @@ func (s *Server) BeforeStart(ctx context.Context) (err error) {
 		"pid", os.Getpid(),
 		"endpoint", endpoint,
 		"rpc_timeout", s.rpcTimeout.String(),
+		"connect_timeout", s.connectTimeout.String(),
+		"lease_timeout", s.leaseTimeout.String(),
+		"cleanup_timeout", s.cleanupTimeout.String(),
 		"auth_timeout", s.authTimeout.String(),
 		"lease_ttl", s.leaseTTL.String(),
 	)
@@ -132,7 +135,7 @@ func (s *Server) BeforeStart(ctx context.Context) (err error) {
 
 func (s *Server) rollbackPreparation(cause error, transportAttempts int) error {
 	stop := func(stopResource func(context.Context) error) error {
-		ctx, cancel := context.WithTimeout(context.Background(), s.rpcTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), s.cleanupTimeout)
 		defer cancel()
 		return stopResource(ctx)
 	}
@@ -343,7 +346,7 @@ func (s *Server) drainSessions(ctx context.Context) error {
 }
 
 func (s *Server) drainSession(ctx context.Context, sess *session) {
-	ctx, cancel := context.WithTimeout(ctx, s.rpcTimeout)
+	ctx, cancel := context.WithTimeout(ctx, s.cleanupTimeout)
 	defer cancel()
 	connID := sess.conn.ConnID()
 	binding := sess.detachForClose()
@@ -374,11 +377,10 @@ func waitGroupContext(ctx context.Context, wg *sync.WaitGroup) error {
 	return contextwait.Done(ctx, done)
 }
 
-// cleanupContext lets disconnect cleanup survive transport cancellation while one
-// RPCTimeout bounds the complete cleanup sequence.
+// cleanupContext 使断线清理独立于 transport 取消，由 CleanupTimeout 限制整段清理。
 func (s *Server) cleanupContext(ctx context.Context) (context.Context, context.CancelFunc) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	return context.WithTimeout(context.WithoutCancel(ctx), s.rpcTimeout)
+	return context.WithTimeout(context.WithoutCancel(ctx), s.cleanupTimeout)
 }

@@ -128,10 +128,10 @@ func TestSessionCloseWaitsForConcurrentHeartbeatRenewal(t *testing.T) {
 	sess := activeSession(conn, testBinding())
 	sess.leaseDeadline = time.Now().Add(30 * time.Second)
 	gate := &Server{
-		locator:    &blockedHeartbeatLocator{started: started, release: release},
-		rpcTimeout: time.Second,
-		leaseTTL:   time.Minute,
-		sessions:   &sessionRegistry{byConnID: map[string]*session{"conn-a": sess}},
+		locator:      &blockedHeartbeatLocator{started: started, release: release},
+		leaseTimeout: time.Second,
+		leaseTTL:     time.Minute,
+		sessions:     &sessionRegistry{byConnID: map[string]*session{"conn-a": sess}},
 	}
 	renewed := make(chan error, 1)
 	go func() { renewed <- gate.Heartbeat(context.Background(), conn) }()

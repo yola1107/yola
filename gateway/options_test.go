@@ -21,6 +21,9 @@ func TestResolveOptionsDefaults(t *testing.T) {
 
 	require.NoError(t, err)
 	require.Equal(t, 3*time.Second, o.rpcTimeout)
+	require.Equal(t, 3*time.Second, o.connectTimeout)
+	require.Equal(t, 3*time.Second, o.leaseTimeout)
+	require.Equal(t, 3*time.Second, o.cleanupTimeout)
 	require.Equal(t, 15*time.Second, o.authTimeout)
 	require.Equal(t, 60*time.Second, o.leaseTTL)
 	require.Equal(t, min(8, max(1, runtime.GOMAXPROCS(0))), o.broadcastWorkers)

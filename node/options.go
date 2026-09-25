@@ -23,6 +23,7 @@ type options struct {
 	grpcOptions       []grpc.ServerOption
 	clientTLS         *tls.Config
 	pushTimeout       time.Duration
+	cleanupTimeout    time.Duration
 	network           string
 	address           string
 	listener          net.Listener
@@ -36,7 +37,7 @@ type options struct {
 }
 
 func resolveOptions(opts ...Option) (options, error) {
-	o := options{pushTimeout: 3 * time.Second, network: "tcp"}
+	o := options{pushTimeout: 3 * time.Second, cleanupTimeout: 3 * time.Second, network: "tcp"}
 	for _, opt := range opts {
 		if err := opt(&o); err != nil {
 			return options{}, err
@@ -197,6 +198,17 @@ func PushTimeout(timeout time.Duration) Option {
 			return errors.New("node: push timeout must be positive")
 		}
 		o.pushTimeout = timeout
+		return nil
+	}
+}
+
+// CleanupTimeout 限制准备和启动失败后的独立回滚，不改变正常 Stop 的调用方预算。
+func CleanupTimeout(timeout time.Duration) Option {
+	return func(o *options) error {
+		if timeout <= 0 {
+			return errors.New("node: cleanup timeout must be positive")
+		}
+		o.cleanupTimeout = timeout
 		return nil
 	}
 }

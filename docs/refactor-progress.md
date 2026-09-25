@@ -6,12 +6,12 @@
 ## 当前快照
 
 - **更新日期**：2026-09-25。
-- **代码审查基线**：起点 `0c8b270`；初始化交接文档 `9378b54`，I49 修复 `1a882f6`，I47 修复 `eb44302`，I52 修复 `a888fcb`，I51 修复 `1ed763b`；I50 随本提交关闭。
-- **当前验证**：I50 真实 TCP/WS 定向 10 轮、默认心跳与放宽业务预算、关闭/续租屏障 20 轮、最终 make check/make lint/五包 race 全部通过；两个 module lint 为 0 issues。新增调度器内存已测量；真实 Redis/etcd、完整游戏及容量验收仍未运行，不记为通过。
+- **代码审查基线**：起点 `0c8b270`；初始化交接文档 `9378b54`，I49 修复 `1a882f6`，I47 修复 `eb44302`，I52 修复 `a888fcb`，I51 修复 `1ed763b`，I50 修复 `1bacab6`；I46 框架预算修复随本提交交付，完整业务验收仍待完成。
+- **当前验证**：I46 五类预算回归、真实 gRPC 四种最短 deadline、make check/make lint、Gateway/Node race 及三项扩展包定向 race 通过；两个 module lint 为 0 issues。完整游戏、真实 Redis/etcd 与同配置容量验收未运行，不提前关闭 I46。
 - **工作重点**：根 module 的架构与契约；`test` 是扩展与验收，不再以游戏局部重构替代框架分析。
 - **Git 边界**：用户授权每个已解决 issue 独立提交，后续由用户统一审核；仅提交复审过的任务改动，不要求逐项 /plan 或 /clear。未授权 push 或发布。
 - **当前范围**：B1、B2 已完成，按后续批次持续处理可在现有授权内闭环的问题。固定 Kratos v3.0.0，不修改官方源码；保留唯一共享 Registry 与已确认的条件注册语义，不重做已关闭问题。I48 仍仅调查；生产安全、凭据轮换和容量不足的外部证据须明确保留。
-- **下一步**：B3 继续 I46 的请求、租约和清理预算职责；之后处理 B5 的 command 元数据、消息所有权和容量观测。I48 仅设计调查；需外部证据的部署与容量项保持真实状态。
+- **下一步**：进入 B5，依次处理 I53 command 元数据、I54 消息所有权及 I55 容量观测；I46 的完整业务验收与 I45/B6 合并安排。I48 仅设计调查；需外部证据的部署与容量项保持真实状态。
 
 ## 状态口径
 
@@ -30,8 +30,8 @@
 | [I48 binding 代次保护](./issues.md#i48) | 待设计 | 已核对同 ID 重启、覆盖绑定及不同 Redis slot；未运行迟到写入交错 | 比较同 service slot 的原子核验与保留 UID 分片的协调成本；不直接改格式/API |
 | ~~[I51 NATS 激活归属](./issues.md#i51)~~ | 已关闭（1ed763b） | 五种原故障各 3/3；新契约定向 20 轮、包 race、check、lint 通过 | 经确认取消同步 ACL/上限承诺；每个异步错误独立记录，不再使用 LastError；同步失败仍终态 |
 | ~~[I52 等待注册取消](./issues.md#i52)~~ | 已关闭（a888fcb） | 原实现失败 3/3；屏障回归 20 轮、包测试/race、lint 通过 | 获锁后重查 caller context；未发 SUB，第三次成功；激活后终态及 Close 语义不变 |
-| ~~[I50 心跳调度](./issues.md#i50)~~ | 已关闭（本提交） | 两种 transport 各复现 3/3；定向 10 轮、默认周期、FIFO/认证/过载/续租/关闭、内存及最终 race/check/lint 通过 | 仅显式能力启用有界业务 FIFO 与独立心跳；排队满关闭，普通自定义 handler 仍串行；I46/I41 另验收 |
-| [I46 预算所有者](./issues.md#i46) | 待设计 | 已有多层上限与配置差异；新增框架回滚预算耦合分析 | B3：分清请求/租约/清理，保持独立清理和已开始操作语义 |
+| ~~[I50 心跳调度](./issues.md#i50)~~ | 已关闭（1bacab6） | 两种 transport 各复现 3/3；定向 10 轮、默认周期、FIFO/认证/过载/续租/关闭、内存及最终 race/check/lint 通过 | 仅显式能力启用有界业务 FIFO 与独立心跳；排队满关闭，普通自定义 handler 仍串行；I46/I41 另验收 |
+| [I46 预算所有者](./issues.md#i46) | 待验证（框架修复完成） | 五类耦合各复现 3/3；预算分离、真实 gRPC、make check/lint、根及扩展定向 race 通过并复审 | 代码独立提交；保留逐层上限与既有业务语义；完整游戏与同配置负载目标留待 I45/B6，不提前划线 |
 | [I53 command 元数据](./issues.md#i53) | 待设计 | dispatch 只注入 Session；未运行 middleware 区分验收 | B5：定义最小元数据契约并核对 operation 调用方 |
 | [I54 消息所有权](./issues.md#i54) | 待设计 | TCP 保留指针、WS 先编码；未运行复用/race 场景 | B5：核对所有调用方，选择不可变契约或隔离编码方案 |
 | [I55 在线容量观测](./issues.md#i55) | 待设计 | 当前统计边界已核查；未完成分层观测 | B5：按 owner 补指标，为 B6 提供证据 |
@@ -55,7 +55,7 @@
 | --- | --- | --- | --- |
 | B1 | I47、I49：实例就绪发布与框架副作用排空 | 中；I48 同步调查但不迁移存储。就绪屏障不能冒充完整跨存储原子性 | App 生命周期交错、排空/超时/race；需要时用隔离 Redis/etcd |
 | B2（已完成） | I52、I51：取消者无底层副作用；异步错误独立报告 | I51 经确认改为原生异步边界，保留单连接和同步失败终态 | 定向 20 轮、真实 ACL/上限/重连、协议交错、Close、race、check、lint |
-| B3（I50 已完成） | I50、I46：连接存活与请求/清理预算职责 | I50 有界调度已验收；继续 I46 的 deadline、非请求预算与已开始操作语义 | 真实 TCP/WS/gRPC、慢请求、拥塞、顺序、停止、同配置负载 |
+| B3（框架修复完成） | I50、I46：连接存活与请求/清理预算职责 | I50 已关闭；I46 框架预算分离已验收，完整业务负载待 I45/B6 | 真实 TCP/WS/gRPC、慢请求、顺序、停止与预算功能已通过；保留业务容量未完成项 |
 | B4 | I48：旧进程不能破坏新 binding | 高；须确认存储格式、原 ID 重启及条件更新方案，结合 I47 | 迟到 Bind/Unbind、新旧代交错、真实存储与 Cluster 约束 |
 | B5 | I53、I54、I55：补齐扩展接口与观测 | 低至中；按独立职责拆分原子改动，不建通用管理层 | command 区分、消息所有权/race、分层统计及热路径成本 |
 | B6 | I41、I44、I04、I34，再按需 I45：容量与优化验收 | 先有观测及固定预算；生产部署约束另行处理 | 固定代码/配置/资源，记录 p99、drop、RSS 与资源归还 |
@@ -148,6 +148,13 @@
 - check 在当前进程移除 Redis/etcd 集成地址，真实 Redis/etcd、完整游戏均跳过。测试只使用本机临时 TCP/WS/gRPC、miniredis 和可控协议/生命周期屏障，cleanup 回收；未创建 VM 资源。未改协议、服务入口或构建链，未触发 breaking/build；I46 的预算不并入本提交。
 - 完整 diff 与注册、认证、Forward、续租、Close/Kick、middleware 和发送队列调用链已复审；既有 handler 签名、协议、业务 FIFO 及配置拼写保持，仅新增显式能力和 RequestQueueSize。独立提交 `fix(network): 隔离业务处理与连接心跳`，不执行 push。
 
+- I46 实施基线 `1bacab6`。`gateway/timeout_test.go`、`node/timeout_test.go` 观察依赖实际收到的 context：RPC/PushTimeout 设为 1ns 时，Gateway 清理/续租/backend 创建与 Node 两种回滚的 deadline 也被压缩。最终探针 `go test ./gateway ./node -run '^Test(RPCTimeoutDoesNotCancel|PushTimeoutDoesNotCancel)' -count=3 -timeout=30s` 五组各失败 3/3；日志 `i46-budget-repro.log`。初版只立即检查 ctx.Err，仅稳定发现一组，不能把该版其余通过当作无问题证据。
+- 现有请求链保持逐层上限与较短父 deadline 优先，不改外部协议、Ludo/Whot 已开始任务的完成语义。Gateway 增加默认均为 3s 的 ConnectTimeout（依赖核验/共享 backend 创建）、LeaseTimeout（Gate 续租）、CleanupTimeout（独立清理/回滚/单 Session 排空）；Node CleanupTimeout 仅控制启动失败回滚，正常 Stop 仍由调用方预算控制。
+- 定向通过：分离后的五组预算回归及 Node 回滚上限 `-count=20`；新预算覆盖、父 deadline、正常 Stop、Kick/排空等 `-count=10` 和 `-count=5`；`TestForwardBudgetUsesShortestDeadlineAcrossGRPC -count=3` 验证 transport、Forward、Node 或父 context 分别最短时，真实 gRPC 收到的预算和响应 Proto.Code 均正确。
+- 修改 Go 文件已按 `.golangci.yml` 格式化；最终 `make check`、`make lint`、`go test -race ./gateway ./node -count=1 -timeout=180s` 全部通过，根/test module lint 为 0 issues，无新增/存量告警。日志 `i46-check.log`、`i46-lint.log`、`i46-race.log` 位于上述 B3 临时目录；旧测试中用 RPC/Push 参数控制清理/续租的夹具已按真实职责更新，未修改业务策略。
+- test module 实际运行 `go test -race ./internal/mailbox ./ludo/internal/biz ./whot/internal/biz -run '^Test(CallsCancelWorkBeforeItStarts|ExecutorCallWaitsForStartedJobAfterCancellation|LoginWaitsForEntryAndKeepsCleanupBudget|LoginTimeoutKeepsCleanupBudget|DisconnectOverlappingReconnectKeepsNewSessionOnline|ReconnectAndTableCommandsUseCurrentSession|StaleDisconnectDoesNotOfflineReconnectedPlayer)$' -count=3 -timeout=60s`，三个包均通过。它只证明相应取消、清理和重连功能，不证明完整游戏或负载 SLO。
+- check 未注入 Redis/etcd 集成地址；该类集成及完整游戏按入口条件跳过。无入口/构建链/协议改动，未触发 build/breaking。生产改动限于预算所属字段与对应调用，完整 diff、初始化/建连/Forward/续租/Kick/排空/epoch 回滚调用链已复审；正常 Stop 和请求错误身份保持原有路径。独立提交 `fix(runtime): 分离请求与生命周期超时预算`，I46 保留待验证，不将框架修复等同于业务容量通过。
+
 ## 验证环境边界
 
 - 工作目录为 `D:\src\pitaya\yola`，本地 shell 为 PowerShell；根 module 与 `test` module 各自执行其适用命令。
@@ -165,7 +172,7 @@
 1. 先检查 git status --short、暂存/未暂存 diff、新增文件和当前 HEAD；保留已有改动。读取适用 AGENTS.md/AGENTS.override.md、docs/README.md、docs/issues.md、docs/refactor-progress.md，并按当前条目阅读 architecture.md、eventbus.md、performance.md 和相关代码。
 2. 阅读并使用已安装且相关的 skills（至少 codebase-design、code-review；并发、诊断、Go 导航和 lint 按实际任务选用），不要只依据本提示或历史结论改代码。
 3. 以 refactor-progress.md 的当前阶段、证据和下一步恢复。初始化交接基线是 0c8b270，I47～I55 当时只有静态发现、未运行故障复现、未修复；若文档或 Git 已有更新，以新证据为准，不重做已完成项。
-4. 从当前未完成批次推进；B1、B2、I50 已关闭。I51 经确认采用异步错误边界，方案见 i51-design；下一步 I46，再处理 B5。用户要求逐 issue 独立提交后统一审核，不逐项停下来要求 /plan 或 /clear。I48 仍只设计调查，不能直接迁移绑定格式。
+4. 从当前未完成批次推进；B1、B2、I50 已关闭，I46 框架修复已提交但业务验收留待 I45/B6。下一步 B5 的 I53/I54/I55。用户要求逐 issue 独立提交后统一审核，不逐项停下来要求 /plan 或 /clear。I48 仍只设计调查，不能直接迁移绑定格式。
 5. 保持现有业务行为、协议及对外接口，优先删除重复和收敛职责，避免 BaseServer、通用 manager 等无独立职责抽象。涉及存储模型、同 ID 重启、强单活、控制帧调度或 timeout 语义的重大变化，准备具体方案后先确认；只暂停相关部分。
 6. 按 AGENTS 的风险要求完成实际测试、lint、race、check、build 或 breaking；先检查 TestMain/环境依赖。可免密 SSH 到 192.168.152.129 用 Docker，但操作前确认资源，使用专用可丢弃实例，避免影响无关服务与数据。
 7. 每完成一个原子步骤，同步两份文档的阶段、证据、命令结果、未完成项、代码基线和下一步；已关闭问题保留原条目，在两份文档同步划线。不要把静态推导、候选方案或旧测试写成当前已验证；遇到代码事实推翻假设时修正文档。

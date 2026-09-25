@@ -97,6 +97,8 @@
   - **解决方案**：在装配处表达请求预算，内部继承 deadline 并按职责缩短；分别确定 Push、Auth、租约、失败清理与停服预算所有者。比较现有每层上限与“无 deadline 才补默认值”的行为差异，不新增一个统管所有职责的全局超时。
   - **验证方案**：覆盖较短父 deadline、无 deadline、队列中取消、开始/取消竞争、已开始操作、独立失败清理、重连归属及真实 gRPC/外部帧错误传播；单独调整 PushTimeout 不得意外改变经确认的清理预算。与 I50 联合验证心跳，再按同配置复测负载。
   - **关闭条件与风险**：有效预算及所有者可追踪，取消和已开始操作语义明确，同配置业务目标通过。不得简单把所有 background context 换为请求 context；删除现有上限或改变开始后的完成语义须先确认。
+  - **框架修复记录（2026-09-25，随本问题提交）**：Gateway 新增各默认 3s 的 ConnectTimeout、LeaseTimeout、CleanupTimeout，Node 新增默认 3s 的 CleanupTimeout；RPCTimeout/PushTimeout 不再控制这些非请求操作。五条 deadline 耦合各复现 3/3，分离后定向 20 轮通过；真实 gRPC 四种最短 deadline、根包 race、make check/lint、扩展 mailbox/入座/重连/清理 race 通过。保留逐层请求上限及已开始操作语义，未改变协议、游戏默认预算或配置标识符。
+  - **剩余验收**：完整游戏与同配置负载目标未运行，不能用上述功能回归关闭整项；维持待验证，与 I45/B6 一并验收。框架代码修复已完整复审并独立提交，后续无需重复实施预算分离；命令和边界见 [B3 记录](./refactor-progress.md#b3-results)。
 
 ## 运行与部署限制
 
