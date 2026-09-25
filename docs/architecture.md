@@ -262,6 +262,8 @@ Gateway 不缓存玩家 Node binding 或未绑定结果。Gate close、takeover 
 | Node gRPC handler | 框架默认 3s；Ludo YAML 为 5s；Ludo 压测夹具为 15s | gRPC 传播上游 deadline，Node `HandlerTimeout` 进一步限制处理时间 |
 | Ludo 首次入座、重连 | `playerEnterTimeout = 5s` | BindNode 后从独立 background context 创建；截止时只能取消尚未开始的 mailbox 任务，已开始则等待结果 |
 | Ludo 入座失败清理 | `playerCleanupTimeout = 2s` | 失败后创建新的独立 context 执行解绑，不能复用已过期的入座 context |
+| Whot 首次入座、重连 | `playerEnterTimeout = 2s` | BindNode 后使用独立 context 等待桌任务；未开始可取消，已开始等待完成 |
+| Whot 入座失败清理 | `playerCleanupTimeout = 2s` | 入座或重连失败后重新创建独立 context 执行解绑，保留入座与清理的错误链 |
 | Node `PushToUID` / Session `Push` | `PushTimeout` 默认 3s | 覆盖单次 LocateGate 与回程 RPC；桌推送当前从 background context 发起，每次 Push 分别计时 |
 
 代码入口为 [请求封套](../api/protocol/v1/protocol.proto)、[入站 handler](../network/invoke.go)、[Gateway Forward](../gateway/forward.go)、[Node 装配](../node/server.go)、[Ludo 入座](../test/ludo/internal/biz/handle.go)、[mailbox 等待](../test/internal/mailbox/group.go) 和 [Node Push](../node/push.go)。测试 Gateway 已把同一参数传给 WebSocket handler 和 Gateway RPC；游戏 Node 仍由各自配置装配。Gateway 的 `RPCTimeout` 还用于建连、续租和部分生命周期操作，直接修改它会影响这些路径。

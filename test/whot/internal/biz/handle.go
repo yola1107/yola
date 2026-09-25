@@ -16,6 +16,7 @@ import (
 )
 
 const (
+	playerEnterTimeout            = 2 * time.Second
 	playerCleanupTimeout          = 2 * time.Second
 	playerCleanupOperationTimeout = 500 * time.Millisecond
 	playerCleanupWorkers          = 16
@@ -245,17 +246,19 @@ func (uc *Usecase) reconnect(ctx context.Context, sess player.Session, p *player
 	if err := sess.BindNode(ctx); err != nil {
 		return nil, fmt.Errorf("bind reconnecting player %d: %w", p.GetPlayerID(), err)
 	}
-	lifecycleCtx, cancelLifecycle := context.WithTimeout(context.Background(), playerCleanupTimeout)
-	defer cancelLifecycle()
-	err := uc.tm.CallPlayer(lifecycleCtx, p, func(gameTable *table.Table) error {
+	entryCtx, cancelEntry := context.WithTimeout(context.Background(), playerEnterTimeout)
+	defer cancelEntry()
+	err := uc.tm.CallPlayer(entryCtx, p, func(gameTable *table.Table) error {
 		p.UpdateSession(sess)
 		gameTable.ReEnter(p)
 		return nil
 	})
 	if err != nil {
+		cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), playerCleanupTimeout)
+		defer cancelCleanup()
 		return nil, errors.Join(
 			fmt.Errorf("re-enter player %d: %w", p.GetPlayerID(), err),
-			sess.UnbindNode(lifecycleCtx),
+			sess.UnbindNode(cleanupCtx),
 		)
 	}
 	return loginResponse(p, p.GetPlayerID(), codes.Success, "ReEnter"), nil
@@ -287,13 +290,16 @@ func (uc *Usecase) enterRoom(ctx context.Context, sess player.Session, uid int64
 		return nil, fmt.Errorf("bind player %d: %w", uid, err)
 	}
 
-	lifecycleCtx, cancelLifecycle := context.WithTimeout(context.Background(), playerCleanupTimeout)
-	defer cancelLifecycle()
-	code, message, enterErr := uc.tm.Enter(lifecycleCtx, p)
+	entryCtx, cancelEntry := context.WithTimeout(context.Background(), playerEnterTimeout)
+	defer cancelEntry()
+	code, message, enterErr := uc.tm.Enter(entryCtx, p)
 	if enterErr == nil && code == codes.Success {
 		return loginResponse(p, uid, code, message), nil
 	}
-	unbindErr := sess.UnbindNode(lifecycleCtx)
+	// 入桌可能已超时，解绑使用独立预算，不能继承失效的 context。
+	cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), playerCleanupTimeout)
+	defer cancelCleanup()
+	unbindErr := sess.UnbindNode(cleanupCtx)
 	uc.pm.RemoveIfSame(p)
 	p.LogoutGame()
 	if enterErr != nil {
