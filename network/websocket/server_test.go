@@ -205,6 +205,11 @@ func TestServerRejectsInvalidConfiguration(t *testing.T) {
 			want:   "websocket: handler timeout cannot be negative",
 		},
 		{
+			name:   "request queue size",
+			server: newWebSocketServer(t, websocketTestHandler{}, RequestQueueSize(0)),
+			want:   "websocket: request queue size must be positive",
+		},
+		{
 			name: "TLS verification",
 			server: newWebSocketServer(
 				t,

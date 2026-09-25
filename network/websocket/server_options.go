@@ -83,6 +83,12 @@ func Timeout(timeout time.Duration) ServerOption {
 	return func(s *Server) { s.config.timeout = timeout }
 }
 
+// RequestQueueSize 限制支持独立心跳的 handler 在认证后等待执行的业务帧数。
+// 队列满会关闭过载连接；当前执行的请求不占等待容量。
+func RequestQueueSize(size int) ServerOption {
+	return func(s *Server) { s.config.requestQueueSize = size }
+}
+
 // MaxConnLimit configures the maximum concurrent channels.
 func MaxConnLimit(limit int32) ServerOption {
 	return func(s *Server) { s.config.maxConnLimit = limit }

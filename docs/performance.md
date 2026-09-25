@@ -38,7 +38,7 @@ TCP Reader/Writer buffer 均按最大合法帧 `MaxProtoSize + 4B` 创建，即�
 
 2026-08-21 基于 commit `3035fb8` 重新审查请求、Push、广播、heartbeat、mailbox 和 EventBus 路径，并在 macOS/arm64、Apple M1 Pro、Go 1.26.5、`GOMAXPROCS=8` 上做定向 benchmark 与 pprof。当前没有证据表明控制流复杂度是主要性能问题；影响更大的是顺序外部 I/O、同步 Push 占用共享 worker，以及 WebSocket 按连接编码和读包分配。`gocyclo`、`gocognit` 只用于控制流诊断，不能代替这些运行时验证。
 
-连接 read loop 会等待当前 handler 返回后才读取下一帧，Gateway 还在 Session handler 锁内完成 Forward，因此同一连接保持顺序，但慢 Redis、gRPC 或业务 handler 会形成连接内 head-of-line blocking。该顺序同时维护请求次序和关闭交接，不应在没有协议语义与并发测试的情况下改成并行分发。
+未实现 `network.HeartbeatHandler` 的自定义 handler 仍由连接 read loop 串行执行。Gateway 已按 I50 分离认证后的业务 FIFO 与心跳读取；默认业务等待容量为 8，满时明确关闭过载连接，业务仍保持顺序，关闭等待所有在途处理。它消除业务占用读循环造成的心跳阻塞，不保证慢 socket 或慢续租依赖下始终保持连接；新增成本见 [I50 调度成本](#i50-dispatch-cost)。
 
 当前优化优先级为：
 
@@ -50,6 +50,15 @@ TCP Reader/Writer buffer 均按最大合法帧 `MaxProtoSize + 4B` 创建，即�
 6. **NATS 积压**：dispatch 暂无热点证据，慢 handler 的队列内存与 broker Payload 上限按 [I44](./issues.md#性能与验收限制) 验收。
 
 默认发送队列按帧数限制为 32，不区分 32B 与 4KB 消息。`32 × 100,000 × 4KB ≈ 12.8GB` 是逻辑 Payload 积压上限；默认 protobuf 的同一次广播现已跨连接共享一份 body，不会按连接重复持有这 12.8GB，但自定义 codec、逐连接独立消息以及 frame、channel、Session 和 socket 成本仍然存在。因此真实广播验收必须同时采集排队字节和慢连接比例。Gate client 的 endpoint 解析、全局锁和空闲 timer 存在可消除成本，但当前没有 profile 证据支持其优先于上述路径。
+
+<a id="i50-dispatch-cost"></a>
+## I50 调度成本
+
+2026-09-25，基线 `1ed763b` 加 I50 工作树，Windows/amd64、Intel i7-9700K、Go 1.26.6。每个成功认证且支持独立心跳的连接增加一个业务 worker；尚未认证时不启动 worker。默认等待 8 帧，按每帧最大 4 KiB 计算，排队帧数据理论约 32 KiB，另有 Proto/channel 对象；当前执行帧、socket 和发送队列不计入该上限。
+
+`go test ./network/internal/inbound -run '^$' -bench '^BenchmarkAuthenticatedDispatcher$' -benchmem -benchtime=1s -count=3`：构造、认证、启动、停止一个调度器为 1084～1091 ns/op、561 B/op、8 allocs/op。这是分配累计值，不是常驻内存；空队列的 4,096 个并存调度器，经 GC 后通过 runtime.MemStats 测得 heap 增量 5,301,888 B（1294.4 B/连接）、StackInuse 增量 33,554,432 B（8192 B/连接）。后者依赖该次 Go runtime 和平台，不外推为其他平台的固定 stack 大小。
+
+测量仅含调度器、context、空队列及 worker，不含真实 socket、业务负载或 Gateway 其他对象；不能据此宣布 I41/I44 容量通过。原始日志和常驻内存探针位于 `%TEMP%\yola-b3-20260925-1ed763b` 的 `i50-dispatcher-bench.log`、`memory_probe_test.go`、`memory-overlay.json`、`i50-memory.log`；在对应 I50 代码上执行 `go test -overlay <该目录>/memory-overlay.json ./network/internal/inbound -run '^TestAuditDispatcherRetainedMemory$' -count=1 -v` 可复核，换 checkout 时调整 overlay 的 Replace key。
 
 ## 最近基线
 

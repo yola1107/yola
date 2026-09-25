@@ -13,6 +13,7 @@ import (
 
 	"yola/api/protocol/v1"
 	"yola/network"
+	"yola/network/internal/inbound"
 
 	"github.com/go-kratos/kratos/v3/transport"
 	"github.com/google/uuid"
@@ -195,6 +196,11 @@ func (s *Server) serveTCP(baseCtx context.Context, conn net.Conn, connID string)
 
 func (s *Server) readTCPMessages(ctx context.Context, clientConn tcpConnection, invoke network.Invoker, reader *bufio.Reader, deadline time.Time) error {
 	ch := clientConn.ch
+	var dispatcher *inbound.Dispatcher
+	if _, ok := s.handler.(network.HeartbeatHandler); ok {
+		dispatcher = inbound.New(ctx, clientConn, invoke, s.config.requestQueueSize)
+		defer dispatcher.Stop()
+	}
 	for {
 		if err := clientConn.conn.SetReadDeadline(deadline); err != nil {
 			return err
@@ -206,6 +212,12 @@ func (s *Server) readTCPMessages(ctx context.Context, clientConn tcpConnection, 
 		if message.Op == v1.OpHeartbeat {
 			deadline = time.Now().Add(s.config.heartbeatTimeout)
 			message.Body = nil
+		}
+		if dispatcher != nil {
+			if err := dispatcher.Handle(message); err != nil {
+				return err
+			}
+			continue
 		}
 		reply, err := invoke(ctx, message)
 		if err != nil {

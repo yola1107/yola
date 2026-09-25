@@ -66,6 +66,7 @@ type serverConfig struct {
 	channel          *ChannelConfig
 	maxConnLimit     int32
 	maxConnPerIP     int32
+	requestQueueSize int
 }
 
 // NewServer creates a WebSocket transport server.
@@ -82,6 +83,7 @@ func NewServer(opts ...ServerOption) *Server {
 			timeout:          network.DefaultHandlerTimeout,
 			handshakeTimeout: DefaultHandshakeTimeout,
 			maxHeaderBytes:   DefaultMaxHeaderBytes,
+			requestQueueSize: network.DefaultRequestQueueSize,
 		},
 		channels:         make(map[string]*Channel),
 		connectionsPerIP: make(map[string]int32),
@@ -172,6 +174,9 @@ func (s *Server) validateConfig() error {
 	}
 	if s.config.timeout < 0 {
 		return errors.New("websocket: handler timeout cannot be negative")
+	}
+	if s.config.requestQueueSize <= 0 {
+		return errors.New("websocket: request queue size must be positive")
 	}
 	if err := tlsconfig.ValidateServer(s.config.tls); err != nil {
 		return fmt.Errorf("websocket: %w", err)

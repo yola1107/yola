@@ -40,6 +40,7 @@ flowchart LR
 | `internal/grpcendpoint`、`internal/listener` | 内部 gRPC advertised endpoint 校验和 listener 所有权 |
 | `internal/gateclient` | 直连目标 Gateway 的 gRPC ClientConn 池；调用方持有每次 RPC deadline |
 | `internal/queue`、`network/internal/heartbeat` | 跨 transport 稳定复用的有界 callback 执行和单连接 heartbeat 原子状态；不持有 socket 或 transport 生命周期 |
+| `network/internal/inbound` | 认证后的有界业务 FIFO 与独立心跳调度；读循环创建并停止，退出前等待在途 handler |
 | `network/internal/auth` | 认证回复与认证前 Push 的公共规则；transport 保留帧读取、deadline 和错误身份 |
 | `event`、`event/nats` | 在线、可丢失的 Publish/Subscribe 契约与 Core NATS adapter |
 
@@ -67,6 +68,10 @@ Gateway backend 按 service 复用发现连接，回程 gateclient 按 Gate endp
 每个 service 只创建一个 WRR ClientConn。backend pool 与 Gateway 同生命周期，service 名称来自有限的部署目录，因此不做按时间淘汰；首次连接由 pool 自有 context 和 `RPCTimeout` 约束，单个请求取消只结束自身等待，不会取消其他等待者共享的连接创建，Gateway Stop 会取消全部在途连接。Registry 更新负责增删 SubConn；实例集合为空时必须清空旧 SubConn，使请求立即 fail closed。`gateway/balancer.go` 自建 balancer，`gateway/resolver.go` 自建 resolver，是因为 Kratos v3 内置 selector 的初始化顺序不能稳定取得 WRR builder，且内置 discovery resolver 会在空实例集合时沿用旧地址。Gateway 在请求入口创建 `RPCTimeout`，Node ClientConn 直接使用该 context，不再叠加第二个 client timeout。
 
 TCP/WebSocket 在接纳连接与 Stop 之间使用同一 lifecycle owner：Stop 先禁止新连接，再关闭已提交连接并等待 handler/writer 退出；已 Accept 或完成 Upgrade、但尚未提交的连接必须在 Stop 后拒绝。listener 的临时 bind 失败不写入永久状态，独立 transport 可以在端口释放后重新执行 `BeforeStart`。
+
+Gateway 实现可选的 `network.HeartbeatHandler`：认证仍同步执行，成功认证回复入发送队列后，业务消息进入单 worker 的 FIFO，心跳由读循环独立处理。Gateway 的业务锁与心跳锁分别串行本类操作，关闭按业务锁、心跳锁、binding 锁的顺序等待并撤下 Session；续租与 Forward 可以并发。middleware 必须允许同一连接的心跳与业务调用并发。未实现该能力的自定义 ConnectionHandler 保持原来的同步串行路径。
+
+支持独立心跳的连接默认最多等待 8 个业务帧，可由 TCP/WS `RequestQueueSize` 调整，不计当前执行的请求。等待队列满、回复发送队列满或 handler 失败时关闭连接；停止先取消在途请求、丢弃尚未执行的业务帧，等待 worker 后再调用 handler.Close。认证前的 heartbeat/非法请求仍由 Gateway 拒绝。该模式下 TCP 回复使用非阻塞发送，避免等待发送容量阻塞心跳读取；慢 socket 仍受写超时及客户端存活判断约束。队列等待不计入单次 handler timeout，预算跟踪见 I46；新增连接内存见 [I50 调度成本](./performance.md#i50-dispatch-cost)。
 
 TCP/WebSocket Client 的 connect、push、Kick 和 disconnect callback 由单一有界队列串行执行。认证期间收到的每个 Push 与 connect callback 都计入容量，并在 worker 启动前作为一个 batch 原子提交；容量不足时连接创建确定失败，不暴露部分 callback。关闭时拒绝新 callback、丢弃尚未开始的普通 callback，让当前 callback 完成后再依次执行 Kick 和 disconnect；连接资源先关闭，再放行 terminal callback，因此 callback 内调用 `Client.Close` 不等待自身。TCP/WebSocket 各自拥有 ticker、I/O 和关闭，只有 `idle → queued → writing → outstanding` 的原子状态迁移由无 transport 依赖的 heartbeat owner 复用。
 
@@ -252,6 +257,8 @@ Gateway 不缓存玩家 Node binding 或未绑定结果。Gate close、takeover 
 | TCP Server | handler / handshake / heartbeat / write / send queue | 3s / 15s / 15s / 10s / 32 |
 | TCP Client | ping / read / write / send queue | 5s / 15s / 10s / 100 |
 | WebSocket Server | handler / handshake / read / write / send queue | 3s / 15s / 60s / 10s / 32 |
+| WebSocket Client | ping | 15s |
+| TCP/WebSocket Server（HeartbeatHandler） | 等待业务帧数 | 8，不含当前执行请求 |
 | 连接限制 | `MaxConnLimit` / `MaxConnPerIP` | 10,000 / 100 |
 | Redis Locator | Node binding TTL | 6h |
 

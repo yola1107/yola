@@ -2,6 +2,7 @@ package network
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -73,6 +74,38 @@ func TestInvokerAppliesHandlerTimeout(t *testing.T) {
 	if err != context.DeadlineExceeded {
 		t.Fatalf("Invoke() error = %v, want deadline exceeded", err)
 	}
+}
+
+func TestInvokerHeartbeatUsesMiddlewareAndPreservesErrors(t *testing.T) {
+	cause := errors.New("heartbeat rejected")
+	for _, expected := range []error{nil, cause} {
+		handler := &invokeHeartbeatHandler{err: expected}
+		calls := 0
+		invoke := NewInvoker(handler, invokeConnection{}, time.Second, func(next middleware.Handler) middleware.Handler {
+			return func(ctx context.Context, req any) (any, error) {
+				calls++
+				return next(ctx, req)
+			}
+		})
+		reply, err := invoke(context.Background(), &v1.Proto{Op: v1.OpHeartbeat, Body: []byte("discard")})
+		if !errors.Is(err, expected) || calls != 1 || !handler.deadline {
+			t.Fatalf("heartbeat result: err=%v, middleware calls=%d, deadline=%v", err, calls, handler.deadline)
+		}
+		if expected == nil && (reply.Op != v1.OpHeartbeatReply || reply.Body != nil) {
+			t.Fatalf("unexpected heartbeat reply: %v", reply)
+		}
+	}
+}
+
+type invokeHeartbeatHandler struct {
+	invokeHandler
+	err      error
+	deadline bool
+}
+
+func (h *invokeHeartbeatHandler) Heartbeat(ctx context.Context, _ Connection) error {
+	_, h.deadline = ctx.Deadline()
+	return h.err
 }
 
 type connectionHandlerFunc func(context.Context, Connection, *v1.Proto) (*v1.Proto, error)

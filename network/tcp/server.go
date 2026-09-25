@@ -60,6 +60,7 @@ type serverConfig struct {
 	writeTimeout     time.Duration
 	maxConnLimit     int32
 	maxConnPerIP     int32
+	requestQueueSize int
 }
 
 // NewServer creates a TCP transport server.
@@ -75,6 +76,7 @@ func NewServer(opts ...ServerOption) *Server {
 			handshakeTimeout: network.DefaultHandshakeTimeout,
 			heartbeatTimeout: defaultHeartbeatTimeout,
 			writeTimeout:     network.DefaultWriteTimeout,
+			requestQueueSize: network.DefaultRequestQueueSize,
 		},
 		serveDone:        make(chan struct{}),
 		conns:            make(map[net.Conn]string),
@@ -129,6 +131,9 @@ func (s *Server) validateConfig() error {
 	}
 	if s.config.timeout < 0 {
 		return errors.New("tcp: handler timeout cannot be negative")
+	}
+	if s.config.requestQueueSize <= 0 {
+		return errors.New("tcp: request queue size must be positive")
 	}
 	if s.config.maxConnLimit <= 0 {
 		return errors.New("tcp: connection limit must be positive")

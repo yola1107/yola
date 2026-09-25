@@ -44,3 +44,9 @@ type ConnectionHandler interface {
 	Close(ctx context.Context, conn Connection)
 	Handle(ctx context.Context, conn Connection, message *v1.Proto) (*v1.Proto, error)
 }
+
+// HeartbeatHandler 允许认证后并发处理心跳与业务请求。
+// Heartbeat 不与 Close 并发；实现者及 middleware 须保护心跳和 Handle 共享的状态。
+type HeartbeatHandler interface {
+	Heartbeat(context.Context, Connection) error
+}

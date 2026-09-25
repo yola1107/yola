@@ -252,6 +252,11 @@ func TestServerRejectsInvalidConfiguration(t *testing.T) {
 			want:   "tcp: handler timeout cannot be negative",
 		},
 		{
+			name:   "request queue size",
+			server: newTCPServer(t, tcpTestHandler{}, RequestQueueSize(0)),
+			want:   "tcp: request queue size must be positive",
+		},
+		{
 			name:   "connection limit",
 			server: newTCPServer(t, tcpTestHandler{}, MaxConnLimit(0)),
 			want:   "tcp: connection limit must be positive",

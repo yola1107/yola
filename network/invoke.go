@@ -22,6 +22,13 @@ func NewInvoker(handler ConnectionHandler, conn Connection, timeout time.Duratio
 		if !ok || message == nil {
 			return nil, errInvalidHandlerReply
 		}
+		if heartbeat, ok := handler.(HeartbeatHandler); ok && message.Op == v1.OpHeartbeat {
+			if err := heartbeat.Heartbeat(ctx, conn); err != nil {
+				return nil, err
+			}
+			message.Op, message.Body = v1.OpHeartbeatReply, nil
+			return message, nil
+		}
 		return handler.Handle(ctx, conn, message)
 	})
 	return func(ctx context.Context, message *v1.Proto) (*v1.Proto, error) {

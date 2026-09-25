@@ -5,7 +5,7 @@
 
 - **审查基线**：2026-09-25，代码提交 `0c8b270`。行号均为该基线的定位提示，实施前须按声明名重新核对。
 - **范围**：根 module 的职责、依赖、状态所有权和生命周期；`test` 是接入与验收案例，业务状态仍由业务层拥有。
-- **证据**：I47、I49、I51、I52 已分别完成修复、验证及契约确认，原故障及验收记录见进度表。其余问题仍以各项记录为准；存量运行数据只支持其原始配置和场景。
+- **证据**：I47、I49、I50、I51、I52 已分别完成修复、验证及契约核对，原故障及验收记录见进度表。其余问题仍以各项记录为准；存量运行数据只支持其原始配置和场景。
 - **优先级**：P0 为生产前必须闭环的部署风险；P1 为正确性、可用性或容量验收重点；P2 为契约清晰度、扩展能力或已接受限制。
 - **维护**：保留既有 ID；新增问题补齐影响、证据、方案和关闭条件。关闭后保留原条目并为问题标题划线，追加关闭结果，在进度表同步划线并保留验证证据；不得删除已关闭问题。
 
@@ -35,12 +35,14 @@
   - **关闭条件与风险**：框架接纳的绑定副作用均被等待，排空失败不主动释放 epoch，Drain 能力保持。此项只修复本地生命周期覆盖，不能替代 I48 的存储侧保护。
   - **关闭记录（2026-09-25，1a882f6）**：Bind/Unbind 已纳入现有 deliveries 屏障，Drain 期间仍可使用，关闭准入后返回 Unavailable。保存 Session 后的后台写入、等待超时、重复 Stop、epoch 失效及同步 handler 回归通过；排空失败不主动释放 epoch。此项不替代 I48；验证命令见 [B1 验证记录](./refactor-progress.md#b1-results)。
 
-- <a id="i50"></a> **I50 · P1：串行业务处理阻塞心跳与连接存活判断**
+- <a id="i50"></a> **~~I50 · P1：串行业务处理阻塞心跳与连接存活判断~~**
   - **影响**：慢 Forward 或连续请求排队会阻挡心跳读取、回复和 Gate lease 续租。TCP 默认 5s 的心跳检查下，放宽业务预算可能引起误断线；即使每次请求限制为 3s，多条排队也会累计等待。
   - **证据**：[TCP read loop:196](../network/tcp/server_tcp.go#L196)、[WebSocket read loop:96](../network/websocket/server_websocket.go#L96) 同步等待 handler；[gateway/inbound.go:56](../gateway/inbound.go#L56) 串行锁覆盖 Auth/Forward/Heartbeat；[TCP Client:157](../network/tcp/client.go#L157)、[WebSocket Client:141](../network/websocket/client.go#L141) 按心跳状态关闭连接。TCP [reply:121](../network/tcp/channel.go#L121) 等发送容量还使用连接 context。
   - **解决方案**：与 I46 联合比较两种设计：保留串行并限制 pipeline/业务耗时；或保留业务 FIFO 与认证屏障，让认证后控制帧经过独立的有界处理路径。明确读、执行业务、发送、Close/Kick 的交接，不直接删锁或逐请求创建无界 goroutine。
   - **验证方案**：真实 TCP/WebSocket 链路下注入单个慢请求、多个连续请求、发送队列满和慢 socket；检查心跳回复、续租、请求顺序、认证前行为、Kick/Stop、取消及资源增长。覆盖默认预算与放宽预算，运行 race。
   - **关闭条件与风险**：在明确的负载与预算契约内，业务处理不导致错误存活判定，且背压、顺序和停止行为可验证。单纯加大心跳或请求 timeout 不作为关闭证据；新增队列的每连接内存须量化。
+  - **实施与验证记录（2026-09-25）**：真实 TCP/WS → Gateway → gRPC 的阻塞 Forward 各复现误断线 3/3。当前实现通过可选 HeartbeatHandler 分离认证后的业务 FIFO 与心跳，普通自定义 handler 保持串行；默认 8 个等待帧，队列满明确关闭连接，TCP 回复在该模式下不等待发送容量。定向 10 轮、默认 TCP 5s/WS 15s 心跳与放宽业务预算、FIFO、认证屏障、过载丢弃、Gate 续租已通过；完整检查与关闭记录见 [B3](./refactor-progress.md#b3-results)。新增内存和限制见 [调度成本](./performance.md#i50-dispatch-cost)，不关闭真实容量或慢存储预算问题。
+  - **关闭记录（2026-09-25，随本问题提交）**：按用户逐 issue 提交、最后统一审核的要求完成有界调度；补齐关闭等待续租的屏障/race、worker 取消与待执行丢弃、panic/发送满关闭。最终 make check、make lint、五个受影响包 race 全部通过，两个 module 无 lint 告警。复审已核对认证前拒绝、业务 FIFO、middleware、Close/Kick 与资源归属。新增 worker 的本机空载 heap/stack 已测量；不承诺无界 pipeline、慢 socket 或慢续租依赖下不掉线，I46/I41 继续独立验收。
 
 - <a id="i51"></a> **~~I51 · P1：NATS 连接级 LastError 不能完整代表本次订阅激活结果~~**
   - **影响**：重连后的重复订阅 ACL 错误可能因文本相同被忽略；激活期间 Publish ACL 或 slow-consumer 错误也可能覆盖 SUB 拒绝，导致错误返回成功或错误归属不准确。

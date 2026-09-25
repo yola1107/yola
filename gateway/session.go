@@ -88,9 +88,10 @@ func (r *sessionRegistry) snapshot(sessions []*session) []*session {
 }
 
 type session struct {
-	// handlerMu serializes Handle and Close. It may be held while bindingMu is
-	// acquired; the reverse lock order is forbidden.
+	// handlerMu 串行业务调用；关闭按 handlerMu → heartbeatMu → bindingMu 等待处理完成。
+	// 业务和心跳各自可获取 bindingMu，禁止反向取锁。
 	handlerMu     sync.Mutex
+	heartbeatMu   sync.Mutex
 	bindingMu     sync.Mutex
 	conn          network.Connection
 	authTimer     *time.Timer
@@ -176,6 +177,8 @@ func (s *session) finishHeartbeat(expected locate.GateBinding, renewedAt time.Ti
 func (s *session) detachForClose() locate.GateBinding {
 	s.handlerMu.Lock()
 	defer s.handlerMu.Unlock()
+	s.heartbeatMu.Lock()
+	defer s.heartbeatMu.Unlock()
 	s.bindingMu.Lock()
 	binding, authTimer := s.binding, s.authTimer
 	s.authTimer = nil

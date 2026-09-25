@@ -49,6 +49,13 @@ func (s *Server) Close(ctx context.Context, conn network.Connection) {
 }
 
 func (s *Server) Handle(ctx context.Context, conn network.Connection, msg *v1.Proto) (*v1.Proto, error) {
+	if msg.Op == v1.OpHeartbeat {
+		if err := s.Heartbeat(ctx, conn); err != nil {
+			return nil, err
+		}
+		msg.Op, msg.Body = v1.OpHeartbeatReply, nil
+		return msg, nil
+	}
 	sess := s.sessions.get(conn.ConnID())
 	if sess == nil {
 		return nil, errors.New("connection is not registered")
@@ -66,14 +73,20 @@ func (s *Server) Handle(ctx context.Context, conn network.Connection, msg *v1.Pr
 		cancel()
 	case v1.OpRequest:
 		s.forward(ctx, sess, msg)
-	case v1.OpHeartbeat:
-		if err := s.heartbeat(ctx, sess); err != nil {
-			return nil, err
-		}
-		msg.Op, msg.Body = v1.OpHeartbeatReply, nil
 	default:
 		_ = conn.Close()
 		return nil, errors.New("unsupported client operation")
 	}
 	return msg, nil
+}
+
+// Heartbeat 独立于业务 FIFO 续租；关闭会等待当前续租结束。
+func (s *Server) Heartbeat(ctx context.Context, conn network.Connection) error {
+	sess := s.sessions.get(conn.ConnID())
+	if sess == nil {
+		return errors.New("connection is not registered")
+	}
+	sess.heartbeatMu.Lock()
+	defer sess.heartbeatMu.Unlock()
+	return s.heartbeat(ctx, sess)
 }

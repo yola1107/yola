@@ -10,6 +10,7 @@ import (
 
 	"yola/api/protocol/v1"
 	"yola/network"
+	"yola/network/internal/inbound"
 
 	"github.com/go-kratos/kratos/v3/transport"
 	"google.golang.org/grpc/status"
@@ -94,6 +95,11 @@ func (s *Server) serveWebsocket(ch *Channel, remoteIP string) {
 }
 
 func (s *Server) readWebSocketMessages(connectionCtx context.Context, ch *Channel, invoke network.Invoker) {
+	var dispatcher *inbound.Dispatcher
+	if _, ok := s.handler.(network.HeartbeatHandler); ok {
+		dispatcher = inbound.New(connectionCtx, ch, invoke, s.config.requestQueueSize)
+		defer dispatcher.Stop()
+	}
 	for {
 		message := new(v1.Proto)
 		if err := ch.readFrame(message); err != nil {
@@ -102,6 +108,13 @@ func (s *Server) readWebSocketMessages(connectionCtx context.Context, ch *Channe
 		}
 		if message.Op == v1.OpHeartbeat {
 			message.Body = nil
+		}
+		if dispatcher != nil {
+			if err := dispatcher.Handle(message); err != nil {
+				warnUnexpectedNetworkError("[websocket] inbound dispatch failed", ch.ConnID(), err)
+				return
+			}
+			continue
 		}
 		reply, err := invoke(connectionCtx, message)
 		if err != nil {
