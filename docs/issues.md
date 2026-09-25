@@ -5,7 +5,7 @@
 
 - **审查基线**：2026-09-25，代码提交 `0c8b270`。行号均为该基线的定位提示，实施前须按声明名重新核对。
 - **范围**：根 module 的职责、依赖、状态所有权和生命周期；`test` 是接入与验收案例，业务状态仍由业务层拥有。
-- **证据**：I47、I49、I52 已分别修复并完成验证，原故障及验收记录见进度表。其余问题仍以各项记录为准；存量运行数据只支持其原始配置和场景。
+- **证据**：I47、I49、I51、I52 已分别完成修复、验证及契约确认，原故障及验收记录见进度表。其余问题仍以各项记录为准；存量运行数据只支持其原始配置和场景。
 - **优先级**：P0 为生产前必须闭环的部署风险；P1 为正确性、可用性或容量验收重点；P2 为契约清晰度、扩展能力或已接受限制。
 - **维护**：保留既有 ID；新增问题补齐影响、证据、方案和关闭条件。关闭后保留原条目并为问题标题划线，追加关闭结果，在进度表同步划线并保留验证证据；不得删除已关闭问题。
 
@@ -42,12 +42,16 @@
   - **验证方案**：真实 TCP/WebSocket 链路下注入单个慢请求、多个连续请求、发送队列满和慢 socket；检查心跳回复、续租、请求顺序、认证前行为、Kick/Stop、取消及资源增长。覆盖默认预算与放宽预算，运行 race。
   - **关闭条件与风险**：在明确的负载与预算契约内，业务处理不导致错误存活判定，且背压、顺序和停止行为可验证。单纯加大心跳或请求 timeout 不作为关闭证据；新增队列的每连接内存须量化。
 
-- <a id="i51"></a> **I51 · P1：NATS 连接级 LastError 不能完整代表本次订阅激活结果**
+- <a id="i51"></a> **~~I51 · P1：NATS 连接级 LastError 不能完整代表本次订阅激活结果~~**
   - **影响**：重连后的重复订阅 ACL 错误可能因文本相同被忽略；激活期间 Publish ACL 或 slow-consumer 错误也可能覆盖 SUB 拒绝，导致错误返回成功或错误归属不准确。
   - **证据**：[event/nats/event.go:225](../event/nats/event.go#L225) 在 Flush 前后比较 LastError；[event.go:273](../event/nats/event.go#L273) 按错误文本判断是否陈旧。固定依赖 github.com/nats-io/nats.go@v1.53.1/nats.go:4021、4042 会覆盖同一个连接错误槽。对外承诺见 [NATS 生命周期](./eventbus.md#4-nats-生命周期)。
   - **解决方案**：验证底层可用的订阅级错误能力，或由 adapter 记录完整激活窗口的错误事件并证明归属与完成屏障可靠；替换后删除 LastError 文本猜测。保留真正激活失败后的注册终态保护，不把连接上的所有异步错误归咎于新订阅。
   - **验证方案**：成功订阅后重连并被 ACL 拒绝，再注册同 Topic；交错 SUB ACL、Publish ACL、slow consumer、订阅上限、Flush、Close 和取消。验证既不漏报也不错报；现有 [subscription_test.go:41](../event/nats/subscription_test.go#L41) 的“首次失败后保持终态”不是这些交错的替代。
   - **关闭条件与风险**：每次激活结果符合现有承诺，重复错误和并发错误不会污染归属。若底层不能提供该强度保证，须先明确并确认契约调整，不能仅修改文档掩盖实现缺口。
+  - **复现记录（2026-09-25，a888fcb）**：真实内嵌 NATS Server v2.14.5 上，成功订阅后重启同端口为受限 ACL，再注册相同 Topic，漏报 3/3。真实 nats.go 加协议屏障下，SUB ACL → Publish ACL、SUB ACL → slow-consumer、订阅上限 → Publish ACL 三种覆盖均漏报 3/3；其他 Topic 的 SUB ACL 被误归本次调用 3/3。协议端仅用于固定收包顺序，不代替 broker 权限决策验收。
+  - **依赖能力**：固定 nats.go v1.53.1 的 `processTransientError` 只为权限错误设置私有 `Subscription.permissionsErr`，并以 Topic/queue 匹配；权限和上限回调的 Subscription 均为 nil。`PermissionErrOnSubscribe(true)` 配合 `NextMsg` 可读到权限错误，但会消费已排队消息且不覆盖订阅上限；`IsValid()` 对被上限拒绝的订阅仍返回 true。阻塞异步回调后，Flush 与 Barrier 仍返回，故不能把两者用作错误回调的完成屏障。能力探针及 race 各 20 轮通过，见 [固定版本源码](https://github.com/nats-io/nats.go/blob/v1.53.1/nats.go) 和 [B2 记录](./refactor-progress.md#b2-results)。
+  - **已确认方案**：保留单连接与公共接口，删除 LastError 快照及文本猜测；Subscribe 仅同步确认本地注册和 Flush，ACL/订阅上限作为 NATS 异步错误报告，不归给某次激活；同步激活、Flush、context 失败仍保持注册终态。已向用户说明 ACL/上限拒绝不再保证由 Subscribe 同步返回，用户要求继续后实施；比较见 [I51 方案](./refactor-progress.md#i51-design)。
+  - **关闭记录（2026-09-25，随本问题提交）**：删除连接错误猜测，直接将每个异步错误写入 slog，只有底层提供身份才附带 topic。真实重复 ACL、Publish ACL、订阅上限和协议交错均有独立日志；既有订阅及后续有效注册可用。取消、Flush 超时、Close 及同步失败后重连终态回归通过；定向 20 轮、受影响包 race、make check、make lint 通过，两个 module 无 lint 告警。此项按经确认的异步边界关闭，不宣称恢复原同步承诺；部署仍需独立验收 ACL/容量。详见 [B2 验证记录](./refactor-progress.md#b2-results)。
 
 - <a id="i52"></a> **~~I52 · P2：等待注册锁时取消会无谓终止 Bus 后续注册能力~~**
   - **影响**：第二次 Subscribe 在等待前一次 Flush 时被取消，获锁后仍创建底层订阅，再因已取消的 Flush 进入注册终态，使后续有效注册也失败。
@@ -55,7 +59,7 @@
   - **解决方案**：在持锁且尚未激活前重新检查取消；如需等待期间及时返回，再评估 context-aware 准入。保持进入底层激活后失败则终态的现有规则。
   - **验证方案**：用屏障阻塞第一注册，取消等待中的第二注册，再放行第一注册；要求第一成功、第二返回取消且没有底层订阅副作用、第三次有效注册成功。补 Close 竞争并运行 race。
   - **关闭条件与风险**：激活前取消不污染 Bus，错误身份与真正激活后的失败语义不变。可独立修复，不依赖 I51 完整重构。
-  - **关闭记录（2026-09-25，随本问题提交）**：原实现的取消污染稳定复现 3/3；获锁后重查调用方 context，取消者不进入底层激活。可控 PONG 屏障与连续 SID 断言确认第一、第三注册成功，第二返回 Canceled 且未发送 SUB/UNSUB。激活后取消仍进入终态，Close 竞争保持 ErrClosed；定向 20 轮、包测试、race、两个 module lint 通过。等待锁期间不保证立即返回；I51 的错误归属另行处理，命令见 [B2 验证记录](./refactor-progress.md#b2-results)。
+  - **关闭记录（2026-09-25，a888fcb）**：原实现的取消污染稳定复现 3/3；获锁后重查调用方 context，取消者不进入底层激活。可控 PONG 屏障与连续 SID 断言确认第一、第三注册成功，第二返回 Canceled 且未发送 SUB/UNSUB。激活后取消仍进入终态，Close 竞争保持 ErrClosed；定向 20 轮、包测试、race、两个 module lint 通过。等待锁期间不保证立即返回；I51 的错误归属另行处理，命令见 [B2 验证记录](./refactor-progress.md#b2-results)。
 
 - <a id="i53"></a> **I53 · P2：Node middleware 缺少稳定的业务 command 元数据**
   - **影响**：业务 protobuf 已解码，transport operation 仍是内部 /cluster.v1.Node/Forward，标准日志、指标、追踪无法统一区分 command；共享请求类型时不能从类型可靠恢复命令。

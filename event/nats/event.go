@@ -4,8 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
-	"strings"
 	"sync"
 	"time"
 
@@ -103,6 +103,13 @@ func connect(ctx context.Context, o options) (*natsgo.Conn, error) {
 	connectOptions := []natsgo.Option{
 		natsgo.Timeout(timeoutFor(ctx, o.timeout)),
 		natsgo.ReconnectBufSize(-1),
+		natsgo.ErrorHandler(func(_ *natsgo.Conn, sub *natsgo.Subscription, err error) {
+			attrs := []slog.Attr{slog.Any("error", err)}
+			if sub != nil {
+				attrs = append(attrs, slog.String("topic", sub.Subject))
+			}
+			slog.LogAttrs(ctx, slog.LevelError, "event transport error", attrs...)
+		}),
 	}
 	if o.username != "" || o.password != "" {
 		connectOptions = append(connectOptions, natsgo.UserInfo(o.username, o.password))
@@ -194,9 +201,8 @@ func (b *Bus) Publish(ctx context.Context, e event.Event) error {
 	return err
 }
 
-// Subscribe activates one exact topic and starts its consumer. An activation
-// failure stops further registration because Core NATS does not expose an
-// error generation that can distinguish a repeated failure from stale state.
+// Subscribe 注册精确 Topic 并等待 Flush；成功不代表 broker 已接受订阅。
+// ACL、订阅上限等异步错误独立记录；同步激活失败后停止后续注册。
 func (b *Bus) Subscribe(ctx context.Context, topic string, handler event.Handler) (event.Subscription, error) {
 	if err := contextError(ctx); err != nil {
 		return nil, err
@@ -225,7 +231,6 @@ func (b *Bus) Subscribe(ctx context.Context, topic string, handler event.Handler
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	previousConnectionErr := b.conn.LastError()
 	registered := &subscription{
 		topic:           topic,
 		handler:         handler,
@@ -240,9 +245,6 @@ func (b *Bus) Subscribe(ctx context.Context, topic string, handler event.Handler
 		if b.ctx.Err() != nil {
 			err = event.ErrClosed
 		}
-		return nil, b.failRegistration(registered, fmt.Errorf("nats: subscribe %q: %w", topic, err))
-	}
-	if err := subscriptionActivationError(previousConnectionErr, b.conn.LastError()); err != nil {
 		return nil, b.failRegistration(registered, fmt.Errorf("nats: subscribe %q: %w", topic, err))
 	}
 	if err := activationCtx.Err(); err != nil {
@@ -269,19 +271,6 @@ func (b *Bus) failRegistration(registered *subscription, cause error) error {
 	registered.beginStop()
 	b.registrationErr = errors.Join(cause, registered.stopErr)
 	return b.registrationErr
-}
-
-// NATS wraps Publish and Subscription ACL failures with the same sentinel;
-// only the latter belongs to this serialized activation window.
-func subscriptionActivationError(previous, current error) error {
-	if current == nil || previous != nil && current.Error() == previous.Error() {
-		return nil
-	}
-	if errors.Is(current, natsgo.ErrMaxSubscriptionsExceeded) ||
-		errors.Is(current, natsgo.ErrPermissionViolation) && strings.Contains(current.Error(), `Subscription to "`) {
-		return current
-	}
-	return nil
 }
 
 func contextError(ctx context.Context) error {

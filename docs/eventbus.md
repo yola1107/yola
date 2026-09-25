@@ -72,8 +72,10 @@ New -> Publish/Subscribe/Unsubscribe -> Close
 ```
 
 - `event/nats.New(...)` 校验配置并建立独占连接；未传 `WithContext` 时使用 `context.Background()`。传入的父 `ctx` 控制 Bus 的完整生命周期，取消后自动停止订阅并关闭连接；连接失败直接返回 error，重试时创建新 Bus。
-- `Subscribe(ctx, ...)` 立即激活精确 Topic，底层使用 `ChanSubscribe` 和单个 bounded channel；Flush 和订阅 ACL/上限错误作为本次调用结果返回。
-- 参数校验失败或等待注册锁期间取消不会改变 Bus；等待者获锁后返回取消，不创建底层订阅。进入底层激活后若订阅、Flush、context、订阅 ACL 或上限校验失败，本 Bus 的注册能力进入终态，后续 `Subscribe` 返回包含首次失败的 error。既有订阅和 Publish 继续运行，组装层应关闭并重建 Bus 后再重试。连接上的 slow-consumer 和 Publish ACL 等异步错误不会归因到新订阅。
+- `Subscribe(ctx, ...)` 注册精确 Topic，底层使用 `ChanSubscribe` 和单个 bounded channel，并等待 Flush。成功只说明本地注册和 Flush 完成，不证明 broker 已接受订阅，也不保证 handler 能收到消息；Flush 不是订阅确认或异步错误回调的完成屏障。
+- 参数校验失败或等待注册锁期间取消不会改变 Bus；等待者获锁后返回取消，不创建底层订阅。进入底层激活后若本地订阅、Flush 或 context 失败，本 Bus 的注册能力进入终态，后续 `Subscribe` 返回包含首次失败的 error。既有订阅和 Publish 继续运行，组装层应关闭并重建 Bus 后再重试。
+- SUB ACL、Publish ACL、订阅上限和 slow-consumer 等错误经 nats.go 的异步回调写入 `slog`，日志为 Error 级别的 `event transport error`，保留原始 `error`。仅底层回调带订阅身份时记录 `topic`；ACL/上限回调没有该身份，不从错误文本猜测归属。重复错误分别报告，可能晚于 Subscribe 返回；它们不直接终止后续注册能力。
+- 组装层不能仅用 Subscribe 的返回值验证 ACL 或订阅容量。部署必须独立验收权限与容量，并收集异步错误日志；被 broker 拒绝的本地订阅仍由返回的 Subscription/Bus 管理，可显式取消，重连时由 nats.go 重放。此边界经 I51 确认，不提供订阅确认、自动恢复成功或消息可靠性保证。
 - `Close` 取消 Bus context 和全部订阅、丢弃排队事件、等待运行中的 handler，并关闭 Bus 自己创建的连接；父 context 取消会触发相同关闭流程，之后仍可调用 `Close` 取得幂等的关闭结果。
 - Bus 始终创建并独占一个连接，同时关闭 reconnect buffer；断线期间的 Publish 不会在重连后延迟补发。
 

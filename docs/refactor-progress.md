@@ -6,12 +6,12 @@
 ## 当前快照
 
 - **更新日期**：2026-09-25。
-- **代码审查基线**：起点 `0c8b270`；初始化交接文档 `9378b54`，I49 修复 `1a882f6`，I47 修复 `eb44302`，I52 随本提交关闭。提交边界按问题划分。
-- **当前验证**：I52 定向 20 轮、`go test ./event/nats`、该包 race、`make lint` 通过；根/test module lint 均为 0 告警。本轮未重跑 B1 的 check、构建和 Redis/etcd 验证，其原始结果保留在下方记录。
+- **代码审查基线**：起点 `0c8b270`；初始化交接文档 `9378b54`，I49 修复 `1a882f6`，I47 修复 `eb44302`，I52 修复 `a888fcb`；I51 随本提交关闭。提交边界按问题划分。
+- **当前验证**：I51 经确认异步契约后的定向 20 轮、受影响包 race、make check、make lint 均通过；根/test module lint 均为 0 告警。此前五种故障各复现 3/3 和能力探针记录保留，不能混同于旧同步保证已恢复；本轮未重跑 Redis/etcd 或容量验收。
 - **工作重点**：根 module 的架构与契约；`test` 是扩展与验收，不再以游戏局部重构替代框架分析。
-- **Git 边界**：用户已授权按问题独立提交；仅提交复审过的任务改动。交接文档初始化、I49、I47 分别提交；未授权 push 或发布。
-- **当前范围**：B1 已完成，B2 按 I52 → I51 推进。固定 Kratos v3.0.0，不修改官方源码；保留唯一共享 Registry 与已确认的条件注册语义，不重做已关闭问题。
-- **下一步**：I52 已闭环，继续 I51 的重复订阅 ACL、重连和异步错误交错，核实固定 nats.go 的订阅级能力；若契约无法满足，准备证据及具体方案后确认。I48 仅设计调查，不迁移绑定格式。
+- **Git 边界**：用户授权每个已解决 issue 独立提交，后续由用户统一审核；仅提交复审过的任务改动，不要求逐项 /plan 或 /clear。未授权 push 或发布。
+- **当前范围**：B1、B2 已完成，按后续批次持续处理可在现有授权内闭环的问题。固定 Kratos v3.0.0，不修改官方源码；保留唯一共享 Registry 与已确认的条件注册语义，不重做已关闭问题。I48 仍仅调查；生产安全、凭据轮换和容量不足的外部证据须明确保留。
+- **下一步**：进入 B3，先复现 I50 的真实 TCP/WS 心跳阻塞，并与 I46 核对请求、租约和清理预算；按问题独立验证和提交。I51 已按确认的 [异步错误边界](#i51-design) 关闭。
 
 ## 状态口径
 
@@ -28,8 +28,8 @@
 | ~~[I47 就绪与注册](./issues.md#i47)~~ | 已关闭（eb44302） | 原问题各复现 3/3；就绪适配、空键事务和本代 lease 注销已通过真依赖/race；完整 diff 已复审 | 唯一共享 Registry，官方 Discovery/Session；同 ID 旧记录未回收则冲突，lease 丢失后需重建应用 |
 | ~~[I49 Session 副作用排空](./issues.md#i49)~~ | 已关闭（1a882f6） | 保存 Session 的后台 Bind/Unbind 已接入现有 deliveries；定向、包测试、race、lint 通过并复审 | Drain 内可操作；停止后拒绝；超时/重复 Stop 不释放 epoch；不解决 I48 |
 | [I48 binding 代次保护](./issues.md#i48) | 待设计 | 已核对同 ID 重启、覆盖绑定及不同 Redis slot；未运行迟到写入交错 | 比较同 service slot 的原子核验与保留 UID 分片的协调成本；不直接改格式/API |
-| [I51 NATS 激活归属](./issues.md#i51) | 待复现 | LastError 覆盖与文本比较已静态核查；未运行错误交错 | B2：重复 ACL 和异步错误交错，验证底层能力后设计 |
-| ~~[I52 等待注册取消](./issues.md#i52)~~ | 已关闭（本提交） | 原实现失败 3/3；屏障回归 20 轮、包测试/race、lint 通过 | 获锁后重查 caller context；未发 SUB，第三次成功；激活后终态及 Close 语义不变 |
+| ~~[I51 NATS 激活归属](./issues.md#i51)~~ | 已关闭（本提交） | 五种原故障各 3/3；新契约定向 20 轮、包 race、check、lint 通过 | 经确认取消同步 ACL/上限承诺；每个异步错误独立记录，不再使用 LastError；同步失败仍终态 |
+| ~~[I52 等待注册取消](./issues.md#i52)~~ | 已关闭（a888fcb） | 原实现失败 3/3；屏障回归 20 轮、包测试/race、lint 通过 | 获锁后重查 caller context；未发 SUB，第三次成功；激活后终态及 Close 语义不变 |
 | [I50 心跳调度](./issues.md#i50) | 待复现 | 两种 transport 串行读取/处理；未运行误断线场景 | B3：真实慢请求、pipeline、发送拥塞，比较有界方案 |
 | [I46 预算所有者](./issues.md#i46) | 待设计 | 已有多层上限与配置差异；新增框架回滚预算耦合分析 | B3：分清请求/租约/清理，保持独立清理和已开始操作语义 |
 | [I53 command 元数据](./issues.md#i53) | 待设计 | dispatch 只注入 Session；未运行 middleware 区分验收 | B5：定义最小元数据契约并核对 operation 调用方 |
@@ -49,12 +49,12 @@
 
 ## 建议批次与实施边界
 
-以下是待实施顺序，不代表已获准改变现有行为；遇到实质性语义决策，仅暂停依赖该决策的动作，继续其他已授权工作。
+以下按批次记录实施顺序及状态；未关闭条目沿用当前授权和设计边界，独立问题持续推进。
 
 | 批次 | 目标与收益 | 风险 / 依赖 | 验证出口 |
 | --- | --- | --- | --- |
 | B1 | I47、I49：实例就绪发布与框架副作用排空 | 中；I48 同步调查但不迁移存储。就绪屏障不能冒充完整跨存储原子性 | App 生命周期交错、排空/超时/race；需要时用隔离 Redis/etcd |
-| B2 | I51、I52：准确报告订阅激活，消除无谓终态 | I52 低，I51 中；保留已明确的 EventBus 投递与失败契约 | 重复 ACL、异步错误交错、等待取消、Close 与 race |
+| B2（已完成） | I52、I51：取消者无底层副作用；异步错误独立报告 | I51 经确认改为原生异步边界，保留单连接和同步失败终态 | 定向 20 轮、真实 ACL/上限/重连、协议交错、Close、race、check、lint |
 | B3 | I50、I46：连接存活与请求/清理预算职责 | 中高；控制帧调度、deadline、已开始操作语义需明确 | 真实 TCP/WS/gRPC、慢请求、拥塞、顺序、停止、同配置负载 |
 | B4 | I48：旧进程不能破坏新 binding | 高；须确认存储格式、原 ID 重启及条件更新方案，结合 I47 | 迟到 Bind/Unbind、新旧代交错、真实存储与 Cluster 约束 |
 | B5 | I53、I54、I55：补齐扩展接口与观测 | 低至中；按独立职责拆分原子改动，不建通用管理层 | command 区分、消息所有权/race、分层统计及热路径成本 |
@@ -77,6 +77,7 @@
 | 2026-09-25 | B1 / I49 | 接入已有出站排空计数，新增保存 Session 后的后台操作回归；同步更新生命周期文档 | 原实现稳定失败；修复后定向 20 次、Node 包测试/race 和两个 module lint 通过；见下方命令 |
 | 2026-09-25 | B1 / I47、I48 | I47 真依赖复现、用户确认冲突语义后实施；原 test Registry 提升到根模块并合并资源所有者 | I47 已验收；I48 只核对存储/重启契约，未改代码，未声称已复现 |
 | 2026-09-25 | B2 / I52 | 获锁后补 caller context 校验，协议屏障验证取消者无底层副作用 | 复现 3/3；定向 20 轮、包测试/race、两个 module lint 通过；完整 diff 及调用链已复审 |
+| 2026-09-25 | B2 / I51 | 复现并核实依赖后，按用户确认改为本地注册+Flush、异步错误独立报告 | 原故障各 3/3；新契约定向 20 轮、包 race、check、lint 通过；完整 diff 和调用链已复审 |
 
 前序 `470a4fa`、`7959b58`、`a83ccb2`、`0c8b270` 已提交 mailbox/Whot 局部修复；它们不关闭本表新增架构问题。历史测试或性能文档不能直接证明后续代码通过，复用结果须核对源码、依赖、配置和环境均未变化。
 
@@ -102,12 +103,36 @@
 <a id="b2-results"></a>
 ## B2 验证记录
 
-- I52 接手基线 `eb44302`，工作树、暂存区和新增文件均为空；本问题独立提交 `fix(event): 避免等待注册取消污染订阅能力`。生产改动只在 `event/nats/event.go` 的注册锁内、底层激活前重查 caller context，保留 Bus Close 和历史终态错误优先级。
+- I52 接手基线 `eb44302`，工作树、暂存区和新增文件均为空；独立提交 `a888fcb`：`fix(event): 避免等待注册取消污染订阅能力`。生产改动只在 `event/nats/event.go` 的注册锁内、底层激活前重查 caller context，保留 Bus Close 和历史终态错误优先级。
 - 原实现运行 `go test ./event/nats -run '^TestSubscribeCanceledWhileWaitingDoesNotActivate$' -count=3 -timeout=30s`，取消污染断言失败 3/3。`activation_test.go` 通过真实 nats.go 连接和本机协议端扣住 PONG，让第一注册持锁，再取消已通过初检的第二注册；修复后连续 SID 和线上命令证明未创建第二个底层订阅。
 - 格式化：`golangci-lint fmt --config .golangci.yml event/nats/event.go event/nats/activation_test.go`；定向：`go test ./event/nats -run '^Test(SubscribeCanceledWhileWaitingDoesNotActivate|SubscribeCancellationAfterActivationRemainsTerminal|CloseRejectsSubscriptionWaitingForRegistration)$' -count=20 -timeout=60s`，全部通过。
 - `go test ./event/nats -count=1 -timeout=120s`、`go test -race ./event/nats -count=1 -timeout=120s`、`make lint` 全部通过；根/test module lint 均为 0 issues，无新增或存量告警。工具为 Go 1.26.6 windows/amd64、golangci-lint 2.13.2；race 仅在该命令前置 `D:\soft\msys64\mingw64\bin` 到 PATH。
 - 测试只使用本机回环随机端口的协议夹具及依赖内嵌 NATS Server v2.14.5，不读外部测试地址，无 VM 资源；测试 cleanup 回收连接和服务器。I52 不改公开 API、依赖、入口、协议或跨包代码，未触发 make check、build、breaking。
-- 限制：等待 mutex 的调用仍在获锁后返回取消；取消检查之后才发生的取消属于已进入激活的失败，仍终止注册能力。I51 的重复 ACL 和异步错误归属不由 I52 关闭，下一步独立复现并评估固定依赖。
+- I52 限制：等待 mutex 的调用仍在获锁后返回取消；取消检查之后才发生的取消属于已进入激活的失败，仍终止注册能力。I51 的重复 ACL 和异步错误归属由下方独立记录闭环。
+
+- I51 调查基线 `a888fcb`。`go test ./event/nats -run '^Test(SubscribeRejectsRepeatedPermissionErrorAfterReconnect|SubscribeActivationErrorCannotBeOverwritten|NATSFlushDoesNotWaitForAsyncErrors)$' -count=3 -timeout=60s`：重复 ACL、三种错误覆盖、其他 Topic ACL 误归共五种故障各 3/3；回调屏障能力断言通过。这是故障复现，不是验收通过。
+- 原测试先成功订阅，关闭内嵌 broker，再在同一回环端口启动只允许另一 Topic 的临时 broker；真实自动重连重放 SUB 后产生相同 ACL 错误。其余协议夹具按顺序发送真实 NATS 错误帧；slow-consumer 由真实 nats.go 的容量 1 channel 接收两个 MSG 触发，没有手写或直接替换 LastError。
+- `go test ./event/nats -run '^TestNATS(FlushDoesNotWaitForAsyncErrors|SubscriptionErrorCapabilities)$' -count=20 -timeout=60s` 及同筛选 `go test -race ./event/nats ... -count=20 -timeout=90s` 均通过。证明：权限状态可跨连接错误覆盖保留；上限拒绝不改变订阅 IsValid、NextMsg 仅超时；ACL 回调不带 subscription identity；回调被屏障阻塞时 Flush 和 Barrier 仍可完成。未将该结果写成完整包测试或 I51 修复通过。
+- 探针已从正常测试集移到 `%TEMP%\yola-b2-20260925-a888fcb\activation_errors_test.go`，同目录保存 `i51-overlay.json`、`i51-repro.log`、`i51-capabilities.log`、`i51-capabilities-race.log`。复现原故障须使用基线 `a888fcb`，并按 checkout 路径调整 overlay 的 Replace key；命令为 `go test -overlay <该目录>/i51-overlay.json ./event/nats -run <上述筛选> ...`。在原基线已实际用 overlay 重跑能力探针 1 轮通过。本机随机端口测试，不需 VM；后续新契约验收不能继续使用旧同步承诺的断言。
+- 实施前的新契约回归：`go test ./event/nats -run '^TestSubscribeReportsPermissionFailureAsynchronously$' -count=3 -timeout=30s` 在原实现失败 3/3（仍错误地同步返回 ACL）。修复后，`go test ./event/nats -run '^Test(Subscribe|CloseCancelsActiveSubscription|CloseRejectsSubscriptionWaitingForRegistration)' -count=20 -timeout=120s` 全部通过；日志为 `i51-new-contract-before.log`、`i51-targeted.log`。
+- 实现只删除 LastError/文本猜测并安装无状态的原生 ErrorHandler，将原始 error 交给 slog，仅在底层提供 subscription 时附带 topic。未新增公开接口、连接、注册状态或日志队列；未改变 handler 消费、关闭及队列所有权。同步取消后的终态已扩展到 ForceReconnect 后复验，另覆盖 Flush timeout 与活动注册中的 Close。
+- 修改的 `event/nats/event.go`、`subscription_test.go`、`async_error_test.go`、`activation_test.go` 已按 `.golangci.yml` 格式化。`make check`、`make lint`、`go test -race ./event/nats -count=1 -timeout=120s` 均通过；两个 module lint 为 0 issues，无新增/存量告警。公开行为调整执行了 make check，受影响包测试包含在其中，未无故重复同配置检查；日志为 `i51-check.log`、`i51-lint.log`、`i51-race.log`。
+- check 在当前进程移除 Redis/etcd 集成地址，相关集成和完整游戏测试按入口条件跳过；这些跳过项不算通过。NATS ACL、Publish ACL、上限及重连由真实内嵌 v2.14.5 服务器验收，错误交错由协议屏障验收。无入口/构建链/协议变更，未触发 build、breaking；无 VM 资源待清理。临时 broker、socket 和测试日志替身由 cleanup 回收。
+- I51 独立提交 `fix(event): 按异步边界报告 NATS 订阅错误`；复审覆盖完整 diff、新增测试、注册/消费/关闭调用链及全部 LastError 使用点。日志只用于异步诊断，不参与注册状态判断；原生错误回调不访问 Bus 锁或注册状态。文档保留原条目、同步划线并核对引用，未执行 push。
+
+<a id="i51-design"></a>
+### I51 已确认方案
+
+原契约要求 Subscribe 同步返回本次订阅 ACL/上限失败，并排除其他订阅、Publish 和 slow-consumer。固定依赖的公共 API 不能提供完整、非破坏性的订阅错误读取或错误队列完成屏障；单连接下只有 Topic 的 ACL 帧和无 Topic/SID 的上限帧，也不能当作按 SID 确认。用户在明确这些影响和下表方案后要求继续，按原生异步边界实施。
+
+| 方案 | 结果与成本 | 状态 |
+| --- | --- | --- |
+| 按原生异步边界修复（已采用） | 单连接、ChanSubscribe、有界 channel 和公共接口不变；删除 LastError 及文本比较。Subscribe 同步确认本地注册和 Flush，ACL/上限由 NATS 异步错误回调报告，不假称属于某次激活。同步激活/Flush/context 失败仍终态；ACL/上限不再保证使启动注册同步失败 | 已按用户继续指令实施；通过现有 slog 报告，无新状态或公共接口 |
+| 保留全部同步保证 | 需要支持错误代次/归属与完成屏障的依赖 API，或另行承担协议/TLS/重连接入职责；现有 API 下采样回调、延时等待均不能证明完整性 | 未采用；未升级、fork、修改官方源码或增加协议包装 |
+
+验收以已确认契约为准：ACL/上限独立异步报告，保留 I52 取消和同步失败终态；覆盖重复 ACL、Publish/slow-consumer 交错、既有订阅可用、Close/取消和错误可观测性。应用启动不能仅依靠 Subscribe 返回值证明 ACL/容量配置正确，I40 的部署权限验收仍是独立要求；不因此关闭 I40 或 I44，也不宣称恢复了原来的同步保证。
+
+决策遵循用户“若现有依赖无法满足契约，先准备具体方案和证据，再确认必要的行为变化”：先交付故障及能力探针，再明确启动失败行为的变化；用户要求“继续后续流程”后实施。Kratos v3.0.0、nats.go v1.53.1 及其他依赖版本保持不变。
 
 ## 验证环境边界
 
@@ -126,7 +151,7 @@
 1. 先检查 git status --short、暂存/未暂存 diff、新增文件和当前 HEAD；保留已有改动。读取适用 AGENTS.md/AGENTS.override.md、docs/README.md、docs/issues.md、docs/refactor-progress.md，并按当前条目阅读 architecture.md、eventbus.md、performance.md 和相关代码。
 2. 阅读并使用已安装且相关的 skills（至少 codebase-design、code-review；并发、诊断、Go 导航和 lint 按实际任务选用），不要只依据本提示或历史结论改代码。
 3. 以 refactor-progress.md 的当前阶段、证据和下一步恢复。初始化交接基线是 0c8b270，I47～I55 当时只有静态发现、未运行故障复现、未修复；若文档或 Git 已有更新，以新证据为准，不重做已完成项。
-4. 从当前未完成批次推进；B1 与 B2 的 I52 已关闭，下一步为 I51 的重复 ACL、重连和异步错误归属。先稳定复现、核对契约、简要说明收益与风险，再实施最小修复并复审相关调用链。I48 先做设计调查，不能直接迁移绑定格式。
+4. 从当前未完成批次推进；B1、B2 已关闭，I51 经确认采用异步错误边界，方案见 i51-design。下一步 B3 的 I50/I46；用户要求逐 issue 独立提交后统一审核，不逐项停下来要求 /plan 或 /clear。I48 仍只设计调查，不能直接迁移绑定格式。
 5. 保持现有业务行为、协议及对外接口，优先删除重复和收敛职责，避免 BaseServer、通用 manager 等无独立职责抽象。涉及存储模型、同 ID 重启、强单活、控制帧调度或 timeout 语义的重大变化，准备具体方案后先确认；只暂停相关部分。
 6. 按 AGENTS 的风险要求完成实际测试、lint、race、check、build 或 breaking；先检查 TestMain/环境依赖。可免密 SSH 到 192.168.152.129 用 Docker，但操作前确认资源，使用专用可丢弃实例，避免影响无关服务与数据。
 7. 每完成一个原子步骤，同步两份文档的阶段、证据、命令结果、未完成项、代码基线和下一步；已关闭问题保留原条目，在两份文档同步划线。不要把静态推导、候选方案或旧测试写成当前已验证；遇到代码事实推翻假设时修正文档。

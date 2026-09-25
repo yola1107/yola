@@ -3,7 +3,6 @@ package nats
 import (
 	"context"
 	"errors"
-	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -11,96 +10,9 @@ import (
 
 	"yola/event"
 
-	"github.com/nats-io/nats-server/v2/server"
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/require"
 )
-
-func TestBusSubscribeRejectsDeniedTopic(t *testing.T) {
-	options := testServerOptions()
-	options.Users = []*server.User{{
-		Username: "subscriber",
-		Password: "secret",
-		Permissions: &server.Permissions{
-			Subscribe: &server.SubjectPermission{Allow: []string{"yola.event.allowed"}},
-		},
-	}}
-	natsServer := startTestServerWithOptions(t, options)
-	bus, err := New(
-		WithURL(natsServer.ClientURL()),
-		WithTimeout(time.Second),
-		WithUserInfo("subscriber", "secret"),
-	)
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, bus.Close()) })
-
-	_, err = bus.Subscribe(context.Background(), "yola.event.denied", func(context.Context, event.Event) {})
-	require.ErrorIs(t, err, natsgo.ErrPermissionViolation)
-}
-
-func TestSubscribeFailureRemainsTerminalAfterReconnect(t *testing.T) {
-	options := testServerOptions()
-	options.Users = []*server.User{{
-		Username: "subscriber",
-		Password: "secret",
-		Permissions: &server.Permissions{
-			Subscribe: &server.SubjectPermission{Allow: []string{"yola.event.allowed.>"}},
-		},
-	}}
-	natsServer := startTestServerWithOptions(t, options)
-	bus, err := New(
-		WithURL(natsServer.ClientURL()),
-		WithTimeout(time.Second),
-		WithUserInfo("subscriber", "secret"),
-	)
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, bus.Close()) })
-	received := make(chan event.Event, 1)
-	_, err = bus.Subscribe(context.Background(), "yola.event.allowed.first", func(_ context.Context, receivedEvent event.Event) {
-		received <- receivedEvent
-	})
-	require.NoError(t, err)
-
-	_, err = bus.Subscribe(context.Background(), "yola.event.denied", func(context.Context, event.Event) {})
-	require.ErrorIs(t, err, natsgo.ErrPermissionViolation)
-	require.NoError(t, bus.conn.ForceReconnect())
-	require.Eventually(t, func() bool {
-		return bus.conn.Status() == natsgo.CONNECTED && bus.conn.LastError() == nil
-	}, time.Second, time.Millisecond)
-
-	_, err = bus.Subscribe(context.Background(), "yola.event.allowed.second", func(context.Context, event.Event) {})
-	require.ErrorIs(t, err, natsgo.ErrPermissionViolation)
-	require.NoError(t, bus.Publish(context.Background(), event.Event{Topic: "yola.event.allowed.first"}))
-	require.Equal(t, "yola.event.allowed.first", waitEvent(t, received).Topic)
-}
-
-func TestBusSubscribeRejectsMaximumSubscriptionsExceeded(t *testing.T) {
-	options := testServerOptions()
-	options.MaxSubs = 1
-	natsServer := startTestServerWithOptions(t, options)
-	bus := newTestBus(t, natsServer.ClientURL())
-	_, err := bus.Subscribe(context.Background(), "yola.event.first", func(context.Context, event.Event) {})
-	require.NoError(t, err)
-
-	_, err = bus.Subscribe(context.Background(), "yola.event.second", func(context.Context, event.Event) {})
-	require.ErrorIs(t, err, natsgo.ErrMaxSubscriptionsExceeded)
-}
-
-func TestSubscriptionActivationErrorIgnoresPublishPermissionFailure(t *testing.T) {
-	publishErr := fmt.Errorf(
-		"%w: Permissions Violation for Publish to %q",
-		natsgo.ErrPermissionViolation,
-		"yola.event.publish.denied",
-	)
-	require.NoError(t, subscriptionActivationError(nil, publishErr))
-
-	subscribeErr := fmt.Errorf(
-		"%w: Permissions Violation for Subscription to %q",
-		natsgo.ErrPermissionViolation,
-		"yola.event.subscribe.denied",
-	)
-	require.ErrorIs(t, subscriptionActivationError(nil, subscribeErr), natsgo.ErrPermissionViolation)
-}
 
 func TestUnsubscribeCancelsAndWaitsForHandler(t *testing.T) {
 	bus := newTestBus(t, startTestServer(t))
