@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"yola/node"
-	"yola/test/internal/registry/etcd"
 
 	"github.com/go-kratos/kratos/v3"
 	"github.com/go-kratos/kratos/v3/registry"
@@ -38,7 +37,7 @@ func TestNewAppReleasesNodeAfterRegistrationFailure(t *testing.T) {
 		"node-test",
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 		server,
-		&etcd.Registry{Registrar: registrar},
+		registrar,
 	)
 	t.Cleanup(cleanup)
 

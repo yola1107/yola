@@ -1,11 +1,9 @@
 package etcd
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"os"
-	"runtime/pprof"
 	"slices"
 	"sync"
 	"testing"
@@ -60,16 +58,8 @@ func TestRegistryCloseStopsKeepAlive(t *testing.T) {
 	t.Cleanup(cancelRegister)
 	require.NoError(t, provider.Register(registerCtx, instance))
 	cancelRegister()
-	heartbeatRunning := func() bool {
-		var stacks bytes.Buffer
-		if err := pprof.Lookup("goroutine").WriteTo(&stacks, 2); err != nil {
-			return true
-		}
-		return bytes.Contains(stacks.Bytes(), []byte("registry/etcd/v3.(*Registry).heartBeat"))
-	}
-	require.Eventually(t, heartbeatRunning, time.Second, time.Millisecond)
 	require.NoError(t, closeRegistry())
-	require.Eventually(t, func() bool { return !heartbeatRunning() }, 3*time.Second, 10*time.Millisecond)
+	require.ErrorIs(t, provider.client.Ctx().Err(), context.Canceled)
 
 	// 失败回收不主动注销，注册记录由原有 etcd lease 自然过期。
 	require.Eventually(t, func() bool {

@@ -3,7 +3,7 @@ package data
 import (
 	"log/slog"
 
-	"yola/test/internal/registry/etcd"
+	"yola/registry/etcd"
 	"yola/test/internal/xredis"
 	"yola/test/ludo/internal/biz"
 	"yola/test/ludo/internal/conf"

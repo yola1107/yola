@@ -8,7 +8,7 @@ Yola 是基于 Kratos 的分布式长连接接入框架。Gateway 持有 TCP/Web
 
 - [架构设计](./architecture.md)：组件边界、网络与存储、生命周期、请求链路、粘性路由、默认参数与超时职责。
 - [EventBus 接入](./eventbus.md)：Gateway/Node 在线实时 Pub/Sub、NATS 生命周期和 Gateway 有界并行 fanout。
-- [问题清单与解决方案](./issues.md)：未关闭问题、代码证据、候选解决方案、验证方案及关闭条件。
+- [问题清单与解决方案](./issues.md)：问题、代码证据、解决方案和验收记录；已关闭条目保留并划线。
 - [架构审查与修复进度](./refactor-progress.md)：当前阶段、实施批次、验证记录、下一步和新会话提示词。
 - [性能基线](./performance.md)：当前热路径成本、诊断优先级、可复现 benchmark 和容量验收口径。
 - [示例说明](../examples/README.md)：Gateway、Stateful Whot、Stateless Ludo 和 Client 的本地运行方式。
@@ -38,7 +38,7 @@ Gateway 保存物理 Session。Locator 保存带租约的 `(service, UID) -> Gat
 5. `node/push.go` → `gateway/cluster.go`：Push 回程与目标路由校验
 6. `gateway/lifecycle.go` / `node/lifecycle.go`：BeforeStart / Start / Stop（读完热路径后再看）
 
-包职责与不变量见 [架构设计](./architecture.md)；未关闭问题集中在 [问题清单](./issues.md)，当前实施状态与交接见 [进度表](./refactor-progress.md)，历史细节由 Git 保留。
+包职责与不变量见 [架构设计](./architecture.md)；问题及关闭记录集中在 [问题清单](./issues.md)，当前实施状态与交接见 [进度表](./refactor-progress.md)，历史细节由 Git 保留。
 
 ## 快速开始
 
@@ -122,11 +122,13 @@ app := kratos.New(
     kratos.StopTimeout(10*time.Second),
     kratos.BeforeStart(server.BeforeStart),
     kratos.Server(server),
-    kratos.Registrar(registry),
+    kratos.Registrar(server.Registrar(registry)),
 )
 ```
 
 Stateless Node 不配置 Locator，`Metadata()` 为 nil；Stateful Node instance ID 必须稳定且在线唯一。入口在 `Run` 返回后取消 App context，以独立、有界的 context 停止 Server，再关闭外部依赖；完整代码见 [Whot 入口](../examples/whot/main.go)。持有 Table、玩家或后台任务的 Node 通过 `node.Drain` 注入业务关闭：Drain 期间仍可绑定、解绑和推送，返回前必须停止这些操作的生产者。启动核验、租约失效和排空契约见 [生命周期](./architecture.md#3-生命周期)。
+
+示例和 `test` 共用根模块的 `yola/registry/etcd`：`New(WithEndpoints(...), WithPrefix(...))` 创建 Registry，调用方负责 `Close()`。它复用官方 Discovery/Watch 和 etcd Session，只在空 key 上登记，并仅撤销本次 lease。旧注册尚未回收时，同 service/ID 返回 `ErrInstanceExists`；需等待旧 lease 失效后重建应用，默认 TTL 为 15s。Node 使用 `server.Registrar(registry)` 适配 Kratos v3.0.0 的就绪时序。
 
 ## 开发与验证
 

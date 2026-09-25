@@ -35,6 +35,7 @@ flowchart LR
 | `node` | command 注册、Session 注入、Node binding 与 epoch 校验 |
 | `locate`、`locate/redis` | Gate/Node 定位契约和 Redis 实现 |
 | `instance` | Registry `sticky` metadata 契约 |
+| `registry/etcd` | 共用的 etcd client 与注册租约所有者；条件创建、按本代 lease 注销，复用官方 Discovery/Watch 和 Session |
 | `internal/clusterroute` | `GateBinding` 与集群 wire route 的边界转换 |
 | `internal/grpcendpoint`、`internal/listener` | 内部 gRPC advertised endpoint 校验和 listener 所有权 |
 | `internal/gateclient` | 直连目标 Gateway 的 gRPC ClientConn 池；调用方持有每次 RPC deadline |
@@ -91,11 +92,15 @@ WebSocket 默认 codec 由包内 protobuf 实现持有，不受 Kratos 全局同
 
 ### 3.1 应用装配
 
-Kratos App 按 `buildInstance` → 顺序执行 `BeforeStart` hooks → 启动 `Server.Start` → `Registrar.Register` → `AfterStart` hooks 运行。`buildInstance` 调用 `Endpoint` 时会触发内部 gRPC listener 的惰性 bind，Gateway/Node 在自身初始化回滚和 `Stop` 中关闭该 listener。
+Kratos App 按 `buildInstance` → 顺序执行 `BeforeStart` hooks → 调度 `Server.Start` → `Registrar.Register` → `AfterStart` hooks 运行；v3.0.0 不等待 Start 内部就绪。Node 通过 `kratos.Registrar(server.Registrar(registry))` 等待首次租约核验结果，失败时保留原始错误并拒绝登记。`buildInstance` 调用 `Endpoint` 时会触发内部 gRPC listener 的惰性 bind，Gateway/Node 在自身初始化回滚和 `Stop` 中关闭该 listener。
 
 服务入口直接使用 `kratos.New`，显式配置 Context、StopTimeout、BeforeStart、Server 和按需 metadata。正常停止仍由 Kratos 调度。当前 Kratos v3.0.0 在 Endpointer、BeforeStart、注册或 AfterStart 失败时可能直接返回，应用所有者须在 `Run` 返回后取消自有 context，再用独立的 10s 预算调用 Server.Stop，最后关闭 EventBus、Registry、Redis 等外部依赖。`Run` 的原始错误保持不变，额外清理错误单独记录。
 
-不能对每个启动错误直接补调 `App.Stop()`：Kratos 可能已构造 instance，但尚未完成本实例注册，盲目注销会删除同 service、同 ID 的已有注册记录。失败回收通过 `Server.Stop` 清理本次持有的 listener、业务任务与 epoch；etcd Registry 的后台任务绑定到其 `client.Ctx()`，关闭 client 后退出。未完成正常注销的注册记录按原有 etcd lease 回收，默认 TTL 为 15s。
+启动失败仍由应用所有者调用 `Server.Stop`，不以 `App.Stop` 代替本地资源回收。共用的 `registry/etcd` 只撤销自己申请的 lease，不按 key 盲删；采用其他 Registrar 时，应用须自行核对其所有权语义。Registry 的 etcd Session 绑定到 client 生命周期，关闭 Registry 后停止续租；未显式注销的记录按 15s TTL 回收。
+
+`registry/etcd` 从原 `test/internal/registry/etcd` 提升并统一使用；examples 只提供环境变量装配，`test` 不保留第二个 Registry 实现。注册使用 etcd `CreateRevision == 0` 事务，保留原 namespace、ServiceInstance JSON 和实例 ID。已有同 service/ID 时返回 `ErrInstanceExists`，调用方等待旧记录回收后重建应用；每个 Registry 只尝试注册一次。失败回收使用独立 3s 预算，保留回收失败凭据供 Deregister 重试。
+
+续租复用 etcd `concurrency.Session`，只续当前 lease，丢失后不自动重新 Grant/Put，应用需要重启以恢复登记；不隐式增加自动重启策略。此约束避免旧进程重写新记录。就绪适配和条件登记仍不是跨 Redis/etcd 事务，不撤销已经发出的业务写入；I48 的存储侧代次保护单独处理。
 
 Registry、Redis 和 EventBus 由创建它们的应用层关闭；EventBus 的订阅和释放语义见 [EventBus 接入](./eventbus.md)。Ludo/Whot 的 App provider 返回 Wire cleanup，生成的关闭顺序为 Node → Registry → usecase → Redis；usecase 的重复 Drain 沿用自身幂等规则。
 
@@ -120,7 +125,7 @@ command 与 disconnect handler 必须在 `BeforeStart` 前注册，运行期不�
 
 Stateful Node 的 `Start` 先检查本地有效期并完成首次续租核验，再开放 gRPC；任一核验失败都拒绝启动。自身启动失败以独立的 `PushTimeout` 预算调用完整 Stop，保留业务 Drain 和 epoch 释放条件。[node/lifecycle.go](../node/lifecycle.go)
 
-两个 `requestAdmission` 分别拥有入站请求和出站副作用（Bind/Unbind/Push）的终态、在途计数及排空信号，停止等待本身会关闭对应准入。`Stop` 按顺序执行：
+两个 `requestAdmission` 分别拥有入站请求和出站副作用（Bind/Unbind/Push）的终态、在途计数及排空信号。已通过就绪检查的 Registry 登记也计入 requests，保证正常 Stop 在登记 I/O 返回前不释放 epoch；停止等待本身会关闭对应准入。`Stop` 按顺序执行：
 
 1. 拒绝新的 Forward/Disconnect，等待已接收请求返回。
 2. 执行业务 Drain；期间 Session 的 Bind/Unbind/Push 及 `PushToUID` 仍可使用，Drain 返回前必须停止自身的绑定与推送生产者。

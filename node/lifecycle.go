@@ -45,6 +45,7 @@ func (s *Server) Start(ctx context.Context) error {
 	if startErr == nil {
 		startErr = s.lease.Load().valid()
 	}
+	s.publishReady(startErr)
 	if startErr != nil {
 		if errors.Is(startErr, context.Canceled) && s.requests.isClosed() && context.Cause(s.fatalCtx) == nil {
 			return nil
@@ -205,6 +206,7 @@ func (s *Server) rollbackStart(ctx context.Context) error {
 }
 
 func (s *Server) failLifecycle(err error) {
+	s.publishReady(err)
 	s.deliveries.close()
 	s.beginStopping()
 	s.fatalCancel(err)
@@ -212,6 +214,7 @@ func (s *Server) failLifecycle(err error) {
 
 func (s *Server) beginStopping() <-chan struct{} {
 	s.requests.close()
+	s.publishReady(errors.New("node: server is stopping or stopped"))
 	s.lifecycleMu.Lock()
 	preparationDone := s.preparationDone
 	s.lifecycleMu.Unlock()

@@ -6,13 +6,13 @@ tool github.com/google/wire/cmd/wire
 
 require (
 	github.com/RussellLuo/timingwheel v0.0.0-20220218152713-54845bda3108
-	github.com/go-kratos/kratos/contrib/registry/etcd/v3 v3.0.0-20260626125723-668db92c2c00
+	github.com/go-kratos/kratos/contrib/registry/etcd/v3 v3.0.0-20260626125723-668db92c2c00 // indirect
 	github.com/go-kratos/kratos/v3 v3.0.0
 	github.com/google/wire v0.7.0
 	github.com/panjf2000/ants/v2 v2.12.1
 	github.com/redis/go-redis/v9 v9.22.0
 	github.com/stretchr/testify v1.12.1
-	go.etcd.io/etcd/client/v3 v3.7.1
+	go.etcd.io/etcd/client/v3 v3.7.1 // indirect
 	go.uber.org/zap v1.28.0
 	go.uber.org/zap/exp v0.3.0
 	google.golang.org/grpc v1.83.1

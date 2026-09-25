@@ -58,6 +58,9 @@ type Server struct {
 	state           lifecycleState
 	preparationDone chan struct{}
 	lease           atomic.Pointer[epochLease]
+	ready           chan struct{}
+	readyOnce       sync.Once
+	readyErr        error
 	requests        requestAdmission
 	// deliveries 覆盖绑定写入与 Push；业务 Drain 返回后才关闭准入。
 	deliveries requestAdmission
@@ -89,6 +92,7 @@ func NewServer(opts ...Option) (*Server, error) {
 		handlers:    make(map[int32]Handler),
 		fatalCtx:    fatalCtx,
 		fatalCancel: fatalCancel,
+		ready:       make(chan struct{}),
 	}
 	server.gateways = gateclient.New(o.clientTLS, o.clientMiddlewares...)
 	server.grpcListener = listener.New(o.network, o.address, o.listener)

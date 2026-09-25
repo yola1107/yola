@@ -95,7 +95,7 @@ func main() {
 		kratos.StopTimeout(stopTimeout),
 		kratos.BeforeStart(nodeServer.BeforeStart),
 		kratos.Server(nodeServer),
-		kratos.Registrar(registry),
+		kratos.Registrar(nodeServer.Registrar(registry)),
 	)
 	if err := app.Run(); err != nil {
 		slog.Error("run Whot", "error", err)

@@ -8,12 +8,12 @@ import (
 	"time"
 
 	"yola/node"
-	"yola/test/internal/registry/etcd"
 	"yola/test/whot/internal/conf"
 
 	"github.com/go-kratos/kratos/v3"
 	"github.com/go-kratos/kratos/v3/config"
 	"github.com/go-kratos/kratos/v3/config/file"
+	"github.com/go-kratos/kratos/v3/registry"
 	_ "go.uber.org/automaxprocs"
 )
 
@@ -31,7 +31,7 @@ func init() {
 	flag.StringVar(&id, "id", Name, "service instance ID")
 }
 
-func newApp(instanceID string, logger *slog.Logger, server *node.Server, registry *etcd.Registry) (*kratos.App, func()) {
+func newApp(instanceID string, logger *slog.Logger, server *node.Server, registrar registry.Registrar) (*kratos.App, func()) {
 	appCtx, cancelApp := context.WithCancel(context.Background())
 	app := kratos.New(
 		kratos.Context(appCtx),
@@ -43,7 +43,7 @@ func newApp(instanceID string, logger *slog.Logger, server *node.Server, registr
 		kratos.StopTimeout(stopTimeout),
 		kratos.BeforeStart(server.BeforeStart),
 		kratos.Server(server),
-		kratos.Registrar(registry),
+		kratos.Registrar(server.Registrar(registrar)),
 	)
 	return app, func() {
 		// Run 的早退不会等待 Server；Wire 必须先停止 Node，再释放其外部依赖。

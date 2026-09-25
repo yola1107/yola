@@ -13,8 +13,8 @@ import (
 	"yola/gateway"
 	locateredis "yola/locate/redis"
 	"yola/network/websocket"
+	"yola/registry/etcd"
 	"yola/test/internal/broadcastprobe"
-	"yola/test/internal/registry/etcd"
 	"yola/test/internal/xredis"
 	"yola/test/internal/zapslog"
 

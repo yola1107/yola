@@ -12,8 +12,8 @@ import (
 	"yola/locate"
 	locateredis "yola/locate/redis"
 	"yola/node"
+	"yola/registry/etcd"
 
-	"github.com/go-kratos/kratos/contrib/registry/etcd/v3"
 	"github.com/go-kratos/kratos/v3/registry"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
@@ -54,7 +54,9 @@ func TestGatewayNodeIntegration(t *testing.T) {
 	require.NoError(t, err)
 
 	suffix := uuid.NewString()
-	discovery := etcd.New(etcdClient, etcd.Namespace("/yola/e2e/"+suffix))
+	discovery, err := etcd.New(etcd.WithEndpoints(etcdAddress), etcd.WithPrefix("/yola/e2e/"+suffix))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, discovery.Close()) })
 	serviceName := "yola-test-e2e-" + suffix
 	nodeID := "node-" + suffix
 	endpoint, stopNode := startTestNodeServer(t, nodeID, serviceName, true, node.Locator(store))

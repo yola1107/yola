@@ -6,6 +6,7 @@ package main
 import (
 	"log/slog"
 
+	"yola/registry/etcd"
 	"yola/test/ludo/internal/biz"
 	"yola/test/ludo/internal/conf"
 	"yola/test/ludo/internal/data"
@@ -13,6 +14,7 @@ import (
 	"yola/test/ludo/internal/service"
 
 	"github.com/go-kratos/kratos/v3"
+	"github.com/go-kratos/kratos/v3/registry"
 	"github.com/google/wire"
 )
 
@@ -20,6 +22,7 @@ func wireApp(instanceID string, serverConfig *conf.Server, dataConfig *conf.Data
 	panic(wire.Build(
 		server.ProviderSet,
 		data.ProviderSet,
+		wire.Bind(new(registry.Registrar), new(*etcd.Registry)),
 		biz.ProviderSet,
 		service.ProviderSet,
 		newApp,

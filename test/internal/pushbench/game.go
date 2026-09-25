@@ -21,15 +21,14 @@ import (
 	locateredis "yola/locate/redis"
 	"yola/network/websocket"
 	"yola/node"
+	"yola/registry/etcd"
 
-	"github.com/go-kratos/kratos/contrib/registry/etcd/v3"
 	"github.com/go-kratos/kratos/v3/encoding"
 	"github.com/go-kratos/kratos/v3/middleware"
 	"github.com/go-kratos/kratos/v3/registry"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
 // GameProbe 记录完整游戏链路的延迟及逐 UID 消息流，不改变业务消息内容。
@@ -75,13 +74,12 @@ func StartGame(
 	t.Helper()
 	measurements := newMeasurements(t)
 	probe := &GameProbe{measurements: measurements, streams: make(map[string]*messageStream)}
-	registryClient, err := clientv3.New(clientv3.Config{
-		Endpoints: []string{os.Getenv("YOLA_ETCD_INTEGRATION")}, DialTimeout: 3 * time.Second,
-	})
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, registryClient.Close()) })
 	suffix := rand.Text()
-	discovery := etcd.New(registryClient, etcd.Namespace("/yola/game-test/"+suffix))
+	discovery, err := etcd.New(
+		etcd.WithEndpoints(os.Getenv("YOLA_ETCD_INTEGRATION")), etcd.WithPrefix("/yola/game-test/"+suffix),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, discovery.Close()) })
 	store := locateredis.New(client)
 	server, err := node.NewServer(
 		node.Address("127.0.0.1:0"), node.Locator(&measuredLocator{Locator: store, measurements: measurements}),
@@ -97,7 +95,7 @@ func StartGame(
 	instance := &registry.ServiceInstance{
 		ID: service + "-" + suffix, Name: service, Metadata: server.Metadata(), Endpoints: []string{endpoint.String()},
 	}
-	require.NoError(t, discovery.Register(t.Context(), instance))
+	require.NoError(t, server.Registrar(discovery).Register(t.Context(), instance))
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()

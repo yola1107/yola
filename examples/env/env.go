@@ -7,10 +7,9 @@ import (
 	"time"
 
 	eventnats "yola/event/nats"
+	"yola/registry/etcd"
 
-	"github.com/go-kratos/kratos/contrib/registry/etcd/v3"
 	"github.com/redis/go-redis/v9"
-	"go.etcd.io/etcd/client/v3"
 )
 
 // 以下配置仅用于本仓库的本地示例测试，生产环境不得使用。
@@ -46,28 +45,10 @@ func NewEventBus() (*eventnats.Bus, error) {
 	return eventnats.New(eventnats.WithURL(NATSURL))
 }
 
-// Registry provides service registration and discovery.
-type Registry struct {
-	*etcd.Registry
-	client *clientv3.Client
-}
+// Registry 沿用示例类型名，实际资源由共享的 etcd Registry 管理。
+type Registry = etcd.Registry
 
 // NewRegistry creates the configured service registry.
 func NewRegistry() (*Registry, error) {
-	client, err := clientv3.New(clientv3.Config{
-		Endpoints:   []string{EtcdAddr},
-		DialTimeout: 3 * time.Second,
-	})
-	if err != nil {
-		return nil, err
-	}
-	return &Registry{
-		Registry: etcd.New(client, etcd.Context(client.Ctx())),
-		client:   client,
-	}, nil
-}
-
-// Close 通过 etcd client 的 context 同时停止 Registry 续租。
-func (r *Registry) Close() error {
-	return r.client.Close()
+	return etcd.New(etcd.WithEndpoints(EtcdAddr), etcd.WithPrefix("/microservices"))
 }

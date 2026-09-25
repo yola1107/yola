@@ -5,18 +5,19 @@
 
 - **审查基线**：2026-09-25，代码提交 `0c8b270`。行号均为该基线的定位提示，实施前须按声明名重新核对。
 - **范围**：根 module 的职责、依赖、状态所有权和生命周期；`test` 是接入与验收案例，业务状态仍由业务层拥有。
-- **证据**：I49 已完成复现、修复和验证；I47、I48、I50～I55 仍是静态发现，详见各项与进度表。存量运行数据只支持其原始配置和场景。
+- **证据**：I47、I49 已分别修复并完成验证，原故障及验收记录见进度表。其余 I48、I50～I55 仍以各项记录为准；存量运行数据只支持其原始配置和场景。
 - **优先级**：P0 为生产前必须闭环的部署风险；P1 为正确性、可用性或容量验收重点；P2 为契约清晰度、扩展能力或已接受限制。
 - **维护**：保留既有 ID；新增问题补齐影响、证据、方案和关闭条件。关闭后保留原条目并为问题标题划线，追加关闭结果，在进度表同步划线并保留验证证据；不得删除已关闭问题。
 
 ## 架构审查发现
 
-- <a id="i47"></a> **I47 · P1：Node 就绪核验与 Registry 发布缺少共同屏障**
+- <a id="i47"></a> **~~I47 · P1：Node 就绪核验与 Registry 发布缺少共同屏障~~**
   - **影响**：旧实例完成准备后暂停，epoch 过期且同 ID 新实例已接手；旧实例恢复时可能先发布旧 endpoint，再因核验失败退出，覆盖新实例的发现记录。请求 fencing 仍有效，主要风险是新实例不可达。
   - **证据**：[node/lifecycle.go:34](../node/lifecycle.go#L34) 在 Start 内核验；固定依赖 github.com/go-kratos/kratos/v3@v3.0.0/app.go:113 在调用 Start 前执行 wg.Done()，随后可进入 Register。contrib/registry/etcd/v3@v3.0.0-20260626125723-668db92c2c00/registry.go:110、163 按 service/ID 无条件 Put；版本见 [go.mod](../go.mod)。[epoch_test.go:68](../node/epoch_test.go#L68) 只覆盖直接 Start 拒绝旧 epoch。
   - **解决方案**：明确准备、就绪、发布、注销的所有者及顺序；比较就绪感知的窄 Registry 接入适配与调整启动编排。先保证核验失败者不能进入发布，再设计旧代不能覆盖、注销新代的注册所有权保护；不引入通用 BaseServer。
   - **验证方案**：用可控屏障暂停旧准备者，令新实例完成同 ID 接手与注册后再恢复旧者；经过真实 kratos.App.Run 验证 endpoint、发现记录和错误。补首次续租阻塞、注册失败、停止竞争及失败回收，最后用专用 Redis/etcd 验证依赖实现的行为。
   - **关闭条件与风险**：旧实例不得覆盖或注销新记录，失败资源可回收且原始错误保留。仅等待 ready 不足以证明跨 Redis/etcd 的代次发布安全；涉及 (NodeID, epoch, endpoint) 的方案须与 I04、I48 一起审查。
+  - **关闭记录（2026-09-25，随本问题提交）**：真实 Redis/etcd 上的覆盖、误删各复现 3/3 次后完成修复。用户确认条件注册冲突语义；Node 就绪适配与共享 Registry 的空 key 事务、本代 lease 注销已验收。原 test Registry 提升到根模块，删除重复资源包装，复用官方 Discovery/Watch 和 etcd Session；Kratos 固定 v3.0.0。旧记录未回收时同 ID 启动返回冲突，注册 lease 丢失后须重建应用；不宣称跨 Redis/etcd 原子性。命令、回归与剩余边界见 [B1 验证记录](./refactor-progress.md#b1-results)。
 
 - <a id="i48"></a> **I48 · P1：Node binding 写入缺少存储侧代次保护**
   - **影响**：旧进程已开始的 Bind/Unbind 若因暂停或 I/O 延迟跨过 epoch 失效，同 ID 新进程绑定后，旧 Unbind 仍可能删除新绑定，旧 Bind 仍可能覆盖新值。取消 context 不能撤销已发送的写入。
@@ -24,6 +25,7 @@
   - **解决方案**：区分稳定路由目标 NodeID 与修改者的代次/绑定版本，比较条件更新及新代接管方案。先明确旧 binding 在原 ID 重启后的继承规则，再设计 Locator 能力与存储布局；不能直接把 Node binding 生命周期绑定到 Gate 的 BindingToken。
   - **验证方案**：分别阻塞旧 Bind、旧 Unbind，在新代完成绑定后释放旧写；覆盖相同/不同 NodeID、TTL 失效、取消后迟到完成、进程恢复、旧 Gateway 快照及原 ID 重启。替身复现后验证真实存储条件更新与 Redis Cluster slot 约束。
   - **关闭条件与风险**：已失去修改权的操作不能破坏新绑定，并保持经确认的重启、改绑语义。仅给 Unbind 增加 epoch 比较不能阻止旧 Bind；[decode.go:134](../locate/redis/decode.go#L134) 的 UID binding 与 Node epoch 不同 slot，不能直接增加跨 key Lua。属于存储契约设计，实施前确认重大语义变化。
+  - **本轮设计调查**：保持“原 ID 重启继承 NodeID 定位、首请求 last-write-wins、Gate 与 Node 生命周期独立”。单纯把值改成 NodeID/epoch 只能保护部分 Unbind，不能阻止旧 Bind。可比较“同 service 的 Node epoch 与 UID binding 共用 slot，Lua 原子核验 epoch 后写/删”和保持 UID 分片的跨 slot 协调；前者改变 key 布局及热点分布，后者需额外协议，均不能作为小修直接迁移。当前仅核实调用链和 Cluster 限制，未执行迟到写入复现、未改变格式或 Locator 接口。
 
 - <a id="i49"></a> **~~I49 · P2：Session 绑定副作用未纳入框架排空屏障~~**
   - **影响**：保存 Session 后发起的后台 Bind/Unbind 没有独立在途计数，Stop 是否等待完全取决于业务 Drain。同步 handler 内的调用已经由 requests 保护，不能据此声称所有正常停机都会提前释放 epoch。
@@ -31,7 +33,7 @@
   - **解决方案**：优先扩展现有出站副作用屏障，使 Drain 期间所需的 Bind/Unbind/Push 可用，Drain 后关闭准入并等待；相应名称与注释按真实职责收敛。业务仍负责停止自身后台生产者，不增加第三套没有独立职责的 tracker。
   - **验证方案**：保存 Session，阻塞 Locator 写入，检查 Stop 不提前释放 epoch；覆盖 Drain 内操作、关闭准入后拒绝、等待超时、重复 Stop、epoch 失效及同步 handler 原行为，执行受影响包 race。
   - **关闭条件与风险**：框架接纳的绑定副作用均被等待，排空失败不主动释放 epoch，Drain 能力保持。此项只修复本地生命周期覆盖，不能替代 I48 的存储侧保护。
-  - **关闭记录（2026-09-25，工作树）**：Bind/Unbind 已纳入现有 deliveries 屏障，Drain 期间仍可使用，关闭准入后返回 Unavailable。保存 Session 后的后台写入、等待超时、重复 Stop、epoch 失效及同步 handler 回归通过；排空失败不主动释放 epoch。此项不替代 I48；验证命令见 [B1 验证记录](./refactor-progress.md#b1-results)。
+  - **关闭记录（2026-09-25，1a882f6）**：Bind/Unbind 已纳入现有 deliveries 屏障，Drain 期间仍可使用，关闭准入后返回 Unavailable。保存 Session 后的后台写入、等待超时、重复 Stop、epoch 失效及同步 handler 回归通过；排空失败不主动释放 epoch。此项不替代 I48；验证命令见 [B1 验证记录](./refactor-progress.md#b1-results)。
 
 - <a id="i50"></a> **I50 · P1：串行业务处理阻塞心跳与连接存活判断**
   - **影响**：慢 Forward 或连续请求排队会阻挡心跳读取、回复和 Gate lease 续租。TCP 默认 5s 的心跳检查下，放宽业务预算可能引起误断线；即使每次请求限制为 3s，多条排队也会累计等待。
