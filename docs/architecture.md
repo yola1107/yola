@@ -9,7 +9,9 @@ Yola 提供两类 `kratos.transport.Server`：
 - `gateway.Server` 持有客户端 TCP/WebSocket 连接，负责认证、Gate lease、Node 发现、路由和回程 Push/Kick。
 - `node.Server` 承载业务 command handler，负责 protobuf 适配、request-scoped `Session`、Node binding 和 epoch fencing。
 
-每个 Kratos App 只有一组 Registry identity。Gateway App 与 Node App 必须独立装配；外层 App 自己拥有配置、日志、Registry 和 Redis client，Yola Server 只拥有自身运行状态及子 transport。
+外层原生 `kratos.App` 是唯一应用入口。Gate/Node 是嵌入其中的 `transport.Server`、`transport.Endpointer` 组件；内部持有的是 Kratos gRPC Server，不创建另一套 App，也不提供替代 Kratos 的 App/Config 或运行器。
+
+每个 Kratos App 只有一组 Registry identity。Gateway App 与 Node App 必须独立装配；外层 App 自己拥有配置、日志、Registry 和 Redis client，Yola Server 只拥有自身运行状态及子 transport。一个 Node App 可以同时提供业务入口或 HTTP 管理接口，所有 transport 的 identity 与发现信息仍由同一个外层 App 统一配置。
 
 Gateway/Node 的停止语义和状态所有者各自独立，复用 listener、回程客户端等有实际共同职责的资源，不增加公共 BaseServer 或只负责转交的管理层。业务状态与执行模型留在 usecase、manager 或 mailbox。
 
@@ -50,6 +52,23 @@ flowchart LR
 
 `test/internal/mailbox` 的 `TryPost` 只负责有界准入，已接纳的普通任务不随提交 context 取消；`Post` 的 context 只限制等待容量。`Call`/`PostAndWait` 由 `mailboxCall` 仲裁取消与开始：未开始可取消，已开始须等待结果，避免调用方提前回滚仍在执行的业务操作。队列、调度权与运行统计由同一把锁保护，在交接 worker 前完成状态更新。
 
+### 1.1 接入与服务边界
+
+| 所有者 | 负责的内容 | 对外边界 |
+| --- | --- | --- |
+| 外层 Kratos App | identity、配置来源、日志、完整 transport 列表、启动 hooks、注册与进程停止 | 使用原生 `kratos.New`；应用创建的依赖由应用按使用关系关闭 |
+| Gateway | 客户端 transport、物理 Session、认证接入、Gate lease、Node 路由和广播 | 注入 Authenticator、Locator、Discovery；不读取业务配置文件或持有玩家状态 |
+| Node | command 适配、request-scoped Session、进程 epoch、就绪与请求/出站排空 | 注册 handler、middleware 和业务 Drain；不管理业务 Table、事务或在线状态 |
+| 业务 service/usecase | 业务规则、状态生命周期、并发模型和副作用完成条件 | 通过接口注入、handler 注册接入组件；自行处理业务幂等与一致性 |
+
+同进程中，业务 handler 可直接调用注入的 service/usecase；普通 HTTP/gRPC 入口也可复用同一个 usecase，无需为了经过 Gate/Node 再绕一次 RPC。共享可变业务状态仍由同一 owner 串行化或同步保护；直接 Go 调用不会自动附加 Node middleware、Session 或其请求预算。
+
+共享 usecase 的停止也由业务 owner 统一协调。Kratos 并行调度各 transport.Stop，不按 `kratos.Server` 列表顺序排空；Node 的 requests 只跟踪自身入站请求。普通 HTTP/gRPC 入口不会自动加入该计数，业务 Drain 须关闭所有入口的业务准入并等待相关在途任务，再释放共享资源。仅把多个 transport 放进同一个 App 不构成跨入口排空屏障。
+
+`node.Register` 及业务的 Yola command 注册适配（如测试模块的 `RegisterGameServer`）注册的是 command handler，不会把普通 Kratos gRPC service 自动转换成长连接 command。普通入口不能伪造 Session 或客户端路由；需要按 UID 推送时可使用已配置 Locator 的 `PushToUID`，其定位和错误契约保持不变。[注册适配](../node/register.go)、[Push](../node/push.go)
+
+跨进程业务依赖使用正常的 Kratos gRPC client、Discovery 和 middleware，由应用创建并注入业务 adapter。Gateway↔Node 的 `api/cluster/v1` 仅承担框架 Forward/Push/Kick/Disconnect，不作为任意业务 RPC 的转发通道。Topic→Command 映射仍由业务组装层声明。
+
 ## 2. 网络与存储
 
 ### 2.1 连接方向
@@ -62,6 +81,8 @@ flowchart LR
 | Gateway → Gateway | 使用旧 `GateBinding` 直连并 Kick 重复登录连接 | `pick_first` |
 
 Node 回程不经过服务发现。`GateRoute.gate_endpoint` 是认证时写入 Redis 的 Gateway 内部 gRPC 地址；Gateway 的 Registry 注册主要用于生命周期和运维可见性。
+
+Node 的发现记录必须能定位实现 `cluster.v1.Node` 的 endpoint。当前 resolver 按安全配置选择第一个合法 `grpc`/`grpcs` endpoint，不识别“业务 RPC”与“Node 内部 RPC”的角色。[选择逻辑](../gateway/resolver.go#L259) 同 App 可启动额外的普通 gRPC transport，但面向 Gateway 发布的匹配 scheme endpoint 必须承载 Node 内部协议；普通业务 RPC 须由应用另定直连或发现方案，当前不支持在同一 service 记录中自动选择两种 RPC 角色。HTTP endpoint 不参与该选择。组件内部 gRPC Server 是私有资源，不作为外层任意 service 的注册容器。
 
 Gateway backend 按 service 复用发现连接，回程 gateclient 按 Gate endpoint 管理在途引用和空闲淘汰，二者不合并为通用连接池。Registry 实例集合与 picker 的 Ready SubConn 集合表示不同事实，不能互相替代。
 
@@ -110,6 +131,10 @@ Kratos App 按 `buildInstance` → 顺序执行 `BeforeStart` hooks → 调度 `
 
 服务入口直接使用 `kratos.New`，显式配置 Context、StopTimeout、BeforeStart、Server 和按需 metadata。正常停止仍由 Kratos 调度。当前 Kratos v3.0.0 在 Endpointer、BeforeStart、注册或 AfterStart 失败时可能直接返回，应用所有者须在 `Run` 返回后取消自有 context，再用独立的 10s 预算调用 Server.Stop，最后关闭 EventBus、Registry、Redis 等外部依赖。`Run` 的原始错误保持不变，额外清理错误单独记录。
 
+原生 `kratos.Server`、`Metadata` 和 `Registrar` 选项是覆盖语义，hooks 是追加语义。应用一次配置完整 transport 列表，并在构造 App 前合并业务 metadata 与 Node 的 `Metadata()`；`sticky` 由 Node 的 Locator 配置决定。Node 使用现有 `server.Registrar(registry)` 适配就绪，Gateway 直接使用同一个应用创建的 Registry。不得用隐藏这些覆盖关系的组合 Option 或第二套 App 来替代显式装配。
+
+应用负责其所有 transport、hooks 和外部依赖的失败回收；Gate/Node 不知道同 App 的额外 HTTP/gRPC Server 或用户 hook 创建了哪些资源，不能替它们关闭。Kratos 的正常 `Server.Stop` 调度与失败后的显式 Stop 可以交错，组件支持重复 Stop；这不意味着外层任意自定义资源都支持并发、重复关闭。
+
 启动失败仍由应用所有者调用 `Server.Stop`，不以 `App.Stop` 代替本地资源回收。共用的 `registry/etcd` 只撤销自己申请的 lease，不按 key 盲删；采用其他 Registrar 时，应用须自行核对其所有权语义。Registry 的 etcd Session 绑定到 client 生命周期，关闭 Registry 后停止续租；未显式注销的记录按 15s TTL 回收。
 
 `registry/etcd` 从原 `test/internal/registry/etcd` 提升并统一使用；examples 只提供环境变量装配，`test` 不保留第二个 Registry 实现。注册使用 etcd `CreateRevision == 0` 事务，保留原 namespace、ServiceInstance JSON 和实例 ID。已有同 service/ID 时返回 `ErrInstanceExists`，调用方等待旧记录回收后重建应用；每个 Registry 只尝试注册一次。失败回收使用独立 3s 预算，保留回收失败凭据供 Deregister 重试。
@@ -120,11 +145,13 @@ Registry、Redis 和 EventBus 由创建它们的应用层关闭；EventBus 的�
 
 Gateway/Node 实例不支持生命周期重试，也不支持外部并发调用 `BeforeStart` 与 `Stop`。初始化 owner 服从 hook context：并发重复初始化只拒绝后来者；owner 失败同步回滚并进入终态，成功后再次初始化也进入终态。误用时的保护为：Stop 先关闭准入并等待准备结束，初始化提交再次检查终态，不能发布新 identity；Stop 等待超时后，初始化 owner 仍负责完成回滚。
 
-正常停止共用 `kratos.StopTimeout` 提供的预算，业务 Drain 服从同一 context。`Run` 返回后的重复 Stop 不会重做业务 Drain，也不会绕过失败排空释放 epoch；只有先前已允许释放、但注销未完成的 epoch 可以重试。Table 和 mailbox 提供 context-aware 关闭入口。
+Gate/Node 的正常 Stop 服从 Kratos 传入的停止 context，业务 Drain 共用该次 Stop 的预算。`Run` 返回后的重复 Stop 不会重做业务 Drain，也不会绕过失败排空释放 epoch；只有先前已允许释放、但注销未完成的 epoch 可以重试。Table 和 mailbox 提供 context-aware 关闭入口。
+
+`StopTimeout` 为 Kratos 调度的各次 `Server.Stop` 提供 deadline，不是整个 App 停止流程的总上限；Registrar 另有 `RegistrarTimeout`，用户 hooks 和实现须协作响应 context。v3.0.0 显式 `App.Stop()` 在 Deregister 失败时会提前返回，不能只等 `Run` 返回才处理该错误；应用所有者仍须取消自有 context，并用独立 deadline 回收组件。EventBus.Close 等外部资源遵循各自关闭契约，不受该预算统一限制。组件 Stop 超时表示尚未完成，不保证所有后台任务已退出，也不能以取消 context 证明已发出的存储写入被撤销。
 
 ### 3.2 Gateway
 
-`NewServer` 校验依赖和 Option，并为 TCP/WebSocket 安装 handler。`BeforeStart` 校验 App identity、准备内部 gRPC endpoint、执行 Locator Ping，再准备客户端 transport；失败时按逆序回滚，每个资源使用独立的 `RPCTimeout`。`Start` 必须在准备完成后调用，开放客户端准入并启动客户端 transport 和内部 gRPC。
+`NewServer` 校验依赖和 Option，并为 TCP/WebSocket 安装 handler。`BeforeStart` 校验 App identity、准备内部 gRPC endpoint、执行 Locator Ping，再准备客户端 transport；失败时按逆序回滚，每个资源使用独立的 `CleanupTimeout`。`Start` 必须在准备完成后调用，开放客户端准入并启动客户端 transport 和内部 gRPC。
 
 `Stop` 按顺序执行：
 
@@ -175,7 +202,7 @@ Client OpAuth
   -> 回复 OpAuthReply
 ```
 
-`AuthTimeout` 从连接 `Open` 起算，Authenticator、`BindGate` 和本地提交共享同一 deadline。认证不要求目标 Node 在线。正常断开的 Unbind 与 Disconnect 通知共享一个独立 `RPCTimeout`，不会继承已取消的连接 context，也不会为每一步重新计时；异常退出依赖 TTL。heartbeat 仅在本地剩余 lease 不超过 `LeaseTTL/2` 时访问 Redis 续租。
+`AuthTimeout` 从连接 `Open` 起算，Authenticator、`BindGate` 和本地提交共享同一 deadline。认证不要求目标 Node 在线。正常断开的 Unbind 与 Disconnect 通知共享一个独立 `CleanupTimeout`，不会继承已取消的连接 context，也不会为每一步重新计时；异常退出依赖 TTL。heartbeat 仅在本地剩余 lease 不超过 `LeaseTTL/2` 时访问 Redis 续租。
 
 ### 4.2 业务请求
 
@@ -242,7 +269,7 @@ Gateway 不缓存玩家 Node binding 或未绑定结果。Gate close、takeover 
 | Redis 不可用 | 依赖该次查询的认证和粘性请求失败；Node 续租错误在本地有效期内重试，到期关闭准入 |
 | prepared Node 租约过期或被替代 | Start 核验失败，不开放 gRPC |
 
-6h Node binding TTL 是失效缓存上限，不是存活探测。持续时间更长的业务必须在成功请求中幂等刷新绑定。
+6h Node binding TTL 只限制存储保留时间，不是业务存活探测。当前没有独立的条件保活能力：`BindNode` 即使以相同 NodeID 调用，仍是覆盖写；旧 Node 的业务任务在玩家已改绑后调用它会抢回定位。因此不能把周期调用 BindNode 当作安全续租。长业务的存续策略、只延长当前 owner 与显式改绑的区别仍待 I03/I48 联合设计；原 ID 重启继承、进程 epoch 和 Gate 连接归属须分别处理。[联合调查](./node-binding-fencing.md#联合契约边界)
 
 ## 6. 协议、错误与默认值
 

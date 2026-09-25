@@ -98,7 +98,7 @@ queue/drop 与 handler 字段是局部快照，不承诺跨字段或跨层原子
 
 Gateway 只拥有本地 broadcaster，不拥有外部 Bus。Bus 构造后已可用，应用组装层直接注册订阅，并在 `App.Run` 返回后关闭。启动和停机窗口内的事件可能丢失，属于当前 best-effort 语义。
 
-业务在应用组装阶段显式注册 Topic 到客户端 command 的映射：
+业务在应用组装阶段显式注册 Topic 到客户端 command 的映射。以下仅展示 EventBus 接线，完整 App identity、共享 Registry、启动失败回收及外部依赖关闭顺序见 [应用装配](./architecture.md#31-应用装配) 和 [Gateway 入口](../examples/gateway/main.go)：
 
 ```go
 const announcementCommand int32 = 5 // 客户端协议约定的公告 Push 消息号

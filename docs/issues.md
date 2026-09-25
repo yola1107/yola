@@ -9,6 +9,21 @@
 - **优先级**：P0 为生产前必须闭环的部署风险；P1 为正确性、可用性或容量验收重点；P2 为契约清晰度、扩展能力或已接受限制。
 - **维护**：保留既有 ID；新增问题补齐影响、证据、方案和关闭条件。关闭后保留原条目并为问题标题划线，追加关闭结果，在进度表同步划线并保留验证证据；不得删除已关闭问题。
 
+## 整体处置边界
+
+本清单不是按编号顺序执行的修复队列。外层原生 Kratos App 是唯一应用；Gate/Node 保持组件身份，不引入另一套 App/Config、运行器或隐藏原生覆盖语义的组合入口。调用链、所有者与接口边界以 [接入契约](./architecture.md#11-接入与服务边界) 为准。
+
+| 问题组 | 当前性质 | 真实依赖与处理方式 |
+| --- | --- | --- |
+| I48、I03 | 存储修改权缺口与业务绑定存续策略 | 共同区分建立、保活、改绑、撤销；结合 I36 的目标强度比较原子边界，再选择布局 |
+| I36、I08、I29 | 单活强度、模式迁移和代理信任的契约选择 | 保持当前 best-effort、模式固定及 peer 语义；需求未改变时不自动增加机制 |
+| I46、I45 | 框架预算修复后的验收缺口、同步业务投递成本 | 先对齐真实装配与夹具预算，验证已开始副作用；不重做已提交的预算分离 |
+| I41、I44 | 连接发送与订阅接收各自的容量证据缺口 | 复用 I55 分层观测；先取得可归属的排队/释放证据，再决定是否改机制 |
+| I04、I34 | Stateful 查询成本与 Gate 续租波次 | 诊断可独立进行；只有改变 fencing、布局或保活原语才与身份设计形成硬依赖 |
+| I40 | 生产部署安全约束 | 在明确目标环境验收；本地开发状态不自动要求改写框架或现有共享服务 |
+
+本轮边界补全不关闭上述问题，也不把历史检查或候选原型视为当前修复通过。
+
 ## 架构审查发现
 
 - <a id="i47"></a> **~~I47 · P1：Node 就绪核验与 Registry 发布缺少共同屏障~~**
@@ -26,7 +41,7 @@
   - **验证方案**：分别阻塞旧 Bind、旧 Unbind，在新代完成绑定后释放旧写；覆盖相同/不同 NodeID、TTL 失效、取消后迟到完成、进程恢复、旧 Gateway 快照及原 ID 重启。替身复现后验证真实存储条件更新与 Redis Cluster slot 约束。
   - **关闭条件与风险**：已失去修改权的操作不能破坏新绑定，并保持经确认的重启、改绑语义。仅给 Unbind 增加 epoch 比较不能阻止旧 Bind；[decode.go:134](../locate/redis/decode.go#L134) 的 UID binding 与 Node epoch 不同 slot，不能直接增加跨 key Lua。属于存储契约设计，实施前确认重大语义变化。
   - **设计调查与复现（2026-09-25，0883c00）**：真实 go-redis socket Write 屏障中，取消旧租约后释放迟到写入：旧 Bind 覆盖新 Node、旧 Unbind 删除同 ID 新代绑定，在 miniredis/专用 Redis 8.6.1 各失败 3/3；不同 ID Unbind 对照各通过 3/3。真实 Redis 下定向 race 仍为两类功能失败，未报告 data race，不记为验收通过。单节点 Cluster 确认现有两 key 的多 key Lua 返回 CROSSSLOT；同 service slot 原型可拒绝旧代写入，但不是完整迁移验收。
-  - **候选方案与边界**：原子核验修改者 epoch 后写/删，可以继续保留 NodeID 值格式与原 ID 继承语义；主要代价是 Node key 共用 service slot。保留 UID 分片则需要额外协调，单纯在 binding 值中追加 epoch 不能阻止旧 Bind。具体接口、失败语义、原型与关闭条件见 [设计调查](./node-binding-fencing.md)。按用户要求维持调查范围，未修改 Locator API、格式或布局，I48 不划线。
+  - **候选方案与边界**：同 service slot 原型只证明了历史探针对应的原子保护；它集中 Node 定位热点，并拆开当前 Gate/Node binding 的 UID 同 slot 关系。有效进程中的旧业务 owner 仍可能用 Bind 抢回定位，故需与 I03 条件保活及 I36 目标共同设计。A 尚未选定，本地取消也不等于存储失权。详见 [联合调查](./node-binding-fencing.md#联合契约边界)；未修改 Locator API、格式或布局，I48 不划线。
 
 - <a id="i49"></a> **~~I49 · P2：Session 绑定副作用未纳入框架排空屏障~~**
   - **影响**：保存 Session 后发起的后台 Bind/Unbind 没有独立在途计数，Stop 是否等待完全取决于业务 Drain。同步 handler 内的调用已经由 requests 保护，不能据此声称所有正常停机都会提前释放 epoch。
@@ -98,12 +113,12 @@
   - **关闭条件与风险**：按确认的单活强度验收。单次入口校验不能撤销已开始的业务操作；不把 I48 的 Node 代次保护等同于 Gate 单活。
 
 - <a id="i46"></a> **I46 · P1：请求预算分散且与非请求生命周期耦合**
-  - **影响与证据**：Transport、Gateway、Node 各有限时；Ludo 入座独立 5s，已开始桌任务可跨过外层 deadline。Node YAML 5s 与压测夹具 15s 的结论不可互用。Gateway RPCTimeout 还用于建连、续租和清理；[node/lifecycle.go:192](../node/lifecycle.go#L192) 把 PushTimeout 用于 epoch 回滚和完整启动失败 Stop，调推送参数会改变回收预算。详见 [预算职责](./architecture.md#63-请求预算与超时职责)。
+  - **影响与证据**：Transport、Gateway、Node 各有限时；Ludo 入座独立 5s，已开始桌任务可跨过外层 deadline。Node YAML 5s 与压测夹具 15s 的结论不可互用。修复前（`0c8b270`）RPCTimeout/PushTimeout 还控制建连、续租或清理，现已按下方记录分离；当前不再把这些耦合列为待改代码。预算 owner 见 [当前契约](./architecture.md#63-请求预算与超时职责)。
   - **解决方案**：在装配处表达请求预算，内部继承 deadline 并按职责缩短；分别确定 Push、Auth、租约、失败清理与停服预算所有者。比较现有每层上限与“无 deadline 才补默认值”的行为差异，不新增一个统管所有职责的全局超时。
   - **验证方案**：覆盖较短父 deadline、无 deadline、队列中取消、开始/取消竞争、已开始操作、独立失败清理、重连归属及真实 gRPC/外部帧错误传播；单独调整 PushTimeout 不得意外改变经确认的清理预算。与 I50 联合验证心跳，再按同配置复测负载。
   - **关闭条件与风险**：有效预算及所有者可追踪，取消和已开始操作语义明确，同配置业务目标通过。不得简单把所有 background context 换为请求 context；删除现有上限或改变开始后的完成语义须先确认。
   - **框架修复记录（2026-09-25，随本问题提交）**：Gateway 新增各默认 3s 的 ConnectTimeout、LeaseTimeout、CleanupTimeout，Node 新增默认 3s 的 CleanupTimeout；RPCTimeout/PushTimeout 不再控制这些非请求操作。五条 deadline 耦合各复现 3/3，分离后定向 20 轮通过；真实 gRPC 四种最短 deadline、根包 race、make check/lint、扩展 mailbox/入座/重连/清理 race 通过。保留逐层请求上限及已开始操作语义，未改变协议、游戏默认预算或配置标识符。
-  - **剩余验收**：完整游戏与同配置负载目标未运行，不能用上述功能回归关闭整项；维持待验证，与 I45/B6 一并验收。框架代码修复已完整复审并独立提交，后续无需重复实施预算分离；命令和边界见 [B3 记录](./refactor-progress.md#b3-results)。
+  - **剩余验收**：完整游戏与同配置负载目标未运行，不能用上述功能回归关闭整项。`test/internal/pushbench/game.go:71` 的一个参数同时配置 Transport/Forward/Node，且通过手动 BeforeStart/Start 验证业务链；它不等于真实入口的 App.Run。先明确各层实际预算与验收边界，再与 I45/B6 一并验证；不重复实施预算分离，命令见 [B3 记录](./refactor-progress.md#b3-results)。
 
 ## 运行与部署限制
 
@@ -115,7 +130,8 @@
 
 - <a id="i03"></a> **I03 · P2：Node binding 固定 6h TTL，缺少独立续租与批量管理**
   - **影响与证据**：[locate/redis/node.go:13](../locate/redis/node.go#L13) 固定 6h，BindNode 刷新 TTL；没有 NodeID 反查或批量清理，长业务可能丢失定位。
-  - **解决方案**：当前由长业务在有效生命周期内幂等刷新绑定；只有实际需求成立再设计框架续租/清理，并与 I48 的修改权保护一起评估，不能把 TTL 当存活探测。
+  - **根因与边界**：当前 Bind 是覆盖写，不能安全兼任条件保活。A 仍有效但玩家已改绑 B 时，A 再 Bind 会抢回定位，即使检查 A 的进程 epoch 也不能阻止。当前两个测试业务仅在首次入座/重连 Bind，没有落地长业务保活；此前“成功请求中幂等刷新”的文档表述不足以保证安全。
+  - **解决方案**：与 I48 共同区分建立/改绑、仅当前业务 owner 保活及释放；业务负责定义存续，不让各 handler 重复实现 Redis TTL 机制。确认无请求但仍活跃、原 ID 继承和旧 owner 失权边界后再选择能力，不先增加续租 manager 或索引，不能把 TTL 当存活探测。
   - **验证方案**：模拟 TTL 前后定位、刷新、改绑与旧刷新竞争，覆盖原 ID/新 ID 重启及持续时间超过 TTL 的业务。
   - **关闭条件与风险**：部署明确采用刷新约定并完成验收，或新能力完整实现；不能以延长 TTL 代替生命周期设计。
 
@@ -151,8 +167,8 @@
   - **验证方案**：隔离 broker 中阻塞 handler，改变 Payload、突发量与订阅数，包含超过业务上限但 broker 接受的消息；记录 queue/drop、RSS/heap、handler p99 和释放后的资源。
   - **关闭条件**：给出匹配实际 broker 配置的内存、丢弃与延迟边界；仅有 16 MiB 理论计算不算验收。
 
-- <a id="i04"></a> **I04 · P1：Stateful Forward 固定三次顺序 Redis 查询**
-  - **影响与证据**：Gateway 查询 Node binding、epoch，Node 再查 binding 做 fencing；本地租约已实现，远程查询仍为三次，容量约 3 × Stateful QPS。见 [热路径成本](./performance.md#热路径成本)。
+- <a id="i04"></a> **I04 · P1：已绑定 Stateful Forward 的三次顺序 Redis 查询**
+  - **影响与证据**：正常已绑定流程由 Gateway 查询 Node binding、epoch，Node 再查 binding 做 fencing；未绑定只在 Gateway 查一次 binding，Stateless 不走 Node Locator。两类 Stateful 请求的 GET 成本分别约为 `3 × 已绑定 QPS` 和 `1 × 未绑定 QPS`，不含认证、续租及 Push 查询。见 [热路径成本](./performance.md#热路径成本)。
   - **解决方案**：先测真实请求占比、Redis p99 和 pool wait。只在有收益时比较同一时刻同 Node epoch 查询合并；不得时间缓存 binding/epoch 或删除 Node fencing。移除 epoch GET 还要求业务副作用 fencing 与 (NodeID, epoch, endpoint) 发布契约，关联 I47/I48。
   - **验证方案**：固定配置对比查询数、p99、pool wait；并发合并须覆盖各调用者独立取消、失败恢复。改变 fencing/发布时覆盖网络分区、续租阻塞、同 ID 新旧进程、旧快照、空实例集及 Cluster slot。
   - **关闭条件与风险**：有可复核性能收益且安全契约不弱化，或部署按现有成本完成容量验收。并发合并不保证单请求更快，当前两次依赖查询不能直接 pipeline，跨 slot 也不能合并为单个 Lua。

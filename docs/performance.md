@@ -24,7 +24,7 @@ Client
 | Windows → VM | 1.69ms | 2,870 | 1,648 | 24 |
 | VM Linux → 同机 Docker | 1.11ms | 3,490 | 1,768 | 33 |
 
-结果确认跨机网络会直接叠加到 3 次顺序查询上，但没有证据支持改变 fencing 或增加缓存一致性状态。生产容量按 `3 × Stateful QPS` 预算，并以真实请求占比、Redis p99 和连接池为验收依据，见 [I04](./issues.md#性能与验收限制)。
+结果确认跨机网络会直接叠加到 3 次顺序查询上，但没有证据支持改变 fencing 或增加缓存一致性状态。正常 Forward 的 GET 成本按 `3 × 已绑定 Stateful QPS + 未绑定 Stateful QPS` 估算，不含认证、续租和 Push，失败路径也可能提前结束；真实请求组成、Redis p99 和连接池仍须验收，见 [I04](./issues.md#性能与验收限制)。
 
 Gate lease 默认 TTL 为 60s，仅在 heartbeat 到达且剩余 lease 不超过 30s 时续租，健康状态下续租速率近似 `在线连接数 / 30s`；10 万在线约为每秒 3,333 次续租脚本调用。失败不会触发内部重试循环，但 lease deadline 不前移，后续 heartbeat 会再次尝试，见 [当前限制 I34](./issues.md#性能与验收限制)。
 
@@ -88,7 +88,7 @@ NATS 新增计时和同步，TCP 每次成功排队/出队各增加一次字节�
 | WebSocket request | 1 | 32B | 33,360 | 1,549 | 13 | 未采集 |
 | WebSocket request | 1 | 4KB | 41,080 | 29,472 | 29 | 未采集 |
 
-重复登录在认证流程内同步 best-effort Kick 旧连接，不维护后台队列；其认证延迟会包含一次跨 Gateway RPC，最坏受 `RPCTimeout` 限制。本轮数据没有显示 TCP request/push 存在优先级较高的 CPU 或分配问题；10,000 连接 benchmark 进程同时包含 loopback client 和 server，不能据此推导 Gateway 单边连接 RSS，100,000 真实连接内存仍为「未确认」。WebSocket round-trip 的分配也同时包含 client 和 server，pprof 只用于定位分配来源，不能把 29.5KB/op 全部归因于 Gateway。
+重复登录在认证流程内同步 best-effort Kick 旧连接，不维护后台队列；其认证延迟会包含一次跨 Gateway RPC，当前实现由独立的 `CleanupTimeout` 限制（上述历史样本早于 I46 预算分离）。本轮数据没有显示 TCP request/push 存在优先级较高的 CPU 或分配问题；10,000 连接 benchmark 进程同时包含 loopback client 和 server，不能据此推导 Gateway 单边连接 RSS，100,000 真实连接内存仍为「未确认」。WebSocket round-trip 的分配也同时包含 client 和 server，pprof 只用于定位分配来源，不能把 29.5KB/op 全部归因于 Gateway。
 
 2026-08-21 基于父提交 `0c4ab17` 的本次实现使用同机环境、`-benchtime=2s -count=3` 复测：4KB WebSocket request 中位数为 43.24µs、19,132B/20 alloc；分配相对优化前约 29.5KB/29 alloc 分别下降 35% 和 31%，延迟受本机波动影响，不据此声明生产吞吐提升。alloc pprof 中 server `readFrame` 已不再经过 `io.ReadAll`；剩余主要分配来自 benchmark client 的 Gorilla `ReadMessage` 以及 protobuf marshal/unmarshal。
 

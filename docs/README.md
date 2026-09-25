@@ -68,6 +68,8 @@ go run ./examples/client -service ludo
 
 ## 接入
 
+Gate/Node 是嵌入外层原生 Kratos App 的 transport 组件，内部 gRPC Server 不构成另一套 App。同进程业务通过接口注入或 handler 注册直接调用；跨进程业务使用普通 Kratos gRPC。应用身份、配置来源、完整 transport 列表及应用级资源回收仍由外层拥有，详见 [接入与服务边界](./architecture.md#11-接入与服务边界)。
+
 Gateway App 配置依赖和客户端 Transport 后，直接把 `gateway.Server` 交给 Kratos。下面展示装配参数，完整资源回收见 [Gateway 入口](../examples/gateway/main.go) 和 [应用装配契约](./architecture.md#31-应用装配)：
 
 ```go
@@ -128,6 +130,8 @@ app := kratos.New(
 ```
 
 Stateless Node 不配置 Locator，`Metadata()` 为 nil；Stateful Node instance ID 必须稳定且在线唯一。入口在 `Run` 返回后取消 App context，以独立、有界的 context 停止 Server，再关闭外部依赖；完整代码见 [Whot 入口](../examples/whot/main.go)。持有 Table、玩家或后台任务的 Node 通过 `node.Drain` 注入业务关闭：Drain 期间仍可绑定、解绑和推送，返回前必须停止这些操作的生产者。启动核验、租约失效和排空契约见 [生命周期](./architecture.md#3-生命周期)。
+
+同 App 可由外层一次配置 `kratos.Server(server, httpServer)` 等完整列表；业务 metadata 与 `server.Metadata()` 也应先合并再设置，避免原生覆盖语义丢失配置。Kratos 并行停止各 transport，复用 usecase 的入口须由业务 owner 统一准入和排空。附加普通 gRPC 可同进程启动，但普通业务 RPC 须另定直连或发现方案，Gateway 不会在同一 service 记录中自动区分它与 Node 内部 RPC。显式 `App.Stop()` 的注销失败还需应用主动取消与清理，详见 [应用装配](./architecture.md#31-应用装配)。
 
 示例和 `test` 共用根模块的 `yola/registry/etcd`：`New(WithEndpoints(...), WithPrefix(...))` 创建 Registry，调用方负责 `Close()`。它复用官方 Discovery/Watch 和 etcd Session，只在空 key 上登记，并仅撤销本次 lease。旧注册尚未回收时，同 service/ID 返回 `ErrInstanceExists`；需等待旧 lease 失效后重建应用，默认 TTL 为 15s。Node 使用 `server.Registrar(registry)` 适配 Kratos v3.0.0 的就绪时序。
 
