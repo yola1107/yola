@@ -6,12 +6,12 @@
 ## 当前快照
 
 - **更新日期**：2026-09-25。
-- **代码审查基线**：起点 `0c8b270`；初始化交接文档 `9378b54`，I49 修复 `1a882f6`，I47 随本提交关闭。保留接手时的文档内容并持续更新，提交边界按问题划分。
-- **当前验证**：最终 `make check`、`make lint` 通过；根/test module lint 均为 0 告警。受影响包 race、专用 Redis/etcd 回归、根及三个测试服务构建通过；详见下方 B1 记录。I47 原断言各失败 3/3 次，当前回归已通过，二者分开记录。
+- **代码审查基线**：起点 `0c8b270`；初始化交接文档 `9378b54`，I49 修复 `1a882f6`，I47 修复 `eb44302`，I52 随本提交关闭。提交边界按问题划分。
+- **当前验证**：I52 定向 20 轮、`go test ./event/nats`、该包 race、`make lint` 通过；根/test module lint 均为 0 告警。本轮未重跑 B1 的 check、构建和 Redis/etcd 验证，其原始结果保留在下方记录。
 - **工作重点**：根 module 的架构与契约；`test` 是扩展与验收，不再以游戏局部重构替代框架分析。
 - **Git 边界**：用户已授权按问题独立提交；仅提交复审过的任务改动。交接文档初始化、I49、I47 分别提交；未授权 push 或发布。
-- **当前范围**：用户已确认 I47 的条件注册冲突语义，并要求避免额外实现和包装；本轮先完成 B1。固定 Kratos v3.0.0，不修改官方源码；原 test Registry 提升到根模块，examples 仅保留配置工厂和类型别名，续租复用 etcd Session。
-- **下一步**：恢复 B2，先稳定复现并修复 I52 的获锁后取消漏检，再核实 I51 的订阅级错误归属；本轮未修改 EventBus。I48 仅设计调查，不迁移绑定格式。
+- **当前范围**：B1 已完成，B2 按 I52 → I51 推进。固定 Kratos v3.0.0，不修改官方源码；保留唯一共享 Registry 与已确认的条件注册语义，不重做已关闭问题。
+- **下一步**：I52 已闭环，继续 I51 的重复订阅 ACL、重连和异步错误交错，核实固定 nats.go 的订阅级能力；若契约无法满足，准备证据及具体方案后确认。I48 仅设计调查，不迁移绑定格式。
 
 ## 状态口径
 
@@ -25,11 +25,11 @@
 
 | 问题 | 当前阶段 | 已有证据与验证边界 | 下一步 / 关闭记录 |
 | --- | --- | --- | --- |
-| ~~[I47 就绪与注册](./issues.md#i47)~~ | 已关闭（本提交） | 原问题各复现 3/3；就绪适配、空键事务和本代 lease 注销已通过真依赖/race；完整 diff 已复审 | 唯一共享 Registry，官方 Discovery/Session；同 ID 旧记录未回收则冲突，lease 丢失后需重建应用 |
+| ~~[I47 就绪与注册](./issues.md#i47)~~ | 已关闭（eb44302） | 原问题各复现 3/3；就绪适配、空键事务和本代 lease 注销已通过真依赖/race；完整 diff 已复审 | 唯一共享 Registry，官方 Discovery/Session；同 ID 旧记录未回收则冲突，lease 丢失后需重建应用 |
 | ~~[I49 Session 副作用排空](./issues.md#i49)~~ | 已关闭（1a882f6） | 保存 Session 的后台 Bind/Unbind 已接入现有 deliveries；定向、包测试、race、lint 通过并复审 | Drain 内可操作；停止后拒绝；超时/重复 Stop 不释放 epoch；不解决 I48 |
 | [I48 binding 代次保护](./issues.md#i48) | 待设计 | 已核对同 ID 重启、覆盖绑定及不同 Redis slot；未运行迟到写入交错 | 比较同 service slot 的原子核验与保留 UID 分片的协调成本；不直接改格式/API |
 | [I51 NATS 激活归属](./issues.md#i51) | 待复现 | LastError 覆盖与文本比较已静态核查；未运行错误交错 | B2：重复 ACL 和异步错误交错，验证底层能力后设计 |
-| [I52 等待注册取消](./issues.md#i52) | 待复现 | 获锁后缺取消检查；未运行三次注册回归 | B2：先复现再修复，激活前取消不污染 Bus |
+| ~~[I52 等待注册取消](./issues.md#i52)~~ | 已关闭（本提交） | 原实现失败 3/3；屏障回归 20 轮、包测试/race、lint 通过 | 获锁后重查 caller context；未发 SUB，第三次成功；激活后终态及 Close 语义不变 |
 | [I50 心跳调度](./issues.md#i50) | 待复现 | 两种 transport 串行读取/处理；未运行误断线场景 | B3：真实慢请求、pipeline、发送拥塞，比较有界方案 |
 | [I46 预算所有者](./issues.md#i46) | 待设计 | 已有多层上限与配置差异；新增框架回滚预算耦合分析 | B3：分清请求/租约/清理，保持独立清理和已开始操作语义 |
 | [I53 command 元数据](./issues.md#i53) | 待设计 | dispatch 只注入 Session；未运行 middleware 区分验收 | B5：定义最小元数据契约并核对 operation 调用方 |
@@ -76,6 +76,7 @@
 | 2026-09-25 | 文档交接 | 整理 21 个未关闭问题及候选方案，建立进度表和恢复提示词 | 根目录 PowerShell 校验相对链接/锚点/行号、ID 与字段通过；git diff --check、git diff --cached --check 通过；未运行新 Go 检查，无新提交 |
 | 2026-09-25 | B1 / I49 | 接入已有出站排空计数，新增保存 Session 后的后台操作回归；同步更新生命周期文档 | 原实现稳定失败；修复后定向 20 次、Node 包测试/race 和两个 module lint 通过；见下方命令 |
 | 2026-09-25 | B1 / I47、I48 | I47 真依赖复现、用户确认冲突语义后实施；原 test Registry 提升到根模块并合并资源所有者 | I47 已验收；I48 只核对存储/重启契约，未改代码，未声称已复现 |
+| 2026-09-25 | B2 / I52 | 获锁后补 caller context 校验，协议屏障验证取消者无底层副作用 | 复现 3/3；定向 20 轮、包测试/race、两个 module lint 通过；完整 diff 及调用链已复审 |
 
 前序 `470a4fa`、`7959b58`、`a83ccb2`、`0c8b270` 已提交 mailbox/Whot 局部修复；它们不关闭本表新增架构问题。历史测试或性能文档不能直接证明后续代码通过，复用结果须核对源码、依赖、配置和环境均未变化。
 
@@ -98,6 +99,16 @@
 - 资源清理：核对完整容器 ID、任务 label、tmpfs 和回环端口后，仅删除本任务两个容器并关闭 PID 12052 的匹配 SSH 隧道。原有五个容器仍运行，未操作它们的数据、配置或挂载。探针源码/日志保留供复核，临时 C 编译探针程序已清理。
 - 交付复审：覆盖全部暂存/未暂存/新增文件及相关装配、注册、停止调用链；提交前分别核对暂存区与工作树，未混入其他问题的代码。文档相对链接、锚点、行号范围校验通过，19 个未关闭问题加 2 个关闭记录与 21 行进度对应；`git diff --check`、`git diff --cached --check` 通过。按用户后续授权执行问题独立提交，未执行 push 或发布。
 
+<a id="b2-results"></a>
+## B2 验证记录
+
+- I52 接手基线 `eb44302`，工作树、暂存区和新增文件均为空；本问题独立提交 `fix(event): 避免等待注册取消污染订阅能力`。生产改动只在 `event/nats/event.go` 的注册锁内、底层激活前重查 caller context，保留 Bus Close 和历史终态错误优先级。
+- 原实现运行 `go test ./event/nats -run '^TestSubscribeCanceledWhileWaitingDoesNotActivate$' -count=3 -timeout=30s`，取消污染断言失败 3/3。`activation_test.go` 通过真实 nats.go 连接和本机协议端扣住 PONG，让第一注册持锁，再取消已通过初检的第二注册；修复后连续 SID 和线上命令证明未创建第二个底层订阅。
+- 格式化：`golangci-lint fmt --config .golangci.yml event/nats/event.go event/nats/activation_test.go`；定向：`go test ./event/nats -run '^Test(SubscribeCanceledWhileWaitingDoesNotActivate|SubscribeCancellationAfterActivationRemainsTerminal|CloseRejectsSubscriptionWaitingForRegistration)$' -count=20 -timeout=60s`，全部通过。
+- `go test ./event/nats -count=1 -timeout=120s`、`go test -race ./event/nats -count=1 -timeout=120s`、`make lint` 全部通过；根/test module lint 均为 0 issues，无新增或存量告警。工具为 Go 1.26.6 windows/amd64、golangci-lint 2.13.2；race 仅在该命令前置 `D:\soft\msys64\mingw64\bin` 到 PATH。
+- 测试只使用本机回环随机端口的协议夹具及依赖内嵌 NATS Server v2.14.5，不读外部测试地址，无 VM 资源；测试 cleanup 回收连接和服务器。I52 不改公开 API、依赖、入口、协议或跨包代码，未触发 make check、build、breaking。
+- 限制：等待 mutex 的调用仍在获锁后返回取消；取消检查之后才发生的取消属于已进入激活的失败，仍终止注册能力。I51 的重复 ACL 和异步错误归属不由 I52 关闭，下一步独立复现并评估固定依赖。
+
 ## 验证环境边界
 
 - 工作目录为 `D:\src\pitaya\yola`，本地 shell 为 PowerShell；根 module 与 `test` module 各自执行其适用命令。
@@ -115,7 +126,7 @@
 1. 先检查 git status --short、暂存/未暂存 diff、新增文件和当前 HEAD；保留已有改动。读取适用 AGENTS.md/AGENTS.override.md、docs/README.md、docs/issues.md、docs/refactor-progress.md，并按当前条目阅读 architecture.md、eventbus.md、performance.md 和相关代码。
 2. 阅读并使用已安装且相关的 skills（至少 codebase-design、code-review；并发、诊断、Go 导航和 lint 按实际任务选用），不要只依据本提示或历史结论改代码。
 3. 以 refactor-progress.md 的当前阶段、证据和下一步恢复。初始化交接基线是 0c8b270，I47～I55 当时只有静态发现、未运行故障复现、未修复；若文档或 Git 已有更新，以新证据为准，不重做已完成项。
-4. 从当前未完成批次推进；初始下一步为 B1 的 I47 就绪/注册交错与 I49 Session 副作用排空。先稳定复现、核对契约、简要说明收益与风险，再实施最小修复并复审相关调用链。I48 先做设计调查，不能直接迁移绑定格式。
+4. 从当前未完成批次推进；B1 与 B2 的 I52 已关闭，下一步为 I51 的重复 ACL、重连和异步错误归属。先稳定复现、核对契约、简要说明收益与风险，再实施最小修复并复审相关调用链。I48 先做设计调查，不能直接迁移绑定格式。
 5. 保持现有业务行为、协议及对外接口，优先删除重复和收敛职责，避免 BaseServer、通用 manager 等无独立职责抽象。涉及存储模型、同 ID 重启、强单活、控制帧调度或 timeout 语义的重大变化，准备具体方案后先确认；只暂停相关部分。
 6. 按 AGENTS 的风险要求完成实际测试、lint、race、check、build 或 breaking；先检查 TestMain/环境依赖。可免密 SSH 到 192.168.152.129 用 Docker，但操作前确认资源，使用专用可丢弃实例，避免影响无关服务与数据。
 7. 每完成一个原子步骤，同步两份文档的阶段、证据、命令结果、未完成项、代码基线和下一步；已关闭问题保留原条目，在两份文档同步划线。不要把静态推导、候选方案或旧测试写成当前已验证；遇到代码事实推翻假设时修正文档。

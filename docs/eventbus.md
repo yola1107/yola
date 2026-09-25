@@ -73,7 +73,7 @@ New -> Publish/Subscribe/Unsubscribe -> Close
 
 - `event/nats.New(...)` 校验配置并建立独占连接；未传 `WithContext` 时使用 `context.Background()`。传入的父 `ctx` 控制 Bus 的完整生命周期，取消后自动停止订阅并关闭连接；连接失败直接返回 error，重试时创建新 Bus。
 - `Subscribe(ctx, ...)` 立即激活精确 Topic，底层使用 `ChanSubscribe` 和单个 bounded channel；Flush 和订阅 ACL/上限错误作为本次调用结果返回。
-- 参数校验失败不会改变 Bus；进入底层激活后若订阅、Flush、context、订阅 ACL 或上限校验失败，本 Bus 的注册能力进入终态，后续 `Subscribe` 返回包含首次失败的 error。既有订阅和 Publish 继续运行，组装层应关闭并重建 Bus 后再重试。连接上的 slow-consumer 和 Publish ACL 等异步错误不会归因到新订阅。
+- 参数校验失败或等待注册锁期间取消不会改变 Bus；等待者获锁后返回取消，不创建底层订阅。进入底层激活后若订阅、Flush、context、订阅 ACL 或上限校验失败，本 Bus 的注册能力进入终态，后续 `Subscribe` 返回包含首次失败的 error。既有订阅和 Publish 继续运行，组装层应关闭并重建 Bus 后再重试。连接上的 slow-consumer 和 Publish ACL 等异步错误不会归因到新订阅。
 - `Close` 取消 Bus context 和全部订阅、丢弃排队事件、等待运行中的 handler，并关闭 Bus 自己创建的连接；父 context 取消会触发相同关闭流程，之后仍可调用 `Close` 取得幂等的关闭结果。
 - Bus 始终创建并独占一个连接，同时关闭 reconnect buffer；断线期间的 Publish 不会在重连后延迟补发。
 

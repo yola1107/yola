@@ -222,6 +222,9 @@ func (b *Bus) Subscribe(ctx context.Context, topic string, handler event.Handler
 	if b.registrationErr != nil {
 		return nil, fmt.Errorf("nats: subscription registration stopped after prior failure: %w", b.registrationErr)
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	previousConnectionErr := b.conn.LastError()
 	registered := &subscription{
 		topic:           topic,
