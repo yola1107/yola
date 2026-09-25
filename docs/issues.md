@@ -25,7 +25,8 @@
   - **解决方案**：区分稳定路由目标 NodeID 与修改者的代次/绑定版本，比较条件更新及新代接管方案。先明确旧 binding 在原 ID 重启后的继承规则，再设计 Locator 能力与存储布局；不能直接把 Node binding 生命周期绑定到 Gate 的 BindingToken。
   - **验证方案**：分别阻塞旧 Bind、旧 Unbind，在新代完成绑定后释放旧写；覆盖相同/不同 NodeID、TTL 失效、取消后迟到完成、进程恢复、旧 Gateway 快照及原 ID 重启。替身复现后验证真实存储条件更新与 Redis Cluster slot 约束。
   - **关闭条件与风险**：已失去修改权的操作不能破坏新绑定，并保持经确认的重启、改绑语义。仅给 Unbind 增加 epoch 比较不能阻止旧 Bind；[decode.go:134](../locate/redis/decode.go#L134) 的 UID binding 与 Node epoch 不同 slot，不能直接增加跨 key Lua。属于存储契约设计，实施前确认重大语义变化。
-  - **本轮设计调查**：保持“原 ID 重启继承 NodeID 定位、首请求 last-write-wins、Gate 与 Node 生命周期独立”。单纯把值改成 NodeID/epoch 只能保护部分 Unbind，不能阻止旧 Bind。可比较“同 service 的 Node epoch 与 UID binding 共用 slot，Lua 原子核验 epoch 后写/删”和保持 UID 分片的跨 slot 协调；前者改变 key 布局及热点分布，后者需额外协议，均不能作为小修直接迁移。当前仅核实调用链和 Cluster 限制，未执行迟到写入复现、未改变格式或 Locator 接口。
+  - **设计调查与复现（2026-09-25，0883c00）**：真实 go-redis socket Write 屏障中，取消旧租约后释放迟到写入：旧 Bind 覆盖新 Node、旧 Unbind 删除同 ID 新代绑定，在 miniredis/专用 Redis 8.6.1 各失败 3/3；不同 ID Unbind 对照各通过 3/3。真实 Redis 下定向 race 仍为两类功能失败，未报告 data race，不记为验收通过。单节点 Cluster 确认现有两 key 的多 key Lua 返回 CROSSSLOT；同 service slot 原型可拒绝旧代写入，但不是完整迁移验收。
+  - **候选方案与边界**：原子核验修改者 epoch 后写/删，可以继续保留 NodeID 值格式与原 ID 继承语义；主要代价是 Node key 共用 service slot。保留 UID 分片则需要额外协调，单纯在 binding 值中追加 epoch 不能阻止旧 Bind。具体接口、失败语义、原型与关闭条件见 [设计调查](./node-binding-fencing.md)。按用户要求维持调查范围，未修改 Locator API、格式或布局，I48 不划线。
 
 - <a id="i49"></a> **~~I49 · P2：Session 绑定副作用未纳入框架排空屏障~~**
   - **影响**：保存 Session 后发起的后台 Bind/Unbind 没有独立在途计数，Stop 是否等待完全取决于业务 Drain。同步 handler 内的调用已经由 requests 保护，不能据此声称所有正常停机都会提前释放 epoch。

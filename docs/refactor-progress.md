@@ -6,8 +6,8 @@
 ## 当前快照
 
 - **更新日期**：2026-09-25。
-- **代码审查基线**：起点 `0c8b270`；初始化交接文档 `9378b54`，I49 修复 `1a882f6`，I47 修复 `eb44302`，I52 修复 `a888fcb`，I51 修复 `1ed763b`，I50 修复 `1bacab6`，I46 框架预算修复 `7c12592`，I53 修复 `731bd1f`，I54 契约闭环 `2cc1743`。本轮从干净的 `346cfaa` 恢复并完成 I55；实际 HEAD 以 Git 为准。
-- **当前验证**：I55 分层观测、慢 writer、取消、关闭和并发读取通过；定向 race 20 轮、五包 race、最终 make check/lint 通过，两个 module lint 为 0 issues。热路径成本已对照，见下方记录；外部 Redis/etcd 和完整游戏验收仍未运行。
+- **代码审查基线**：起点 `0c8b270`；初始化交接文档 `9378b54`，I49 修复 `1a882f6`，I47 修复 `eb44302`，I52 修复 `a888fcb`，I51 修复 `1ed763b`，I50 修复 `1bacab6`，I46 框架预算修复 `7c12592`，I53 修复 `731bd1f`，I54 契约闭环 `2cc1743`，I55 修复 `0883c00`。此后补充 I48 调查文档，实际 HEAD 以 Git 为准。
+- **当前验证**：I55 分层观测、定向 race 20 轮、五包 race、最终 make check/lint 通过，两个 module lint 为 0 issues，热路径成本已对照。随后 I48 在专用 Redis 复现两类迟到破坏，仍未修复；当前未运行完整外部集成、游戏或容量验收。
 - **工作重点**：根 module 的架构与契约；`test` 是扩展与验收，不再以游戏局部重构替代框架分析。
 - **Git 边界**：用户授权每个已解决 issue 独立提交，后续由用户统一审核；仅提交复审过的任务改动，不要求逐项 /plan 或 /clear。未授权 push 或发布。
 - **当前范围**：B1、B2 已完成。固定 Kratos v3.0.0，不修改官方源码；保留唯一共享 Registry 与已确认的条件注册语义，不重做已关闭问题。I48 仍仅调查；其他未完成项维持表中边界。
@@ -28,14 +28,14 @@
 | --- | --- | --- | --- |
 | ~~[I47 就绪与注册](./issues.md#i47)~~ | 已关闭（eb44302） | 原问题各复现 3/3；就绪适配、空键事务和本代 lease 注销已通过真依赖/race；完整 diff 已复审 | 唯一共享 Registry，官方 Discovery/Session；同 ID 旧记录未回收则冲突，lease 丢失后需重建应用 |
 | ~~[I49 Session 副作用排空](./issues.md#i49)~~ | 已关闭（1a882f6） | 保存 Session 的后台 Bind/Unbind 已接入现有 deliveries；定向、包测试、race、lint 通过并复审 | Drain 内可操作；停止后拒绝；超时/重复 Stop 不释放 epoch；不解决 I48 |
-| [I48 binding 代次保护](./issues.md#i48) | 待设计 | 已核对同 ID 重启、覆盖绑定及不同 Redis slot；未运行迟到写入交错 | 比较同 service slot 的原子核验与保留 UID 分片的协调成本；不直接改格式/API |
+| [I48 binding 代次保护](./issues.md#i48) | 待设计（已复现） | 两类迟到破坏在 miniredis/真实 Redis 各失败 3/3；不同 ID Unbind 对照通过；单节点 Cluster 验证 CROSSSLOT 与候选原子原语 | [具体方案](./node-binding-fencing.md) 已准备；候选保留 NodeID 值格式，但改变 Node key slot，未实施迁移 |
 | ~~[I51 NATS 激活归属](./issues.md#i51)~~ | 已关闭（1ed763b） | 五种原故障各 3/3；新契约定向 20 轮、包 race、check、lint 通过 | 经确认取消同步 ACL/上限承诺；每个异步错误独立记录，不再使用 LastError；同步失败仍终态 |
 | ~~[I52 等待注册取消](./issues.md#i52)~~ | 已关闭（a888fcb） | 原实现失败 3/3；屏障回归 20 轮、包测试/race、lint 通过 | 获锁后重查 caller context；未发 SUB，第三次成功；激活后终态及 Close 语义不变 |
 | ~~[I50 心跳调度](./issues.md#i50)~~ | 已关闭（1bacab6） | 两种 transport 各复现 3/3；定向 10 轮、默认周期、FIFO/认证/过载/续租/关闭、内存及最终 race/check/lint 通过 | 仅显式能力启用有界业务 FIFO 与独立心跳；排队满关闭，普通自定义 handler 仍串行；I46/I41 另验收 |
 | [I46 预算所有者](./issues.md#i46) | 待验证（框架修复完成） | 五类耦合各复现 3/3；预算分离、真实 gRPC、make check/lint、根及扩展定向 race 通过并复审 | 代码独立提交；保留逐层上限与既有业务语义；完整游戏与同配置负载目标留待 I45/B6，不提前划线 |
 | ~~[I53 command 元数据](./issues.md#i53)~~ | 已关闭（731bd1f） | 原 dispatch 缺失 3/3；共享请求类型的真实 gRPC 20 轮、Node race、make check/lint 通过 | 只读 CommandFromContext，operation、Session、顺序及错误身份保持；无重复路由状态 |
 | ~~[I54 消息所有权](./issues.md#i54)~~ | 已关闭（2cc1743） | TCP 原地修改探针失败 3/3、WS 对照通过；库内调用方审计完成；不可变消息真实连接/race 各 20 轮、最终 check/lint 通过 | 统一不可变输入契约，Prepared.Reset 不恢复写入权；运行实现不变，违规写入仍可能导致内容变化或 race |
-| ~~[I55 在线容量观测](./issues.md#i55)~~ | 已关闭（随本问题提交） | 本地分层观测、关闭/取消/并发读、定向 race 20 轮及五包 race、check/lint 通过 | 可选只读能力；复用 BroadcastStats；原生最终 drop 未知、逻辑积压非 RSS；三组成本见 I55 记录 |
+| ~~[I55 在线容量观测](./issues.md#i55)~~ | 已关闭（0883c00） | 本地分层观测、关闭/取消/并发读、定向 race 20 轮及五包 race、check/lint 通过 | 可选只读能力；复用 BroadcastStats；原生最终 drop 未知、逻辑积压非 RSS；三组成本见 I55 记录 |
 | [I36 Gate 强单活](./issues.md#i36) | 待设计 | 现有 best-effort Kick 的已知限制 | 独立决策：确认是否要求强单活及已开始操作边界 |
 | [I40 NATS 生产安全](./issues.md#i40) | 约束 | 2026-08-20 开发环境观测，非当前环境结论 | 获准后核查目标 broker，验收认证、mTLS 与 ACL |
 | [I03 binding TTL](./issues.md#i03) | 约束 | 固定 6h 与显式刷新契约 | 验证长业务刷新；若新增能力，与 I48 联合设计 |
@@ -194,6 +194,16 @@
 
 ## 验证环境边界
 
+### I48 本轮调查环境与结果
+
+- 代码基线 `0883c00`，未修改生产代码或正常测试集。Overlay 探针及 miniredis、Redis 的命令和结果见 [设计调查](./node-binding-fencing.md#迟到写入证据)。真实 Redis 下 `-race` 三轮仍为功能失败，未报告 data race；I48 未修复，未关闭。顺带修正架构文档 §3.3 对启动失败预算的残留名称为已实现的 CleanupTimeout，不重做 I46。
+- VM 只读核验为 4 vCPU、约 7.5GiB 内存，已有 Redis/etcd/NATS/MySQL/Consul 均未操作。任务容器 `yola-i48-20260925-redis` 与 `yola-i48-20260925-cluster` 各限 0.5 CPU/128MiB、64MiB tmpfs；前者仅 VM 回环 16379 并用 SSH 转发，DB 9、随机 service，后者无网络且无暴露端口。镜像实际 Redis 为 8.6.1。
+- 验证结束后重新核对两容器完整 ID、名称、任务 label 和 tmpfs，仅删除本轮两容器；按 PID、ssh.exe 名称及转发参数核实并停止本轮隧道。任务 label 查询已无残留容器，未操作既有服务。
+- 单节点 Cluster 的全部 slots 只用于无业务数据的原子原语试验：旧布局两 key 返回 CROSSSLOT；候选同 slot 的旧 epoch Bind/Unbind 均拒绝，当前 epoch Unbind 成功。未运行多节点 failover、完整 Kratos 重启或自然 TTL 交错，不用原型证明方案已经实施。
+- 产物位于 `%TEMP%\yola-i48-20260925`：`probe_test.go`、`overlay.json`、`miniredis-red.log`、`redis-red.log`、`redis-race-red.log`、`cluster-setup.log`、`cluster-proof.log`。本轮 tracked 改动仅为文档，核对引用、命令、约束及完整 diff；不重跑无变化的全库检查，不将 I55 的历史通过写成 I48 通过。
+
+### 外部环境约束
+
 - 工作目录为 `D:\src\pitaya\yola`，本地 shell 为 PowerShell；根 module 与 `test` module 各自执行其适用命令。
 - 可免密 SSH 到 `192.168.152.129` 使用 Docker；先只读确认主机、已有容器、端口、挂载和数据范围，不能假定历史容器列表仍有效。
 - 仅使用本任务专用实例、专用 DB/prefix、可丢弃 UID；Redis/etcd 地址通过 `YOLA_REDIS_INTEGRATION`、`YOLA_ETCD_INTEGRATION` 注入，不修改 tracked 配置。NATS 同样隔离 broker/Topic 与负载。
@@ -208,7 +218,7 @@
 
 1. 先检查 git status --short、暂存/未暂存 diff、新增文件和当前 HEAD；保留已有改动。读取适用 AGENTS.md/AGENTS.override.md、docs/README.md、docs/issues.md、docs/refactor-progress.md，并按当前条目阅读 architecture.md、eventbus.md、performance.md 和相关代码。
 2. 阅读并使用 codebase-design、code-review；复现与修复使用 diagnosing-bugs，并发/取消/生命周期使用 golang-concurrency，Go 检查使用 golang-lint，符号追踪按需使用 golang-gopls。不机械叠加流程或新增审批。
-3. 以 Git 和进度文档恢复。I55 在 346cfaa 基线上完成，本节之后的实际提交以 Git 为准；I47、I49、I50、I51、I52、I53、I54、I55 已关闭，不重做。I46 框架修复已提交，完整业务/同配置负载验收留待 I45/B6。项目尚未上线、仅本地 Docker，I07 已按用户明确要求删除，不自行恢复该条目。
+3. 以 Git 和进度文档恢复。I55 已提交为 0883c00，之后是 I48 调查文档；实际 HEAD 以 Git 为准。I47、I49、I50、I51、I52、I53、I54、I55 已关闭，不重做。I48 已有真实 Redis 迟到写入复现及具体方案，仍未实施。I46 框架修复已提交，完整业务/同配置负载验收留待 I45/B6。项目尚未上线、仅本地 Docker，I07 已按用户明确要求删除，不自行恢复该条目。
 4. 用户确认当前没有容量 SLO，先优化根 module 架构，B6 只做支撑架构判断的诊断。I55 已有分层只读观测、关闭/race 和成本验证；原生 drop 关闭后是最后可得值，连接逻辑 Payload 不代表 RSS，同一次连接拒绝不能跨层相加。复用 BroadcastStats，不建通用 manager、重复注册表或第二套消息队列，不把入队/写出成功视为客户端收到。没有实际负载与 SLO 证据时保持 I41/I44 未关闭。
 5. 固定 Kratos v3.0.0，不修改官方依赖源码或擅自升级；保留唯一共享 Registry 和已确认的条件注册语义。保持业务行为、协议、标识符及现有接口契约。I48 只做设计调查，不直接迁移 binding 格式或存储布局；重大行为/存储变化先准备具体方案与证据并确认，只暂停相关部分。
 6. 按 AGENTS 的风险要求完成实际测试、lint、race、check、build 或 breaking；先检查 TestMain/环境依赖。可免密 SSH 到 192.168.152.129 用 Docker，但操作前确认资源，使用专用可丢弃实例，避免影响无关服务与数据。

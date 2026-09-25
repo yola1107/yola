@@ -137,7 +137,7 @@ Gateway/Node 实例不支持生命周期重试，也不支持外部并发调用 
 
 command 与 disconnect handler 必须在 `BeforeStart` 前注册，运行期不变。`BeforeStart` 校验 App identity、准备 gRPC endpoint、校验 sticky/Locator 一致性、执行 Ping 并按需申请 epoch。已确认注册成功后发生取消或提交失败，由准备 owner 持本次凭据回滚。
 
-Stateful Node 的 `Start` 先检查本地有效期并完成首次续租核验，再开放 gRPC；任一核验失败都拒绝启动。自身启动失败以独立的 `PushTimeout` 预算调用完整 Stop，保留业务 Drain 和 epoch 释放条件。[node/lifecycle.go](../node/lifecycle.go)
+Stateful Node 的 `Start` 先检查本地有效期并完成首次续租核验，再开放 gRPC；任一核验失败都拒绝启动。自身启动失败以独立的 `CleanupTimeout` 预算调用完整 Stop，保留业务 Drain 和 epoch 释放条件。[node/lifecycle.go](../node/lifecycle.go)
 
 两个 `requestAdmission` 分别拥有入站请求和出站副作用（Bind/Unbind/Push）的终态、在途计数及排空信号。已通过就绪检查的 Registry 登记也计入 requests，保证正常 Stop 在登记 I/O 返回前不释放 epoch；停止等待本身会关闭对应准入。`Stop` 按顺序执行：
 

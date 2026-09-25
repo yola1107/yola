@@ -10,6 +10,7 @@ Yola 是基于 Kratos 的分布式长连接接入框架。Gateway 持有 TCP/Web
 - [EventBus 接入](./eventbus.md)：Gateway/Node 在线实时 Pub/Sub、NATS 生命周期和 Gateway 有界并行 fanout。
 - [问题清单与解决方案](./issues.md)：问题、代码证据、解决方案和验收记录；已关闭条目保留并划线。
 - [架构审查与修复进度](./refactor-progress.md)：当前阶段、实施批次、验证记录、下一步和新会话提示词。
+- [Node binding 修改权调查](./node-binding-fencing.md)：I48 的迟到写入复现、原子边界与候选方案；尚未实施迁移。
 - [性能基线](./performance.md)：当前热路径成本、诊断优先级、可复现 benchmark 和容量验收口径。
 - [示例说明](../examples/README.md)：Gateway、Stateful Whot、Stateless Ludo 和 Client 的本地运行方式。
 - [测试模块](../test/README.md)：测试服务的配置与启动；Ludo 压测见 [Ludo README](../test/ludo/README.md)。
