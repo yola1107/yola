@@ -15,7 +15,7 @@ Client
   -> handler
 ```
 
-请求速率为 `Q` 时，该路径约产生 `3Q` 次 Redis `GET`。Gateway 的 binding 与 epoch 查询存在数据依赖且位于不同 Redis Cluster slot，不能直接 pipeline 或合并为单个 Lua 脚本；Node 查询承担 fencing。未绑定 Stateful 请求只在 Gateway 查询一次 binding，Stateless 请求不访问 Node Locator。
+请求速率为 `Q` 时，该路径约产生 `3Q` 次 Redis `GET`。Gateway 先从 binding 得到 NodeID，再确定 epoch key，存在数据依赖，不能直接 pipeline；Node 的再次查询承担 fencing。I48 已将 Node binding/epoch 放入同一 service slot，但没有改变这三次查询；是否新增合并读取原语仍需独立核对语义及实测收益。未绑定 Stateful 请求只在 Gateway 查询一次 binding，Stateless 请求不访问 Node Locator。
 
 2026-08-17 使用 Redis 8.6.1 Docker（512MiB）、`GOMAXPROCS=4`、`-benchtime=1s -count=3` 复测并取中位数；Windows 使用 Go 1.26.5，VM Linux 使用 Go 1.26.3。每次操作严格执行上述 3 个顺序 GET；串行数据表示单请求查询延迟，并行数据只表示 4 路负载下的吞吐，不是请求延迟。
 

@@ -80,7 +80,7 @@ func TestForwardToRejectsWrongEpoch(t *testing.T) {
 	const epoch = "epoch-a"
 	publishTestIdentity(server, nodeIdentity{serviceName: "game", nodeID: "node-a", epoch: epoch})
 	require.NoError(t, locator.RegisterNodeEpoch(context.Background(), "game", "node-a", epoch, DefaultNodeEpochTTL))
-	require.NoError(t, locator.BindNode(context.Background(), "game", "player-a", "node-a"))
+	require.NoError(t, locator.BindNode(context.Background(), "game", "player-a", "node-a", epoch))
 	server.RegisterRawHandler(1, func(context.Context, []byte) ([]byte, error) {
 		return []byte("ok"), nil
 	})

@@ -494,7 +494,7 @@ func TestStopWaitsForAcceptedForwardBeforeReleasingEpoch(t *testing.T) {
 	locator := newMemoryLocator()
 	const epoch = "epoch-a"
 	require.NoError(t, locator.RegisterNodeEpoch(context.Background(), "game", "node-a", epoch, DefaultNodeEpochTTL))
-	require.NoError(t, locator.BindNode(context.Background(), "game", "player-a", "node-a"))
+	require.NoError(t, locator.BindNode(context.Background(), "game", "player-a", "node-a", epoch))
 	server := newTestServer(t, Locator(locator))
 	publishTestIdentity(server, nodeIdentity{serviceName: "game", nodeID: "node-a", epoch: epoch})
 	entered := make(chan struct{})

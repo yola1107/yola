@@ -118,10 +118,14 @@ TCP/WS Connection 提供可选的 `network.SendStatsProvider.SendStats()`，从�
 | Key | 值 | 生命周期 | 用途 |
 | --- | --- | --- | --- |
 | `locate:gate:{base64url(service\x00uid)}` | `GateBinding` JSON | 默认 60s；heartbeat 按需续租 | 定位物理连接并 fencing |
-| `locate:node:{base64url(service\x00uid)}` | NodeID | 固定 6h；业务绑定时刷新 | 定位持有玩家状态的实例 |
-| `locate:node:epoch:{base64url(service\x00nodeID)}` | 进程 epoch UUID | 30s；Node 每 10s 续租 | 阻止同 service、同 NodeID 双活 |
+| `locate:node:{base64url(service)}:base64url(uid)` | NodeID | 固定 6h；业务绑定时刷新 | 定位持有玩家状态的实例 |
+| `locate:node:epoch:{base64url(service)}:base64url(nodeID)` | 进程 epoch UUID | 30s；Node 每 10s 续租 | 进程准入与绑定写入的代次凭据 |
 
-`GateBinding` 的 `ServiceName`、`UID`、`GateID`、`GateEndpoint`、`ConnID`、`BindingToken` 全部参与 fencing。Redis key 的 hash tag 固定使用 Raw URL Base64，输入由 `\x00` 分隔，不提供第二套 keyspace。
+`GateBinding` 的 `ServiceName`、`UID`、`GateID`、`GateEndpoint`、`ConnID`、`BindingToken` 全部参与 fencing。编码使用无填充 Raw URL Base64；Gate tag 编码 `service\x00uid`，Node tag 只编码 service，UID/NodeID 单独编码为后缀。
+
+Node binding 与对应 epoch 位于同一 service slot；单 Redis 与 Redis Cluster 使用同一套 Lua，原子比较当前 epoch 后再写入或条件删除 binding。外层注入 `redis.UniversalClient` 的单机或 Cluster 实现，Gate/Node 与业务接口不按 Redis 模式分支。Gate binding 不参与该事务，继续按 UID 分布；一个 service 的 Node 定位读写集中在单 slot，这是明确的容量边界。
+
+本次 Node key 布局一次性切换，停止旧进程后统一部署，不双读双写或读取旧格式；本地旧数据由应用重建，框架不自动删除。Lua 保证当前 Redis 执行节点上的原子条件修改，不承诺异步复制故障切主后已确认数据不可回退。
 
 ## 3. 生命周期
 
@@ -186,6 +190,7 @@ Node 不持有 EventBus、Table、玩家或业务后台任务。Session 使用�
 - 运行期普通续租错误只在原有效期内重试；NotFound/Conflict 或本地过期会关闭两类准入，使 Start 返回 lifecycle fatal。
 - 过期监视与续租 I/O 独立，存储忽略取消也不会推迟本地失效。Stop 等待任务退出，超时报告错误并保留凭据；框架不能强制终止不响应 context 的实现。
 - Forward（包括空 sticky claim）、Disconnect、Session 绑定和 Push 都校验有效期，Node binding 查询返回后再次检查。已接纳操作的 context 随租约失效取消，业务 Drain 使用 Stop 预算。
+- Bind/Unbind 将框架本代 epoch 交给 Locator，在 Redis 原子写入处再次核验。存储明确返回 epoch 缺失/冲突时，Node 立即将本代 lease 置终态、取消在途工作并关闭准入；普通依赖错误或 caller 取消不会因此终止整个 Node。迟到续租成功不能恢复已经失效的 lease。
 
 本地有效期不撤销已执行的业务写入，也不替代业务事务 fencing；忽略 context 的工作可能持续到进程退出。fatal 路径不承诺 Kratos 显式调用 `Registrar.Deregister`，摘流仍取决于进程退出和注册实现。
 

@@ -429,7 +429,8 @@ func TestExpiredPreparedLeaseRejectsUnboundRequestAndSavedSession(t *testing.T) 
 				t.Cleanup(func() { require.NoError(t, server.Stop(context.Background())) })
 				publishTestIdentity(server, nodeIdentity{serviceName: "game", nodeID: "node-a", epoch: "epoch-a"})
 				binding := testBinding("player-a", "conn-a")
-				require.NoError(t, store.BindNode(context.Background(), "game", binding.UID, "node-b"))
+				require.NoError(t, store.RegisterNodeEpoch(context.Background(), "game", "node-b", "epoch-b", DefaultNodeEpochTTL))
+				require.NoError(t, store.BindNode(context.Background(), "game", binding.UID, "node-b", "epoch-b"))
 				server.RegisterRawHandler(1, func(context.Context, []byte) ([]byte, error) {
 					t.Error("expired lease dispatched a handler")
 					return nil, nil

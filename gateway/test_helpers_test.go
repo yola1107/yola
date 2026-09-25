@@ -399,7 +399,7 @@ func bindTestPlayerNode(t *testing.T, store locate.Locator, serviceName, uid, no
 	t.Helper()
 	ctx := context.Background()
 	require.NoError(t, store.RegisterNodeEpoch(ctx, serviceName, nodeID, "test-epoch-"+nodeID, node.DefaultNodeEpochTTL))
-	require.NoError(t, store.BindNode(ctx, serviceName, uid, nodeID))
+	require.NoError(t, store.BindNode(ctx, serviceName, uid, nodeID, "test-epoch-"+nodeID))
 }
 
 func startTestNode(t *testing.T) string {

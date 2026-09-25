@@ -10,7 +10,7 @@ Yola 是基于 Kratos 的分布式长连接接入框架。Gateway 持有 TCP/Web
 - [EventBus 接入](./eventbus.md)：Gateway/Node 在线实时 Pub/Sub、NATS 生命周期和 Gateway 有界并行 fanout。
 - [问题清单与解决方案](./issues.md)：问题、代码证据、解决方案和验收记录；已关闭条目保留并划线。
 - [架构审查与修复进度](./refactor-progress.md)：当前阶段、实施批次、验证记录、下一步和新会话提示词。
-- [Node binding 修改权调查](./node-binding-fencing.md)：I48 的迟到写入复现、原子边界与候选方案；尚未实施迁移。
+- [Node binding 修改权设计](./node-binding-fencing.md)：I48 的迟到写入复现、service 原子分区与实现边界；I03 业务保活另行设计。
 - [性能基线](./performance.md)：当前热路径成本、诊断优先级、可复现 benchmark 和容量验收口径。
 - [示例说明](../examples/README.md)：Gateway、Stateful Whot、Stateless Ludo 和 Client 的本地运行方式。
 - [测试模块](../test/README.md)：测试服务的配置与启动；Ludo 压测见 [Ludo README](../test/ludo/README.md)。
@@ -157,3 +157,5 @@ make breaking
 ```
 
 真实 Redis/etcd 集成测试只允许使用专用实例、专用 DB/prefix 和可丢弃 UID；地址通过 `YOLA_REDIS_INTEGRATION`、`YOLA_ETCD_INTEGRATION` 注入，不修改 tracked 配置。生产部署前必须完成 [当前限制](./issues.md) 中的安全与容量验收。
+
+I48 的 Cluster 回归使用 `YOLA_REDIS_CLUSTER_INTEGRATION` 注入逗号分隔的地址；凭据通过 `YOLA_REDIS_PASSWORD` 注入。普通绑定回归只操作随机 service 的 key。`TestNodeBindingClusterMigration` 与 `TestNodeBindingClusterCooperativeFailover` 还须显式设置 `YOLA_REDIS_CLUSTER_ADMIN_INTEGRATION=1`，且地址包含专用 3 主 3 从的全部 6 个节点；它们会修改 slot/角色，不能连接共享或业务集群。Failover 要求全库为空；建议每个管理场景使用新建集群，连续快速切换的组合稳定性尚未通过，详见 [I48 验证](./refactor-progress.md#i48-results)。

@@ -159,18 +159,18 @@ type blockingSessionLocator struct {
 	release <-chan struct{}
 }
 
-func (l *blockingSessionLocator) BindNode(ctx context.Context, service, uid, nodeID string) error {
+func (l *blockingSessionLocator) BindNode(ctx context.Context, service, uid, nodeID, epoch string) error {
 	if err := l.wait(ctx); err != nil {
 		return err
 	}
-	return l.Locator.BindNode(ctx, service, uid, nodeID)
+	return l.Locator.BindNode(ctx, service, uid, nodeID, epoch)
 }
 
-func (l *blockingSessionLocator) UnbindNode(ctx context.Context, service, uid, nodeID string) error {
+func (l *blockingSessionLocator) UnbindNode(ctx context.Context, service, uid, nodeID, epoch string) error {
 	if err := l.wait(ctx); err != nil {
 		return err
 	}
-	return l.Locator.UnbindNode(ctx, service, uid, nodeID)
+	return l.Locator.UnbindNode(ctx, service, uid, nodeID, epoch)
 }
 
 func (l *blockingSessionLocator) wait(ctx context.Context) error {

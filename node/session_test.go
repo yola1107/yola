@@ -34,7 +34,8 @@ func TestSessionBindsNodeAndStatefulForwardRevalidates(t *testing.T) {
 	body, err = server.forwardTo(context.Background(), stickyClaim{NodeID: "node-a", Epoch: epoch}, binding, 2, nil)
 	require.NoError(t, err)
 	require.Equal(t, []byte("stateful"), body)
-	require.NoError(t, locator.BindNode(context.Background(), "game", "player-a", "node-b"))
+	require.NoError(t, locator.RegisterNodeEpoch(context.Background(), "game", "node-b", "epoch-b", DefaultNodeEpochTTL))
+	require.NoError(t, locator.BindNode(context.Background(), "game", "player-a", "node-b", "epoch-b"))
 	_, err = server.forwardTo(context.Background(), stickyClaim{NodeID: "node-a", Epoch: epoch}, binding, 2, nil)
 	require.Equal(t, codes.Aborted, status.Code(err))
 }
@@ -42,12 +43,14 @@ func TestSessionBindsNodeAndStatefulForwardRevalidates(t *testing.T) {
 func TestSessionUnbindDoesNotDeleteNewNode(t *testing.T) {
 	locator := newMemoryLocator()
 	server := newTestServer(t, Locator(locator))
-	publishTestIdentity(server, nodeIdentity{serviceName: "game", nodeID: "node-a"})
+	publishTestIdentity(server, nodeIdentity{serviceName: "game", nodeID: "node-a", epoch: "epoch-a"})
+	require.NoError(t, locator.RegisterNodeEpoch(context.Background(), "game", "node-a", "epoch-a", DefaultNodeEpochTTL))
 	server.RegisterRawHandler(1, func(ctx context.Context, _ []byte) ([]byte, error) {
 		sess, _ := FromContext(ctx)
 		return nil, sess.UnbindNode(ctx)
 	})
-	require.NoError(t, locator.BindNode(context.Background(), "game", "player-a", "node-b"))
+	require.NoError(t, locator.RegisterNodeEpoch(context.Background(), "game", "node-b", "epoch-b", DefaultNodeEpochTTL))
+	require.NoError(t, locator.BindNode(context.Background(), "game", "player-a", "node-b", "epoch-b"))
 
 	_, err := server.forward(context.Background(), testBinding("player-a", "conn-a"), 1, nil)
 	require.NoError(t, err)

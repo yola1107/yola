@@ -93,9 +93,18 @@ func newMemoryLocator() *memoryLocator {
 
 func (*memoryNodeLocator) Ping(context.Context) error { return nil }
 
-func (l *memoryNodeLocator) BindNode(_ context.Context, serviceName, uid, nodeID string) error {
+func (l *memoryNodeLocator) BindNode(_ context.Context, serviceName, uid, nodeID, epoch string) error {
+	if !locate.ValidNodeLocation(serviceName, uid, nodeID) {
+		return locate.ErrInvalidNodeBinding
+	}
+	if epoch == "" {
+		return locate.ErrInvalidNodeEpoch
+	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if err := l.checkEpochLocked(serviceName, nodeID, epoch); err != nil {
+		return err
+	}
 	l.bindings[serviceName+"\x00"+uid] = nodeID
 	return nil
 }
@@ -110,9 +119,18 @@ func (l *memoryNodeLocator) LocateNode(_ context.Context, serviceName, uid strin
 	return nodeID, nil
 }
 
-func (l *memoryNodeLocator) UnbindNode(_ context.Context, serviceName, uid, nodeID string) error {
+func (l *memoryNodeLocator) UnbindNode(_ context.Context, serviceName, uid, nodeID, epoch string) error {
+	if !locate.ValidNodeLocation(serviceName, uid, nodeID) {
+		return locate.ErrInvalidNodeBinding
+	}
+	if epoch == "" {
+		return locate.ErrInvalidNodeEpoch
+	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if err := l.checkEpochLocked(serviceName, nodeID, epoch); err != nil {
+		return err
+	}
 	key := serviceName + "\x00" + uid
 	if l.bindings[key] == nodeID {
 		delete(l.bindings, key)
@@ -140,6 +158,10 @@ func (l *memoryNodeLocator) RenewNodeEpoch(_ context.Context, serviceName, nodeI
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	return l.checkEpochLocked(serviceName, nodeID, epoch)
+}
+
+func (l *memoryNodeLocator) checkEpochLocked(serviceName, nodeID, epoch string) error {
 	current, ok := l.nodeEpoch[serviceName+"\x00"+nodeID]
 	if !ok {
 		return locate.ErrNodeEpochNotFound

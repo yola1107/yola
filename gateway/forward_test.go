@@ -276,7 +276,7 @@ func TestGatewayRoutesBoundPlayerToExactNode(t *testing.T) {
 	}, time.Second, time.Millisecond)
 	require.Equal(t, []byte("node-b:node-b"), request.Body)
 
-	require.NoError(t, store.BindNode(context.Background(), "game", "player-a", "missing"))
+	bindTestPlayerNode(t, store, "game", "player-a", "missing")
 	request = &protocolv1.Proto{Op: protocolv1.OpRequest, Cmd: 1}
 	_, err = gate.Handle(context.Background(), conn, request)
 	require.NoError(t, err)

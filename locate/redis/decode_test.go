@@ -34,10 +34,12 @@ func TestLocateKeyUsesCanonicalEncoding(t *testing.T) {
 	binding := newBinding("gate-a", "conn-a")
 	_, _, err := locator.BindGate(context.Background(), binding, testTTL)
 	require.NoError(t, err)
-	require.NoError(t, locator.BindNode(context.Background(), binding.ServiceName, binding.UID, "node-a"))
+	require.NoError(t, locator.RegisterNodeEpoch(context.Background(), binding.ServiceName, "node-a", "epoch-a", testTTL))
+	require.NoError(t, locator.BindNode(context.Background(), binding.ServiceName, binding.UID, "node-a", "epoch-a"))
 	require.ElementsMatch(t, []string{
 		"locate:gate:{Z2FtZQBzeW50aGV0aWMtcGxheWVy}",
-		"locate:node:{Z2FtZQBzeW50aGV0aWMtcGxheWVy}",
+		"locate:node:{Z2FtZQ}:c3ludGhldGljLXBsYXllcg",
+		"locate:node:epoch:{Z2FtZQ}:bm9kZS1h",
 	}, server.Keys())
 }
 
@@ -55,8 +57,10 @@ func TestRejectsInvalidInput(t *testing.T) {
 	_, err = locator.RenewGateLease(ctx, locate.GateBinding{}, testTTL)
 	require.ErrorIs(t, err, locate.ErrInvalidGateBinding)
 	require.ErrorIs(t, locator.UnbindGate(ctx, locate.GateBinding{}), locate.ErrInvalidGateBinding)
-	require.ErrorIs(t, locator.BindNode(ctx, "", "", ""), locate.ErrInvalidNodeBinding)
+	require.ErrorIs(t, locator.BindNode(ctx, "", "", "", "epoch-a"), locate.ErrInvalidNodeBinding)
+	require.ErrorIs(t, locator.BindNode(ctx, "game", "player", "node-a", ""), locate.ErrInvalidNodeEpoch)
 	_, err = locator.LocateNode(ctx, "", valid.UID)
 	require.ErrorIs(t, err, locate.ErrInvalidNodeBinding)
-	require.ErrorIs(t, locator.UnbindNode(ctx, "", "", ""), locate.ErrInvalidNodeBinding)
+	require.ErrorIs(t, locator.UnbindNode(ctx, "", "", "", "epoch-a"), locate.ErrInvalidNodeBinding)
+	require.ErrorIs(t, locator.UnbindNode(ctx, "game", "player", "node-a", ""), locate.ErrInvalidNodeEpoch)
 }

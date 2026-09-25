@@ -5,7 +5,7 @@
 
 - **审查基线**：2026-09-25，代码提交 `0c8b270`。行号均为该基线的定位提示，实施前须按声明名重新核对。
 - **范围**：根 module 的职责、依赖、状态所有权和生命周期；`test` 是接入与验收案例，业务状态仍由业务层拥有。
-- **证据**：I47、I49、I50、I51、I52、I53、I54、I55 已分别完成修复或契约闭环及验证，I44 已完成指定配置下的容量验收；I46 的框架修复已提交，仍待完整业务验收。原故障及验收记录见进度表；存量运行数据只支持其原始配置和场景。
+- **证据**：I47、I48、I49、I50、I51、I52、I53、I54、I55 已分别完成修复或契约闭环及验证，I44 已完成指定配置下的容量验收；I46 的框架预算与根链路子项已提交，新发现的 Redis deadline 缺口及完整业务验收仍待处理。原故障及验收记录见进度表；存量运行数据只支持其原始配置和场景。
 - **优先级**：P0 为生产前必须闭环的部署风险；P1 为正确性、可用性或容量验收重点；P2 为契约清晰度、扩展能力或已接受限制。
 - **维护**：保留既有 ID；新增问题补齐影响、证据、方案和关闭条件。关闭后保留原条目并为问题标题划线，追加关闭结果，在进度表同步划线并保留验证证据；不得删除已关闭问题。部分完成时只划掉已完成子项，父 issue 保持未关闭，并列明剩余条件。
 
@@ -15,14 +15,14 @@
 
 | 问题组 | 当前性质 | 真实依赖与处理方式 |
 | --- | --- | --- |
-| I48、I03 | 存储修改权缺口与业务绑定存续策略 | 共同区分建立、保活、改绑、撤销；结合 I36 的目标强度比较原子边界，再选择布局 |
+| I48、I03 | 进程修改权修复与业务绑定存续策略 | I48 已按确认的 service 原子分区关闭；I03 继续区分建立、保活、改绑、撤销，不以进程 epoch 代替业务 owner |
 | I36、I08、I29 | 单活强度、模式迁移和代理信任的契约选择 | 保持当前 best-effort、模式固定及 peer 语义；需求未改变时不自动增加机制 |
-| I46、I45 | 框架预算修复后的验收缺口、同步业务投递成本 | 根框架预算与可控交错已验收；继续完整游戏副作用窗口、目标规模与稳态 |
+| I46、I45 | Redis deadline 缺口、业务验收与同步投递成本 | 已完成框架预算分离与可控交错；先修真实 Redis I/O 预算，再继续完整游戏副作用窗口、目标规模与稳态 |
 | I41、I44 | 连接发送与订阅接收各自的容量边界 | I44 已完成指定配置验收；I41 继续复用 I55 分层观测，独立验证连接容量 |
 | I04、I34 | Stateful 查询成本与 Gate 续租波次 | 诊断可独立进行；只有改变 fencing、布局或保活原语才与身份设计形成硬依赖 |
 | I40 | 生产部署安全约束 | 在明确目标环境验收；本地开发状态不自动要求改写框架或现有共享服务 |
 
-本轮边界补全不关闭上述问题，也不把历史检查或候选原型视为当前修复通过。
+按每项的关闭记录判断完成度，不把历史检查或候选原型视为当前修复通过。
 
 ## 架构审查发现
 
@@ -34,14 +34,14 @@
   - **关闭条件与风险**：旧实例不得覆盖或注销新记录，失败资源可回收且原始错误保留。仅等待 ready 不足以证明跨 Redis/etcd 的代次发布安全；涉及 (NodeID, epoch, endpoint) 的方案须与 I04、I48 一起审查。
   - **关闭记录（2026-09-25，随本问题提交）**：真实 Redis/etcd 上的覆盖、误删各复现 3/3 次后完成修复。用户确认条件注册冲突语义；Node 就绪适配与共享 Registry 的空 key 事务、本代 lease 注销已验收。原 test Registry 提升到根模块，删除重复资源包装，复用官方 Discovery/Watch 和 etcd Session；Kratos 固定 v3.0.0。旧记录未回收时同 ID 启动返回冲突，注册 lease 丢失后须重建应用；不宣称跨 Redis/etcd 原子性。命令、回归与剩余边界见 [B1 验证记录](./refactor-progress.md#b1-results)。
 
-- <a id="i48"></a> **I48 · P1：Node binding 写入缺少存储侧代次保护**
+- <a id="i48"></a> **~~I48 · P1：Node binding 写入缺少存储侧代次保护~~**
   - **影响**：旧进程已开始的 Bind/Unbind 若因暂停或 I/O 延迟跨过 epoch 失效，同 ID 新进程绑定后，旧 Unbind 仍可能删除新绑定，旧 Bind 仍可能覆盖新值。取消 context 不能撤销已发送的写入。
   - **证据**：[node/session.go:53](../node/session.go#L53) 仅在调用前核验身份，Locator 收到的参数没有 epoch；[locate/redis/node.go:19](../locate/redis/node.go#L19) 直接 SET，[node.go:39](../locate/redis/node.go#L39) 解绑只比较 NodeID。[session_test.go:42](../node/session_test.go#L42) 仅覆盖改绑到不同 NodeID；[epoch_test.go:409](../node/epoch_test.go#L409) 仅覆盖调用前已过期。
   - **解决方案**：区分稳定路由目标 NodeID 与修改者的代次/绑定版本，比较条件更新及新代接管方案。先明确旧 binding 在原 ID 重启后的继承规则，再设计 Locator 能力与存储布局；不能直接把 Node binding 生命周期绑定到 Gate 的 BindingToken。
   - **验证方案**：分别阻塞旧 Bind、旧 Unbind，在新代完成绑定后释放旧写；覆盖相同/不同 NodeID、TTL 失效、取消后迟到完成、进程恢复、旧 Gateway 快照及原 ID 重启。替身复现后验证真实存储条件更新与 Redis Cluster slot 约束。
-  - **关闭条件与风险**：已失去修改权的操作不能破坏新绑定，并保持经确认的重启、改绑语义。仅给 Unbind 增加 epoch 比较不能阻止旧 Bind；[decode.go:134](../locate/redis/decode.go#L134) 的 UID binding 与 Node epoch 不同 slot，不能直接增加跨 key Lua。属于存储契约设计，实施前确认重大语义变化。
+  - **关闭条件与风险**：存储中已失去修改权的操作不能破坏新绑定，并保持经确认的重启、改绑语义。仅给 Unbind 增加 epoch 比较不能阻止旧 Bind；修复前（`0c8b270`）的 UID binding 与 Node epoch 不同 slot，不能直接追加双 key Lua。[当前 key 编码](../locate/redis/decode.go) 已按用户确认的 A 调整；Lua 原子性不代表 Redis 异步复制中的数据不可回退。
   - **设计调查与复现（2026-09-25，0883c00）**：真实 go-redis socket Write 屏障中，取消旧租约后释放迟到写入：旧 Bind 覆盖新 Node、旧 Unbind 删除同 ID 新代绑定，在 miniredis/专用 Redis 8.6.1 各失败 3/3；不同 ID Unbind 对照各通过 3/3。真实 Redis 下定向 race 仍为两类功能失败，未报告 data race，不记为验收通过。单节点 Cluster 确认现有两 key 的多 key Lua 返回 CROSSSLOT；同 service slot 原型可拒绝旧代写入，但不是完整迁移验收。
-  - **方案与边界（2026-09-26）**：用户已确认 A：Node binding/epoch 按 service 同 slot，单机与 Cluster 共用 Lua，不做旧格式兼容；实施排在 I44 提交之后。同 service 定位热点是公开容量边界，Gate binding 不参加该事务，继续按 UID 分布。有效进程的旧业务 owner 仍可能用 Bind 抢回定位，I03 保活与 I36 强单活不在本步关闭范围。本地取消不等于存储失权；[联合调查](./node-binding-fencing.md#联合契约边界) 的原型不替代实现验收，I48 仍不划线。
+  - **关闭记录（2026-09-26，本批提交）**：按用户确认的 A 实施 Node binding/epoch 的 service 同 slot Lua，Bind/Unbind 原子核验调用方 epoch；Node 发现确定失权即取消本代已接纳工作并进入既有失败流程。保持 NodeID 值、6h TTL、有效进程 LWW、原 ID 重启继承、业务 Session API 和唯一 Registry；Gate key 不变，不保留旧布局兼容。旧版本在单机两类迟到写各复现 3/3；修复后真单机/Cluster 写入屏障、失权/迟到续租/Drain、Registry、Gateway 回归及 check/lint/适用 race 通过。Migration、CooperativeFailover 各 3 个独立新建集群的 race 样本通过；连续合跑 race 仍有 manual failover timeout，该组合未通过。首次旧夹具恢复触发的 Redis 断言与修正后的超时分别保留，见 [完整证据](./refactor-progress.md#i48-results)。同 service 单 slot、本地取消不撤销已开始 I/O、异步复制可能回退均是边界，不关闭 I03/I36。
 
 - <a id="i49"></a> **~~I49 · P2：Session 绑定副作用未纳入框架排空屏障~~**
   - **影响**：保存 Session 后发起的后台 Bind/Unbind 没有独立在途计数，Stop 是否等待完全取决于业务 Drain。同步 handler 内的调用已经由 requests 保护，不能据此声称所有正常停机都会提前释放 epoch。
@@ -175,7 +175,7 @@
   - **影响与证据**：正常已绑定流程由 Gateway 查询 Node binding、epoch，Node 再查 binding 做 fencing；未绑定只在 Gateway 查一次 binding，Stateless 不走 Node Locator。两类 Stateful 请求的 GET 成本分别约为 `3 × 已绑定 QPS` 和 `1 × 未绑定 QPS`，不含认证、续租及 Push 查询。见 [热路径成本](./performance.md#热路径成本)。
   - **解决方案**：先测真实请求占比、Redis p99 和 pool wait。只在有收益时比较同一时刻同 Node epoch 查询合并；不得时间缓存 binding/epoch 或删除 Node fencing。移除 epoch GET 还要求业务副作用 fencing 与 (NodeID, epoch, endpoint) 发布契约，关联 I47/I48。
   - **验证方案**：固定配置对比查询数、p99、pool wait；并发合并须覆盖各调用者独立取消、失败恢复。改变 fencing/发布时覆盖网络分区、续租阻塞、同 ID 新旧进程、旧快照、空实例集及 Cluster slot。
-  - **关闭条件与风险**：有可复核性能收益且安全契约不弱化，或部署按现有成本完成容量验收。并发合并不保证单请求更快，当前两次依赖查询不能直接 pipeline，跨 slot 也不能合并为单个 Lua。
+  - **关闭条件与风险**：有可复核性能收益且安全契约不弱化，或部署按现有成本完成容量验收。并发合并不保证单请求更快；当前两次 Gateway 查询仍依赖先取得 NodeID，不能直接 pipeline。I48 的同 slot 布局不自动减少查询，新的合并原语须单独设计和验证。
 
 - <a id="i34"></a> **I34 · P1：Gate lease 续租波次缺少真实故障容量验收**
   - **影响与证据**：一次到期 heartbeat 最多续租一次，失败由后续 heartbeat 重试；没有跨 Session 并发整形，同步波次按连接数线性放大。见 [gateway/auth.go:139](../gateway/auth.go#L139)、[热路径成本](./performance.md#热路径成本)。

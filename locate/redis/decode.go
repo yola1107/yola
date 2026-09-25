@@ -128,20 +128,22 @@ func leaseMilliseconds(ttl time.Duration) (int64, error) {
 }
 
 func gateKey(serviceName, uid string) string {
-	return locateKey(gateKeyPrefix, serviceName, uid)
+	key := base64.RawURLEncoding.EncodeToString([]byte(serviceName + "\x00" + uid))
+	return gateKeyPrefix + "{" + key + "}"
 }
 
 func nodeKey(serviceName, uid string) string {
-	return locateKey(nodeKeyPrefix, serviceName, uid)
+	return nodeLocationKey(nodeKeyPrefix, serviceName, uid)
 }
 
 func nodeEpochKey(serviceName, nodeID string) string {
-	return locateKey(nodeEpochKeyPrefix, serviceName, nodeID)
+	return nodeLocationKey(nodeEpochKeyPrefix, serviceName, nodeID)
 }
 
-func locateKey(prefix, serviceName, uid string) string {
-	key := base64.RawURLEncoding.EncodeToString([]byte(serviceName + "\x00" + uid))
-	return prefix + "{" + key + "}"
+func nodeLocationKey(prefix, serviceName, id string) string {
+	service := base64.RawURLEncoding.EncodeToString([]byte(serviceName))
+	key := base64.RawURLEncoding.EncodeToString([]byte(id))
+	return prefix + "{" + service + "}:" + key
 }
 
 func scriptStatus(values []any) int64 {

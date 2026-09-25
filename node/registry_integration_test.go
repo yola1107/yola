@@ -63,7 +63,7 @@ func TestAppPreparedNodeCannotOverwriteReplacement(t *testing.T) {
 	oldDone := make(chan error, 1)
 	go func() { oldDone <- oldApp.Run() }()
 	waitNodeSignal(t, prepared)
-	key := "locate:node:epoch:{" + base64.RawURLEncoding.EncodeToString([]byte(service+"\x00node-a")) + "}"
+	key := "locate:node:epoch:{" + base64.RawURLEncoding.EncodeToString([]byte(service)) + "}:" + base64.RawURLEncoding.EncodeToString([]byte("node-a"))
 	require.NoError(t, redisClient.PExpire(context.Background(), key, time.Millisecond).Err())
 	require.Eventually(t, func() bool {
 		_, err := store.LocateNodeEpoch(context.Background(), service, "node-a")

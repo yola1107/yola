@@ -3,6 +3,7 @@ package node
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"yola/locate"
 
@@ -64,8 +65,8 @@ func (s requestSession) BindNode(ctx context.Context) error {
 	}
 	ctx, cancel := s.server.lease.Load().requestContext(normalizeContext(ctx))
 	defer cancel()
-	return mapNodeLocatorError(s.server.locator.BindNode(
-		ctx, identity.serviceName, s.binding.UID, identity.nodeID,
+	return s.server.handleBindingError(s.server.locator.BindNode(
+		ctx, identity.serviceName, s.binding.UID, identity.nodeID, identity.epoch,
 	))
 }
 
@@ -83,8 +84,8 @@ func (s requestSession) UnbindNode(ctx context.Context) error {
 	}
 	ctx, cancel := s.server.lease.Load().requestContext(normalizeContext(ctx))
 	defer cancel()
-	return mapNodeLocatorError(s.server.locator.UnbindNode(
-		ctx, identity.serviceName, s.binding.UID, identity.nodeID,
+	return s.server.handleBindingError(s.server.locator.UnbindNode(
+		ctx, identity.serviceName, s.binding.UID, identity.nodeID, identity.epoch,
 	))
 }
 
@@ -115,6 +116,17 @@ func (s requestSession) validatedIdentity() (nodeIdentity, error) {
 	return identity, s.server.checkEpoch()
 }
 
+func (s *Server) handleBindingError(err error) error {
+	if errors.Is(err, locate.ErrNodeEpochNotFound) || errors.Is(err, locate.ErrNodeEpochConflict) {
+		// 存储已确认本代失权：先取消已接纳工作，再关闭准入；不能只通知 Start 退出。
+		lease := s.lease.Load()
+		lease.cancel(fmt.Errorf("node: epoch ownership lost: %w", err))
+		s.failLifecycle(context.Cause(lease.ctx))
+		return status.Error(codes.Unavailable, "node epoch is unavailable")
+	}
+	return mapNodeLocatorError(err)
+}
+
 func normalizeContext(ctx context.Context) context.Context {
 	if ctx == nil {
 		return context.Background()
@@ -128,7 +140,7 @@ func mapNodeLocatorError(err error) error {
 		return nil
 	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 		return err
-	case errors.Is(err, locate.ErrInvalidNodeBinding):
+	case errors.Is(err, locate.ErrInvalidNodeBinding), errors.Is(err, locate.ErrInvalidNodeEpoch):
 		return status.Error(codes.Internal, "invalid node locator state")
 	case errors.Is(err, locate.ErrNodeNotFound):
 		return status.Error(codes.Aborted, "node binding changed")

@@ -59,12 +59,14 @@ type GateLocator interface {
 
 // NodeLocator 管理由业务生命周期显式维护的 Node 绑定。
 type NodeLocator interface {
-	// BindNode 绑定 Node；新绑定直接覆盖旧绑定。
-	BindNode(ctx context.Context, serviceName, uid, nodeID string) error
+	// BindNode 原子校验进程 epoch 后绑定 Node；有效进程的新绑定直接覆盖旧绑定。
+	// 存储中的 epoch 缺失或不匹配分别返回 ErrNodeEpochNotFound、ErrNodeEpochConflict。
+	BindNode(ctx context.Context, serviceName, uid, nodeID, epoch string) error
 	// LocateNode 获取当前 NodeID。
 	LocateNode(ctx context.Context, serviceName, uid string) (string, error)
-	// UnbindNode 仅在当前 NodeID 匹配时解绑。
-	UnbindNode(ctx context.Context, serviceName, uid, nodeID string) error
+	// UnbindNode 原子校验进程 epoch 后，仅在当前 NodeID 匹配时解绑；绑定缺失或改绑视为成功。
+	// 存储中的 epoch 缺失或不匹配分别返回 ErrNodeEpochNotFound、ErrNodeEpochConflict，不作为幂等成功。
+	UnbindNode(ctx context.Context, serviceName, uid, nodeID, epoch string) error
 	// RegisterNodeEpoch 注册 service 内的 Node 进程代次；同 ID 已存在则返回 ErrNodeEpochConflict。
 	RegisterNodeEpoch(ctx context.Context, serviceName, nodeID, epoch string, ttl time.Duration) error
 	// RenewNodeEpoch 校验代次后续期。

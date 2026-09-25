@@ -50,8 +50,8 @@ func TestNodeEpochIsScopedByService(t *testing.T) {
 	whotEpoch, err := locator.LocateNodeEpoch(ctx, "whot", "node-a")
 	require.NoError(t, err)
 	require.Equal(t, "epoch-whot", whotEpoch)
-	require.True(t, server.Exists("locate:node:epoch:{bHVkbwBub2RlLWE}"))
-	require.True(t, server.Exists("locate:node:epoch:{d2hvdABub2RlLWE}"))
+	require.True(t, server.Exists("locate:node:epoch:{bHVkbw}:bm9kZS1h"))
+	require.True(t, server.Exists("locate:node:epoch:{d2hvdA}:bm9kZS1h"))
 }
 
 func TestNodeEpochExpiry(t *testing.T) {

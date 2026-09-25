@@ -69,12 +69,13 @@ func TestGatewayNodeIntegration(t *testing.T) {
 	registerCancel()
 
 	tag := base64.RawURLEncoding.EncodeToString([]byte(serviceName + "\x00player-a"))
+	nodeKey := "locate:node:{" + base64.RawURLEncoding.EncodeToString([]byte(serviceName)) + "}:" + base64.RawURLEncoding.EncodeToString([]byte("player-a"))
 	t.Cleanup(func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cleanupCancel()
 		require.NoError(t, discovery.Deregister(cleanupCtx, nodeInstance))
 		require.NoError(t, redisClient.Del(cleanupCtx, "locate:gate:{"+tag+"}").Err())
-		require.NoError(t, redisClient.Del(cleanupCtx, "locate:node:{"+tag+"}").Err())
+		require.NoError(t, redisClient.Del(cleanupCtx, nodeKey).Err())
 		stopNode()
 	})
 

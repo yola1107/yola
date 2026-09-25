@@ -36,10 +36,10 @@ func BenchmarkStatefulForwardRedisLookups(b *testing.B) {
 	uid := "player-" + suffix
 	nodeID := "node-" + suffix
 	epoch := "epoch-" + suffix
-	require.NoError(b, locator.BindNode(ctx, serviceName, uid, nodeID))
 	require.NoError(b, locator.RegisterNodeEpoch(ctx, serviceName, nodeID, epoch, testTTL))
+	require.NoError(b, locator.BindNode(ctx, serviceName, uid, nodeID, epoch))
 	b.Cleanup(func() {
-		require.NoError(b, locator.UnbindNode(context.Background(), serviceName, uid, nodeID))
+		require.NoError(b, locator.UnbindNode(context.Background(), serviceName, uid, nodeID, epoch))
 		require.NoError(b, locator.UnregisterNodeEpoch(context.Background(), serviceName, nodeID, epoch))
 	})
 

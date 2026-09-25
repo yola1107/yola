@@ -311,7 +311,6 @@ func TestPushToUIDLocatesGateAndPushes(t *testing.T) {
 	binding := testBinding("player-a", "conn-a")
 	binding.GateEndpoint = "grpc://" + gateAddress
 	locator := newMemoryLocator()
-	require.NoError(t, locator.BindNode(context.Background(), "game", "player-a", "node-a"))
 	_, _, err := locator.BindGate(context.Background(), binding, time.Minute)
 	require.NoError(t, err)
 

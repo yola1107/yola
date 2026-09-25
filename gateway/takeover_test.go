@@ -63,7 +63,7 @@ func TestAuthenticationBindAdmittedBeforeShutdownCommitsTakeover(t *testing.T) {
 
 func TestSessionReplacementKickDoesNotNotifyNodeDisconnect(t *testing.T) {
 	gateway, store, conn, binding, disconnects := newDisconnectTrackingServer(t)
-	require.NoError(t, store.BindNode(context.Background(), binding.ServiceName, binding.UID, "node-a"))
+	bindTestPlayerNode(t, store, binding.ServiceName, binding.UID, "node-a")
 
 	require.NoError(t, gateway.kick(context.Background(), binding, protocolv1.KickCodeSessionReplaced))
 	require.True(t, isClosed(conn.closed)())

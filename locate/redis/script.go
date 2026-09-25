@@ -2,7 +2,7 @@ package redis
 
 import "github.com/redis/go-redis/v9"
 
-// Lua 返回值首项是 locator.go 定义的状态码；Bind 还返回当前绑定、TTL 和可选旧绑定。
+// Lua 返回值首项是 decode.go 定义的状态码；Gate Bind 还返回当前绑定、TTL 和可选旧绑定。
 var bindGateScript = redis.NewScript(`
 local function valid_binding(raw)
   local ok, binding = pcall(cjson.decode, raw)
@@ -52,6 +52,24 @@ local ttl = redis.call("PTTL", KEYS[1])
 if ttl <= 0 then return {-2} end
 if current ~= ARGV[1] then return {-1} end
 redis.call("DEL", KEYS[1])
+return {1}
+`)
+
+var bindNodeScript = redis.NewScript(`
+local epoch = redis.call("GET", KEYS[1])
+if not epoch then return {0} end
+if epoch ~= ARGV[1] then return {-1} end
+redis.call("PSETEX", KEYS[2], ARGV[3], ARGV[2])
+return {1}
+`)
+
+var unbindNodeScript = redis.NewScript(`
+local epoch = redis.call("GET", KEYS[1])
+if not epoch then return {0} end
+if epoch ~= ARGV[1] then return {-1} end
+if redis.call("GET", KEYS[2]) == ARGV[2] then
+  redis.call("DEL", KEYS[2])
+end
 return {1}
 `)
 
