@@ -1,8 +1,37 @@
 # 框架清理进度
 
-本文件记录当前任务与验证，问题及部署限制见 [issues.md](./issues.md)。历史修复与验证仅供追溯，不自动恢复旧排期、提交授权或新会话提示词。
+本文件区分当前审查和历史实施，执行候选见 [issues.md](./issues.md)。历史修复、排期和提交授权不自动适用于后续任务。
 
-## 当前任务
+## 当前审查（三轮完成，未实施）
+
+- **基线与范围**：2026-09-26，`ab0479b`。初次审查起点干净，后续保留前次未提交docs及AGENTS.md已有改动继续核对，Go源码不变；只审查根框架和有效测试密度。
+- **结论**：没有可信的P0大块删除项。前两轮九项P1维持47–68生产行、114–145测试行的静态净减估算。第三轮无新增P1，只补充约4生产行、10–12测试行的可选P2和别名清理，不加入排期或抬高累计收益；见 [第三轮](./architecture-review.md#round3) 和 [累计估算](./architecture-review.md#10-缩减边界与不重复计算的估算)。
+- **方法**：第三轮重读当前AGENTS与实际skills，重新发现MCP能力。gopls/ast-grep虽有本机配置，当前会话查询返回unknown MCP server；使用已安装gopls v0.21.1与ast-grep 0.45.3 CLI核实引用、实现和结构，没有改MCP配置。原24包、75生产文件、102测试文件统计因源码未变而沿用。
+- **文档处置**：执行清单仍只保留I56–I64；补全I60的QueueDroppedCurrent=false断言，细化Kratos过滤/空发现/错误类型不能直接替换的依据。I61保留结果指针和公开可比较性，I03/I46仍是独立未解决问题；第一轮清理不重复计收益。
+- **状态**：审查和文档已完成，随本轮提交归档；九项候选均未实施，没有修改生产代码、测试、协议、依赖或外部环境。
+- **验证**：第三轮完成静态源码/引用/AST、固定依赖及文档检查；没有新跑框架测试、lint、race、benchmark或外部服务。第二轮的临时类型编译探针仅作为相同源码的既有证据，没有重跑或当作候选运行通过；当时反射探针的链接器错误仍保留记录。
+- **授权**：用户在审查完成后授权提交本任务的docs修改；不包含已有AGENTS.md改动、后续代码提交、push或发布。第一轮代码清理为`ab0479b`，规则提交为`35341a7`，新窗口以实际HEAD和工作树为准。
+- **并行变动**：收尾发现AGENTS.md及skills目录被其他操作更新，已重读当前规则；本任务仅修改docs，保留该AGENTS.md改动，不纳入本次交付归属。
+
+<a id="cleanup-handoff"></a>
+## 新窗口实施提示词
+
+以下文本供用户在新窗口发送后启动实施；本文档本身不自动授权执行历史计划。
+
+```text
+请在 D:\src\pitaya\yola 实施已经完成三轮审核的框架清理，重点是去复杂、减代码、降维护成本。本次授权实施 docs/issues.md 中 I56–I64 九项 P1，不要继续进行无目标的全库审查，也不要只输出方案。
+
+1. 先检查 git status --short、暂存/未暂存 diff、新增文件和当前 HEAD，保留用户已有改动，尤其 AGENTS.md。读取当前适用 AGENTS.md/AGENTS.override.md、docs/README.md、docs/issues.md、docs/architecture-review.md、docs/refactor-progress.md；按任务补读 architecture.md、eventbus.md。第一轮代码清理为 ab0479b，三轮审核的候选尚未实施；以当前代码复核，不重做已完成项。
+2. 重新发现当前安装且可用的 skills/MCP，按需使用 gopls、ast-grep、并发与设计评审能力。上轮 gopls/ast-grep MCP 有配置但未进入会话工具表，CLI 可用；新窗口重新判断，不沿用旧失败结论，不为工具安装、升级或配置阻塞可完成的工作。
+3. 按职责分批完成 I56 Queue直接构造、I57删除单实现frameAppender、I58 header包内收、I59 callback fixture复用、I60 NATS测试合并、I61 Once统一缓存发布、I62删除重复依赖测试、I63静态Discovery fixture简化、I64 TLS测试合并。先核对引用、调用链和验收条件，再实施；遇到代码事实推翻方案，修正/降级该项并说明，继续其他独立项。静态减量估算不是必须达到的指标。
+4. 保持 gate（gateway包）/node 作为原生 Kratos v3 内嵌组件；保持行为、公共接入接口、协议、标识符、求值/短路、锁范围、defer、错误身份、nil/空集合、I/O时机及资源关闭顺序。候选明确允许的内部签名/类型调整须同步全部调用方。不改业务逻辑、性能机制、存储布局、依赖版本或生成文件，不新增无收益的helper/manager/BaseServer。
+5. 必须保留的细节：I57按具体类型识别，不能以codec.Name替代；I59保持Open通道时序；I60保留独立publisher、Bus.Publish、两次panic后正常返回及全部统计断言，包括QueueDroppedCurrent=false；I61保留结果指针和公开可比较性，Once内先创建state再Marshal，保持懒编码、Reset无重叠及旧bytes不可变；I63在Watch捕获slice、在首次Next复制；I64在ServerTLS Option应用后、服务构造前修改调用者Certificates。
+6. P2和Drop不自动实施；I03业务保活、I46 Redis deadline及性能/容量验收不在本次范围。必要的就绪屏障、条件注册、listener owner、两阶段排空、epoch监视、两种连接池与TCP/WS独立I/O语义保持不变。
+7. 按当前AGENTS完成格式化、lint、受影响包测试或make check，以及适用race等检查；不重复make check已覆盖的同配置普通测试，不把历史通过作为当前结果。运行外部测试前核对TestMain、环境变量和隔离要求。确需真实依赖时可免密SSH root@192.168.152.129，先核对资源，只用任务专用可丢弃容器/端口/DB或prefix，结束后清理，不操作既有服务和数据。
+8. 每批完整复审diff，更新issues状态和refactor-progress中的实际改动、验证、净收益、未完成项；所有工作完成后核对git status、git diff --check、git diff --cached --check。用简洁中文交付结果，不宣称未运行检查通过。本提示词不授权git commit、git push或发布，提交须等我另行明确指示。
+```
+
+## 第一轮清理记录
 
 - **日期与基线**：2026-09-26，`af33b00`；开始时工作树、暂存区均为空。
 - **轮次**：第一轮清理。
@@ -36,7 +65,7 @@
 
 资源和工具：Go 1.26.6 windows/amd64、golangci-lint 2.13.2；race 在当前命令内前置 MSYS2 GCC 路径。远端 `192.168.152.129` 使用 root 免密 SSH，Docker 29.8.0；专用 Redis 8.6.1、etcd 3.5.21 分别限制 0.5 CPU/128MiB、0.5 CPU/256MiB，使用 tmpfs，仅开放 VM 回环 16379/12379，经本任务隧道访问。
 
-## 本轮验证记录
+## 第一轮验证记录
 
 以下均在根目录执行，针对 `af33b00` 加本轮工作树，不复用历史文档的通过结论。
 

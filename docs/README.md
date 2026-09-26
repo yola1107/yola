@@ -4,14 +4,15 @@ Yola 是基于 Kratos v3 的分布式长连接接入框架。Gateway 持有 TCP/
 
 项目仍处于首版开发阶段，没有存量协议、数据或公开 API 的兼容承诺。当前实现优先保持单向、直接、可追踪的数据流，不为假设中的旧版本增加 fallback、feature gate 或重复协议。
 
-当前维护任务限定为行为等价清理：保持现有接口、协议、执行时序和 gate/node 的组件定位，不据此调整业务逻辑、性能机制或存储布局。低收益、高风险的候选重构已从实施队列移除，真实限制仍单独保留。
+第一轮行为等价清理已提交为 `ab0479b`。当前深度审查以去复杂、减代码、降维护成本为目标，保留 gate/node 的 Kratos v3 组件定位；只更新文档，候选重构尚未实施。低收益、高风险方向不进入执行队列，真实限制单独保留。
 
 ## 文档
 
 - [架构设计](./architecture.md)：组件边界、网络与存储、生命周期、请求链路、粘性路由、默认参数与超时职责。
 - [EventBus 接入](./eventbus.md)：Gateway/Node 在线实时 Pub/Sub、NATS 生命周期和 Gateway 有界并行 fanout。
-- [问题清单与清理边界](./issues.md)：本轮清理、保留的问题、部署限制和已关闭条目的历史证据。
-- [框架清理进度](./refactor-progress.md)：当前范围、skill 取舍、实施与验证状态；旧修复记录仅供追溯。
+- [框架去复杂审查](./architecture-review.md)：当前规模、九项 P1、可选收敛、Kratos 边界、测试价值和减量估算；[第三轮](./architecture-review.md#round3)补充MCP/skills核验、四项P2和既有方案纠偏，没有新增P1，候选尚未实施。
+- [框架优化执行清单](./issues.md)：只排入收益明确的候选；已完成项、已知限制与 Drop 方向不作为待执行任务。
+- [框架清理进度](./refactor-progress.md)：当前审查与第一轮清理的状态分开记录，含 [新窗口实施提示词](./refactor-progress.md#cleanup-handoff)；旧修复证据仅供追溯。
 - [Node binding 修改权](./node-binding-fencing.md)：已实现的 service 原子分区与边界；删除未选定的协调和分片草案。
 - [性能基线](./performance.md)：历史测量、可复现 benchmark 和容量验收口径，不作为本轮优化排期。
 - [示例说明](../examples/README.md)：Gateway、Stateful Whot、Stateless Ludo 和 Client 的本地运行方式。
