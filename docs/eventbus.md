@@ -1,176 +1,80 @@
 # EventBus 接入
 
-当前只提供在线、可丢失的 Pub/Sub；不重试、不重放、不补发离线消息。
+EventBus 提供在线、可丢失的 Pub/Sub。应用负责创建与关闭 Bus，Gateway/Node 不持有它；Node usecase 只依赖 Publisher，Gateway 订阅由组装层接入。
 
 ## 1. 职责边界
 
-`event.Bus` 负责 Topic 路由、adapter 资源生命周期、发布、订阅和取消订阅，不解释 Payload，也不持有 Session、玩家或 Table 状态。
+Topic 同时表示路由与事件名，Payload 是已编码的只读 bytes。Bus 不解释 protobuf/JSON，不持有 Session、玩家或 Table，也不定义客户端 Command；Topic→Command 由 Gateway 的订阅组装层固定映射。Node 的有状态事件应交给业务 mailbox，handler 不在接收协程内扫描连接或执行耗时存储操作。
 
-Gateway 拥有本地 Session 和连接发送队列，因此全量在线推送由 Gateway 自己并行 fanout；Node 的有状态事件由业务 handler 送入对应 mailbox。EventBus handler 应尽快把工作交给状态所有者，不能在 NATS 接收协程里扫描连接或访问 Redis/DB。
+## 2. 公共接口与接线
 
-## 2. 公共接口
+[接口定义](../event/event.go) 包含 Event、Handler、Publisher、Subscriber、Subscription 和 Bus。New 返回后即可 Publish/Subscribe；没有第二套 Start/Stop。
 
-```go
-package event
-
-import "context"
-
-type Event struct {
-	Topic   string
-	Payload []byte
-}
-
-type Handler func(context.Context, Event)
-
-type Subscription interface {
-	Unsubscribe(context.Context) error
-}
-
-type Publisher interface {
-	Publish(context.Context, Event) error
-}
-
-type Subscriber interface {
-	Subscribe(context.Context, string, Handler) (Subscription, error)
-}
-
-type Bus interface {
-	Publisher
-	Subscriber
-	Close() error
-}
-```
-
-- `Topic` 同时承担路由和事件名称，例如 `yola.gateway.announcement.v1`。当前没有第二套 `Type`。
-- `Payload` 是调用方已经编码的只读 bytes；Bus 不接受 `any`，也不负责 protobuf/JSON 编解码。
-- `Event` 不携带客户端 `Command`：Command 属于 Gateway 到客户端的协议，并由订阅组装层固定映射；发布者不能通过 EventBus 任意选择客户端消息号。
-- Node usecase 只依赖 `Publisher`；应用组装层创建 Bus、注册订阅并关闭 Bus。
-- `Handler` 不返回 error，因为当前没有 ack 或重投语义。业务失败由 handler 自己记录或交给业务状态所有者。
-- `Subscribe` 只做广播订阅：每个在线 Bus 实例各收到一份。当前接口没有 consumer group 或竞争消费。
-- `New` 成功返回的 Bus 已可 Publish/Subscribe，不再暴露第二套 Start/Stop 状态。
-
-## 3. 投递与取消语义
-
-公共语义是在线、best-effort、at-most-once：
-
-- 没有在线订阅者、连接断开或本地有界队列已满时允许丢失。
-- `Publish` 成功只表示 adapter 接受了发送，不表示存在订阅者或 handler 已执行。
-- 不保存消费进度，不重试 handler，不补发离线期间的事件。
-- 同一订阅由一个消费协程顺序调用 handler；EventBus 不提供公开 worker 数配置。
-- handler panic 被隔离并记录，但当前消息仍视为丢失。
-
-`Unsubscribe(ctx)` 幂等地停止新消息、取消 handler context，并等待正在执行的 handler 返回。超过期限时返回 `ctx.Err()`，但后台停止过程继续，后续调用可以再次等待。Bus 会持续跟踪正在取消的订阅，因此并发 `Bus.Close` 仍会等待该 handler。handler 不得同步调用自身的 `Unsubscribe` 或 `Bus.Close`，否则会等待自己返回。
-
-`Bus.Close()` 幂等地拒绝新工作、取消所有订阅、等待正在运行的 handler 退出，并释放 Bus 独占的连接。它无 deadline，handler 必须响应自己的取消 context 并尽快返回。
-
-订阅完全退出后释放 handler 及其捕获对象；后续成功注册会回收已经完成且无错误的订阅记录。取消中的订阅继续被跟踪，带停止错误的历史记录保留到 `Bus.Close()` 汇总，不因注册新订阅丢失错误。
-
-## 4. NATS 生命周期
-
-```text
-New -> Publish/Subscribe/Unsubscribe -> Close
-```
-
-- `event/nats.New(...)` 校验配置并建立独占连接；未传 `WithContext` 时使用 `context.Background()`。传入的父 `ctx` 控制 Bus 的完整生命周期，取消后自动停止订阅并关闭连接；连接失败直接返回 error，重试时创建新 Bus。
-- `Subscribe(ctx, ...)` 注册精确 Topic，底层使用 `ChanSubscribe` 和单个 bounded channel，并等待 Flush。成功只说明本地注册和 Flush 完成，不证明 broker 已接受订阅，也不保证 handler 能收到消息；Flush 不是订阅确认或异步错误回调的完成屏障。
-- 参数校验失败或等待注册锁期间取消不会改变 Bus；等待者获锁后返回取消，不创建底层订阅。进入底层激活后若本地订阅、Flush 或 context 失败，本 Bus 的注册能力进入终态，后续 `Subscribe` 返回包含首次失败的 error。既有订阅和 Publish 继续运行，组装层应关闭并重建 Bus 后再重试。
-- SUB ACL、Publish ACL、订阅上限和 slow-consumer 等错误经 nats.go 的异步回调写入 `slog`，日志为 Error 级别的 `event transport error`，保留原始 `error`。仅底层回调带订阅身份时记录 `topic`；ACL/上限回调没有该身份，不从错误文本猜测归属。重复错误分别报告，可能晚于 Subscribe 返回；它们不直接终止后续注册能力。
-- 组装层不能仅用 Subscribe 的返回值验证 ACL 或订阅容量。部署必须独立验收权限与容量，并收集异步错误日志；被 broker 拒绝的本地订阅仍由返回的 Subscription/Bus 管理，可显式取消，重连时由 nats.go 重放。此边界经 I51 确认，不提供订阅确认、自动恢复成功或消息可靠性保证。
-- `Close` 取消 Bus context 和全部订阅、丢弃排队事件、等待运行中的 handler，并关闭 Bus 自己创建的连接；父 context 取消会触发相同关闭流程，之后仍可调用 `Close` 取得幂等的关闭结果。
-- Bus 始终创建并独占一个连接，同时关闭 reconnect buffer；断线期间的 Publish 不会在重连后延迟补发。
-
-NATS adapter 只暴露两个热路径容量参数：`WithQueueCapacity` 控制单订阅接收队列，`WithMaxPayloadBytes` 同时限制 Publish Payload 并丢弃超限的接收 Payload；默认分别为 256 和 64 KiB，按默认上限计算的单订阅 Payload 积压约为 16 MiB（不含结构和协议开销）。应用组装只需传入 NATS URL；生产值确有不同容量证据时再显式覆盖，并同步对齐 broker `max_payload`。
-
-[I44 实测](./performance.md#i44-capacity) 已验证：业务上限仍为 64 KiB、broker 放行 1 MiB 时，256 条队列可保留约 256 MiB Payload；broker 同样限制为 64 KiB 时，四个默认订阅可保留约 64 MiB。关闭后队列引用释放、live heap 可回收，但 RSS 不保证立即归还 OS。容量配置须共同记录 broker 上限、订阅数和队列容量，不能单独把 `WithMaxPayloadBytes` 当作接收内存限制。
-
-返回的订阅实现可选的 `event.SubscriptionStatsProvider`。`SubscriptionStats()` 可与消费、退订和 Bus.Close 并发调用，不重置累计值：
-
-| 字段 | 边界 |
-| --- | --- |
-| `QueueDepth` / `QueueCapacity` | 原有接收 channel 的等待条数/容量，不含当前 handler；完全退出后 depth 为 0，释放队列引用 |
-| `QueueDropped` / `QueueDroppedCurrent` | nats.go 本地接收队列满的累计拒绝；Current 为 false 时仅保留最后可得值，关闭竞争期间的增量未知，不承诺精确最终值 |
-| `PayloadDropped` | 消费协程出队后因 Payload 超限而丢弃，不能用它限制已入队内存 |
-| `HandlerCalls` / `HandlerPanics` / `HandlerActive` | 已结束调用数（含 panic）、其中 panic 次数、当前是否正在调用 |
-| `HandlerDuration` / `LastHandlerDuration` / `MaxHandlerDuration` | 已结束 handler 调用的累计、最近和最大耗时，不含队列等待与 panic 日志；不是 p99 |
-| `Closed` | 消费协程已退出；累计值仍可从原订阅句柄读取 |
-
-queue/drop 与 handler 字段是局部快照，不承诺跨字段或跨层原子采样。原生订阅关闭后不能读取 Dropped，adapter 不从关闭回调重入原生锁，也不推断 broker 丢失、断线丢失或关闭时丢弃的消息数。需要 p99 时由应用在 handler 边界采样，不能从累计/最大耗时反推分位数。
-
-## 5. Gateway 在线 fanout
-
-Gateway 只拥有本地 broadcaster，不拥有外部 Bus。Bus 构造后已可用，应用组装层直接注册订阅，并在 `App.Run` 返回后关闭。启动和停机窗口内的事件可能丢失，属于当前 best-effort 语义。
-
-业务在应用组装阶段显式注册 Topic 到客户端 command 的映射。以下仅展示 EventBus 接线，完整 App identity、共享 Registry、启动失败回收及外部依赖关闭顺序见 [应用装配](./architecture.md#31-应用装配) 和 [Gateway 入口](../examples/gateway/main.go)：
+在 Gateway 应用完成组件构造后注册在线公告；下例 `nats` 指 `yola/event/nats`，完整资源回收见 [Gateway 示例](../examples/gateway/main.go)：
 
 ```go
-const announcementCommand int32 = 5 // 客户端协议约定的公告 Push 消息号
-gate, err := gateway.NewServer(
-	// Auth、Locator、Discovery 等其他依赖
-)
+bus, err := nats.New(nats.WithURL(natsURL))
 if err != nil {
-	return err
-}
-bus, err := eventnats.New(eventnats.WithURL(natsURL))
-if err != nil {
-	return err
+    return err
 }
 defer bus.Close()
 
-_, err = bus.Subscribe(
-	context.Background(),
-	"yola.gateway.announcement.v1",
-	func(ctx context.Context, received event.Event) {
-		if err := gate.Broadcast(announcementCommand, received.Payload); err != nil &&
-			!errors.Is(err, gateway.ErrBroadcastQueueFull) {
-			slog.WarnContext(ctx, "broadcast announcement", "error", err)
-		}
-	},
-)
+const announcementCommand int32 = 5
+_, err = bus.Subscribe(context.Background(), "yola.gateway.announcement.v1",
+    func(ctx context.Context, incoming event.Event) {
+        if err := gate.Broadcast(announcementCommand, incoming.Payload); err != nil &&
+            !errors.Is(err, gateway.ErrBroadcastQueueFull) {
+            slog.WarnContext(ctx, "broadcast announcement", "error", err)
+        }
+    })
 if err != nil {
-	return err
-}
-
-app := kratos.New(
-	kratos.BeforeStart(gate.BeforeStart),
-	kratos.Server(gate),
-)
-```
-
-订阅 handler 属于业务组装层：它固定 Topic 到客户端 command 的映射，只把 Payload 交给 `Broadcast`。Gateway 不依赖 `event`，EventBus 负责 Subscription 和 NATS 连接生命周期。
-
-发布方直接使用组装层注入的 `event.Publisher`。Gateway/Node 不管理 Bus，也不为 Publish 增加透传 API；Node/usecase 不通过 Gateway 中转事件。
-
-`Broadcast(command, payload)` 只复制一次 Payload，并把一条广播非阻塞写入 Gateway 的有界队列。返回成功表示本地 broadcaster 已接收，不表示每个连接都已入队。
-
-fanout 流程：
-
-1. 单个协调协程取得当前 Session 快照。
-2. 一条广播最多拆成 `BroadcastWorkers` 个批次并行处理；默认 worker 数为 `min(8, GOMAXPROCS)`。
-3. 全部批次完成后才处理下一条广播，避免同一连接上的后续广播越过前一条。
-4. worker 只向已经认证且 lease 有效的连接发送；支持 `PreparedConnection` 时使用 `SendPrepared` 共享编码，否则调用 `SendProto`。连接自己的有界发送队列负责慢客户端隔离。
-5. 广播队列默认容量为 256，可用 `BroadcastQueueCapacity` 调整；队列满返回 `gateway.ErrBroadcastQueueFull`。
-
-Gateway 不为每个 Session 创建 goroutine，也不在 EventBus 内复制 Session 索引。连接发送队列满、连接关闭或停机过程中都允许丢弃，并以限频日志记录 drop。
-
-`Gateway.BroadcastStats()` 返回一个不重置状态的瞬时快照：`QueueDepth` 是读取时的值，`QueueCapacity` 是配置容量，`Accepted` / `Completed` / `QueueDropped` / `SendDropped` 从 Server 创建起累计，`LastFanoutDuration` / `MaxFanoutDuration` 分别是最近一次和当前最大值。它只覆盖 Gateway 本地广播接纳与 fanout，不代表客户端已收到消息。
-
-TCP/WS 的 `network.Connection` 实现可选的 `network.SendStatsProvider`，由 Connection 的持有方读取 `SendStats()`；逻辑 Payload、关闭和采样边界见 [发送观测](./architecture.md#send-stats)。同一次连接队列拒绝可能同时体现在 `BroadcastStats.SendDropped` 与该连接的 `SendStats.QueueDropped`，两者是传播结果和原因，不能相加作为独立丢失数。订阅 `QueueDropped`、广播 `QueueDropped` 和连接 `QueueDropped` 分别属于三个不同接纳点；成功入队或写出均不证明客户端收到。
-
-## 6. Node 接入
-
-Node handler 只能调用 usecase、manager 或 mailbox，不得直接并发修改玩家/Table 状态，也不得伪造 request-scoped `node.Session`。
-
-```go
-type announcementService struct {
-	events event.Publisher
-}
-
-func (s announcementService) Publish(ctx context.Context, payload []byte) error {
-	return s.events.Publish(ctx, event.Event{
-		Topic:   "yola.gateway.announcement.v1",
-		Payload: payload,
-	})
+    return err
 }
 ```
 
-组装代码把 Bus 的 `event.Publisher` 能力传给业务 usecase，并由创建者 `defer Close`。`node.Session` 只表示当前请求对应的玩家路由，不能承载进程级事件发布；定时任务和后台 manager 也不依赖伪造 Session。
+发布者调用注入的 `event.Publisher.Publish(ctx, event.Event{Topic: ..., Payload: ...})`，不经 Gateway 中转，不伪造 Session。每个在线 Bus 实例各收到一份，当前没有 consumer group 或竞争消费。
+
+## 3. 投递与取消语义
+
+- Publish 成功只表示 adapter 接受发送，不证明存在订阅者或 handler 已执行。无在线订阅、断线或本地队列满时允许丢失；无 ack、重试、重放及离线补发。
+- 同一订阅串行调用 handler，panic 被隔离并记录，消息仍视为丢失；handler 不返回重投结果。
+- Unsubscribe(ctx) 幂等停止接收、取消 handler context 并等待在途返回。超时返回ctx.Err，后台停止继续，可再次等待；Bus仍跟踪取消中的订阅。
+- Bus.Close 幂等拒绝新工作、取消并启动全部订阅停止、关闭自有连接，再等待handler退出。它没有deadline，handler必须协作响应取消；handler不得同步调用自身Unsubscribe或Bus.Close。
+- 完全退出后释放handler和队列引用；后续注册回收已完成且无错误的记录，带停止错误的记录保留到Close汇总。
+
+## 4. NATS 生命周期
+
+[adapter实现](../event/nats/event.go) 使用一个独占连接，关闭reconnect buffer；断线期间Publish不会被缓存后延迟补发。WithContext的父context控制完整Bus生命周期，默认Background；连接失败需创建新Bus重试，父取消触发同一Close流程。
+
+Subscribe注册精确Topic，底层ChanSubscribe加有界channel并等待Flush。返回成功仅表示本地装配/Flush完成，**不证明broker接受订阅**，也不是异步错误回调完成屏障。
+
+| 失败时点 | 当前行为 |
+| --- | --- |
+| 参数校验、等待注册锁期间取消 | 不改变Bus；获锁后返回取消，不创建原生订阅 |
+| 已进入激活后订阅/Flush/context失败 | 注册能力进入终态，后续Subscribe携带首次失败；既有订阅与Publish继续，应用关闭重建Bus |
+| SUB/Publish ACL、订阅上限、slow consumer等异步错误 | slog Error记录`event transport error`及原始error；不直接终止后续注册，不能从返回值推断权限通过 |
+
+异步回调只有携带订阅身份时才记录topic，不从错误文本猜测归属；重复错误分别记录，可能晚于Subscribe返回。被broker拒绝的本地订阅仍由Bus/Subscription回收，nats.go重连时可能重新发送订阅，不构成消息重放或成功恢复保证。生产认证/TLS/ACL须单独验收。[I40](./issues.md#i40)
+
+容量默认值为WithQueueCapacity=256、WithMaxPayloadBytes=64KiB。后者限制Publish并在接收出队后丢弃超限Payload，**不能限制已排队的大消息内存**。预算按订阅数×队列容量×broker实际max_payload加运行时余量计算；broker同为64KiB时单订阅仅Payload约16MiB，放行1MiB时可达256MiB。配置须同时记录broker上限和订阅数，释放引用不保证RSS立即回落。[测量边界](./performance.md#nats-capacity)
+
+Subscription可实现 `event.SubscriptionStatsProvider`，可并发采样，不重置累计值：
+
+| 字段 | 口径 |
+| --- | --- |
+| QueueDepth / QueueCapacity | 等待channel的条数/容量，不含当前handler；退出后depth为0 |
+| QueueDropped / QueueDroppedCurrent | 原生本地队列满拒绝；Current=false仅保留最后可得值，关闭竞争增量未知 |
+| PayloadDropped | 超限消息出队后丢弃，不代表入队内存受限 |
+| HandlerCalls / HandlerPanics / HandlerActive | 已结束调用（含panic）、其中panic数、当前执行状态 |
+| HandlerDuration / LastHandlerDuration / MaxHandlerDuration | 已结束调用的累计、最近、最大耗时；不含等待和panic日志，不是p99 |
+| Closed | 消费协程已退出，原句柄仍可读累计值 |
+
+字段是局部快照，不承诺跨字段原子采样。原生订阅关闭后无法读取Dropped，不在关闭回调内重入原生锁；统计不推断broker/断线/关闭丢失，业务p99须另行采样。
+
+## 5. Gateway 在线 fanout
+
+`Broadcast(command, payload)` 复制一次Payload并非阻塞入有界队列，满时返回ErrBroadcastQueueFull；成功只表示Gateway接纳。单协调协程抓取Session快照，最多拆成BroadcastWorkers批并行发送，全部完成后才处理下一条，保持连接所见顺序。默认worker为min(8, GOMAXPROCS)、队列256；不为每个Session创建goroutine。
+
+只发送给已认证且lease有效的连接。支持PreparedConnection时共享默认protobuf编码，自定义codec仍逐连接编码；各连接的发送队列隔离慢消费者，队列满、连接关闭和停机可丢弃，Gateway限频记录drop。
+
+BroadcastStats的QueueDepth/QueueCapacity为快照，Accepted/Completed/QueueDropped/SendDropped从Server创建起累计；LastFanoutDuration/MaxFanoutDuration只描述本地fanout，不证明客户端收到。连接自身的 [SendStats](./architecture.md#send-stats) 与SendDropped可能记录同一次拒绝，不能跨层相加；订阅、广播、连接的队列拒绝分别发生在不同接纳点。
