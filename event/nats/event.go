@@ -31,7 +31,6 @@ type Bus struct {
 	registrationErr error
 
 	closeOnce sync.Once
-	closeDone chan struct{}
 	closeErr  error
 }
 
@@ -69,10 +68,9 @@ func New(opts ...Option) (*Bus, error) {
 		timeout:         o.timeout,
 		queueCapacity:   o.queueCapacity,
 		maxPayloadBytes: o.maxPayloadBytes,
-		closeDone:       make(chan struct{}),
 	}
 	if o.ctx.Done() != nil {
-		go bus.closeOnContext(o.ctx)
+		go bus.closeOnContext()
 	}
 	return bus, nil
 }
@@ -152,10 +150,9 @@ func connect(ctx context.Context, o options) (*natsgo.Conn, error) {
 	}
 }
 
-// Close rejects new work, cancels subscriptions, waits for handlers, and closes NATS.
+// Close 拒绝新工作，取消订阅并关闭连接，等待在途 handler 后返回。
 func (b *Bus) Close() error {
 	b.closeOnce.Do(func() {
-		defer close(b.closeDone)
 		b.cancel()
 
 		b.registrationMu.Lock()
@@ -172,12 +169,9 @@ func (b *Bus) Close() error {
 	return b.closeErr
 }
 
-func (b *Bus) closeOnContext(ctx context.Context) {
-	select {
-	case <-ctx.Done():
-		_ = b.Close()
-	case <-b.closeDone:
-	}
+func (b *Bus) closeOnContext() {
+	<-b.ctx.Done()
+	_ = b.Close()
 }
 
 // Publish sends an online event without acknowledgement or replay guarantees.

@@ -30,21 +30,13 @@ func TestUnsubscribeCancelsAndWaitsForHandler(t *testing.T) {
 	waitSignal(t, finished, "unsubscribe returned before the handler finished")
 }
 
-func TestUnsubscribeReleasesHandler(t *testing.T) {
-	bus := newTestBus(t, startTestServer(t))
-	handle, err := bus.Subscribe(context.Background(), "yola.event.release", func(context.Context, event.Event) {})
-	require.NoError(t, err)
-
-	require.NoError(t, handle.Unsubscribe(context.Background()))
-	require.Nil(t, handle.(*subscription).handler, "completed subscription must release its handler's captured state")
-}
-
 func TestSubscribeReclaimsCompletedSubscriptions(t *testing.T) {
 	bus := newTestBus(t, startTestServer(t))
 	for range 16 {
 		handle, err := bus.Subscribe(context.Background(), "yola.event.repeated", func(context.Context, event.Event) {})
 		require.NoError(t, err)
 		require.NoError(t, handle.Unsubscribe(context.Background()))
+		require.Nil(t, handle.(*subscription).handler, "completed subscription must release its handler's captured state")
 	}
 	require.Len(t, bus.subscriptions, 1, "registration must not accumulate completed successful subscriptions")
 }

@@ -36,6 +36,11 @@ func TestNodeEpochFencing(t *testing.T) {
 	_, err = locator.LocateNodeEpoch(ctx, serviceName, nodeID)
 	require.ErrorIs(t, err, locate.ErrNodeEpochNotFound)
 	require.NoError(t, locator.UnregisterNodeEpoch(ctx, serviceName, nodeID, epochA))
+	require.NoError(t, locator.RegisterNodeEpoch(ctx, serviceName, nodeID, epochB, testTTL))
+	require.NoError(t, locator.UnregisterNodeEpoch(ctx, serviceName, nodeID, epochA))
+	located, err = locator.LocateNodeEpoch(ctx, serviceName, nodeID)
+	require.NoError(t, err)
+	require.Equal(t, epochB, located)
 }
 
 func TestNodeEpochIsScopedByService(t *testing.T) {

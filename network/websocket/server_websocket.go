@@ -16,30 +16,28 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-func (s *Server) handleConnections() http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		remoteIP, _, _ := net.SplitHostPort(r.RemoteAddr)
-		if !s.reserveConnection(remoteIP) {
-			s.rejectConnection(r.Context(), w, remoteIP)
-			return
-		}
-		conn, err := s.upgrader.Upgrade(w, r, nil)
-		if err != nil {
-			s.releaseConnection(remoteIP, nil)
-			slog.WarnContext(r.Context(), "[websocket] upgrade failed",
-				"remote_addr", r.RemoteAddr,
-				"error", err,
-			)
-			return
-		}
-		ch := s.commitConnection(r.Context(), conn)
-		if ch == nil {
-			_ = conn.Close()
-			s.releaseConnection(remoteIP, nil)
-			return
-		}
-		s.serveWebsocket(ch, remoteIP)
+func (s *Server) handleConnections(w http.ResponseWriter, r *http.Request) {
+	remoteIP, _, _ := net.SplitHostPort(r.RemoteAddr)
+	if !s.reserveConnection(remoteIP) {
+		s.rejectConnection(r.Context(), w, remoteIP)
+		return
 	}
+	conn, err := s.upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		s.releaseConnection(remoteIP, nil)
+		slog.WarnContext(r.Context(), "[websocket] upgrade failed",
+			"remote_addr", r.RemoteAddr,
+			"error", err,
+		)
+		return
+	}
+	ch := s.commitConnection(r.Context(), conn)
+	if ch == nil {
+		_ = conn.Close()
+		s.releaseConnection(remoteIP, nil)
+		return
+	}
+	s.serveWebsocket(ch, remoteIP)
 }
 
 func (s *Server) serveWebsocket(ch *Channel, remoteIP string) {

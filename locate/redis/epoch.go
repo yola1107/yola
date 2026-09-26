@@ -58,7 +58,15 @@ func (l *locator) UnregisterNodeEpoch(ctx context.Context, serviceName, nodeID, 
 	if !locate.ValidServiceName(serviceName) || nodeID == "" || epoch == "" {
 		return locate.ErrInvalidNodeEpoch
 	}
-	return l.deleteIfValueMatches(ctx, nodeEpochKey(serviceName, nodeID), epoch)
+	key := nodeEpochKey(serviceName, nodeID)
+	values, err := l.run(ctx, deleteIfValueMatchesScript, key, epoch)
+	if err != nil {
+		return err
+	}
+	if ackIdempotentUnbind(scriptStatus(values)) {
+		return nil
+	}
+	return errInvalidScriptResult
 }
 
 func nodeEpochLeaseMilliseconds(serviceName, nodeID, epoch string, ttl time.Duration) (int64, error) {

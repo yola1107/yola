@@ -2,9 +2,9 @@ package nats
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net"
+	"sync"
 	"testing"
 	"time"
 
@@ -81,7 +81,9 @@ func TestBusConstructionReportsConnectionFailure(t *testing.T) {
 	require.Error(t, err)
 	cancel()
 
-	newTestServer(t, port)
+	serverOptions := testServerOptions()
+	serverOptions.Port = port
+	startTestServerWithOptions(t, serverOptions)
 	bus, err := New(WithURL(fmt.Sprintf("nats://127.0.0.1:%d", port)), WithTimeout(time.Second))
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, bus.Close()) })
@@ -135,30 +137,59 @@ func TestBusConstructionHonorsCancellationDuringConnect(t *testing.T) {
 }
 
 func TestBusContextCancellationClosesBusAndSubscriptions(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	bus, err := New(WithContext(ctx), WithURL(startTestServer(t)))
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, bus.Close()) })
+	for _, cancelFirst := range []bool{true, false} {
+		t.Run(fmt.Sprintf("cancel_first=%t", cancelFirst), func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			t.Cleanup(cancel)
+			bus, err := New(WithContext(ctx), WithURL(startTestServer(t)))
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, bus.Close()) })
 
-	started := make(chan struct{})
-	stopped := make(chan struct{})
-	_, err = bus.Subscribe(context.Background(), "yola.event.bus-context", func(handlerCtx context.Context, _ event.Event) {
-		close(started)
-		<-handlerCtx.Done()
-		close(stopped)
-	})
-	require.NoError(t, err)
-	require.NoError(t, bus.Publish(context.Background(), event.Event{Topic: "yola.event.bus-context"}))
-	waitSignal(t, started, "handler did not start")
+			started := make(chan struct{})
+			canceled := make(chan struct{})
+			finished := make(chan struct{})
+			release := make(chan struct{})
+			releaseHandler := sync.OnceFunc(func() { close(release) })
+			t.Cleanup(releaseHandler)
+			_, err = bus.Subscribe(context.Background(), "yola.event.bus-context", func(handlerCtx context.Context, _ event.Event) {
+				close(started)
+				<-handlerCtx.Done()
+				close(canceled)
+				<-release
+				close(finished)
+			})
+			require.NoError(t, err)
+			require.NoError(t, bus.Publish(context.Background(), event.Event{Topic: "yola.event.bus-context"}))
+			waitSignal(t, started, "handler did not start")
 
-	cancel()
-	waitSignal(t, stopped, "Bus context cancellation did not stop the handler")
-	require.Eventually(t, func() bool {
-		return errors.Is(bus.Publish(context.Background(), event.Event{Topic: "yola.event.bus-context"}), event.ErrClosed)
-	}, time.Second, time.Millisecond)
-	_, err = bus.Subscribe(context.Background(), "yola.event.after-bus-context", func(context.Context, event.Event) {})
-	require.ErrorIs(t, err, event.ErrClosed)
-	require.NoError(t, bus.Close())
+			if cancelFirst {
+				cancel()
+				require.Eventually(t, bus.conn.IsClosed, time.Second, time.Millisecond)
+			}
+			closed := make(chan error, 1)
+			go func() { closed <- bus.Close() }()
+			waitSignal(t, canceled, "close did not cancel the handler")
+			cancel()
+			require.Eventually(t, bus.conn.IsClosed, time.Second, time.Millisecond)
+			select {
+			case err = <-closed:
+				t.Fatalf("Close returned before the handler finished: %v", err)
+			case <-time.After(20 * time.Millisecond):
+			}
+			releaseHandler()
+			waitSignal(t, finished, "handler did not finish")
+			select {
+			case err = <-closed:
+				require.NoError(t, err)
+			case <-time.After(time.Second):
+				t.Fatal("Close did not finish")
+			}
+			require.ErrorIs(t, bus.Publish(context.Background(), event.Event{Topic: "yola.event.bus-context"}), event.ErrClosed)
+			_, err = bus.Subscribe(context.Background(), "yola.event.after-bus-context", func(context.Context, event.Event) {})
+			require.ErrorIs(t, err, event.ErrClosed)
+			require.NoError(t, bus.Close())
+		})
+	}
 }
 
 func TestBusLifecycle(t *testing.T) {

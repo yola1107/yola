@@ -38,12 +38,6 @@ func startTestServerInstance(t testing.TB) *server.Server {
 	return startTestServerWithOptions(t, testServerOptions())
 }
 
-func newTestServer(t testing.TB, port int) *server.Server {
-	options := testServerOptions()
-	options.Port = port
-	return startTestServerWithOptions(t, options)
-}
-
 func testServerOptions() *server.Options {
 	return &server.Options{Host: "127.0.0.1", Port: server.RANDOM_PORT, NoLog: true, NoSigs: true}
 }

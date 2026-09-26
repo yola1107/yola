@@ -60,7 +60,6 @@ func (o *options) resolveEndpoint() error {
 	if endpoint == nil {
 		return nil
 	}
-	o.endpoint = endpoint
 	o.grpcOptions = append(o.grpcOptions, grpc.Endpoint(endpoint))
 	return nil
 }

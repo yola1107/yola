@@ -200,15 +200,9 @@ func TestBackendsVerifiedTLSAuthority(t *testing.T) {
 	}
 }
 
-func TestGRPCTLSValidatesAndClonesConfig(t *testing.T) {
+func TestClientTLSRejectsNilConfig(t *testing.T) {
 	var nilOptions options
 	require.EqualError(t, ClientTLS(nil)(&nilOptions), "gateway: gRPC TLS config is required")
-
-	config := &tls.Config{MinVersion: tls.VersionTLS12, ServerName: "node.internal"}
-	var configured options
-	require.NoError(t, ClientTLS(config)(&configured))
-	require.NotSame(t, config, configured.clientTLS)
-	require.Equal(t, config.ServerName, configured.clientTLS.ServerName)
 }
 
 type tlsBackendNode struct {

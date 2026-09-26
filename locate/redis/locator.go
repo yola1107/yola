@@ -38,14 +38,3 @@ func (l *locator) Ping(ctx context.Context) error {
 func (l *locator) run(ctx context.Context, script *redis.Script, key string, args ...any) ([]any, error) {
 	return script.Run(ctx, l.client, []string{key}, args...).Slice()
 }
-
-func (l *locator) deleteIfValueMatches(ctx context.Context, key, expected string) error {
-	values, err := l.run(ctx, deleteIfValueMatchesScript, key, expected)
-	if err != nil {
-		return err
-	}
-	if ackIdempotentUnbind(scriptStatus(values)) {
-		return nil
-	}
-	return errInvalidScriptResult
-}

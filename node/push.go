@@ -57,8 +57,6 @@ func (s *Server) pushToGate(ctx context.Context, binding locate.GateBinding, com
 
 func mapGateLocatorError(err error) error {
 	switch {
-	case err == nil:
-		return nil
 	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 		return err
 	case errors.Is(err, locate.ErrGateNotFound):

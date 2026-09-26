@@ -368,12 +368,9 @@ func (ch *Channel) markClosed() {
 }
 
 func isNetworkClosedError(err error) bool {
-	if errors.Is(err, network.ErrConnectionClosed) || errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) ||
+	return errors.Is(err, network.ErrConnectionClosed) || errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) ||
 		errors.Is(err, websocket.ErrCloseSent) || websocket.IsCloseError(err, websocket.CloseGoingAway,
-		websocket.CloseNormalClosure, websocket.CloseAbnormalClosure, websocket.CloseMessageTooBig) {
-		return true
-	}
-	return false
+		websocket.CloseNormalClosure, websocket.CloseAbnormalClosure, websocket.CloseMessageTooBig)
 }
 
 func warnUnexpectedNetworkError(message, connID string, err error) {

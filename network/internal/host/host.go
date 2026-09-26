@@ -115,7 +115,7 @@ func selectInterfaceIP(addrs []net.Addr) net.IP {
 		case *net.IPNet:
 			ip = addr.IP
 		}
-		if !validIP(ip) {
+		if !ip.IsGlobalUnicast() {
 			continue
 		}
 		if ip.To4() != nil {
@@ -124,8 +124,4 @@ func selectInterfaceIP(addrs []net.Addr) net.IP {
 		fallback = ip
 	}
 	return fallback
-}
-
-func validIP(ip net.IP) bool {
-	return ip.IsGlobalUnicast() && !ip.IsInterfaceLocalMulticast()
 }

@@ -16,7 +16,7 @@ import (
 	"yola/locate"
 
 	"github.com/go-kratos/kratos/v3"
-	grpcgo "google.golang.org/grpc"
+	"google.golang.org/grpc"
 )
 
 // Endpoint returns the internal gRPC endpoint published through the Kratos registry.
@@ -254,7 +254,7 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 	go func() {
 		err := s.grpcServer.Start(ctx)
-		if errors.Is(err, grpcgo.ErrServerStopped) {
+		if errors.Is(err, grpc.ErrServerStopped) {
 			err = nil
 		} else if err != nil {
 			err = fmt.Errorf("gateway: start gRPC transport: %w", err)

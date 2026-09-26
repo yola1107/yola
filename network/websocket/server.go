@@ -105,7 +105,7 @@ func NewServer(opts ...ServerOption) *Server {
 	}
 	mux := http.NewServeMux()
 	if validPath(s.config.path) {
-		mux.Handle(s.config.path, s.handleConnections())
+		mux.HandleFunc(s.config.path, s.handleConnections)
 	}
 	s.httpServer.Handler = mux
 	s.httpServer.ReadHeaderTimeout = s.config.handshakeTimeout
