@@ -283,3 +283,27 @@ func (nodeTestAppInfo) Name() string                  { return "game" }
 func (nodeTestAppInfo) Version() string               { return "" }
 func (a nodeTestAppInfo) Metadata() map[string]string { return a.metadata }
 func (nodeTestAppInfo) Endpoint() []string            { return nil }
+
+func savedBindingSession(t *testing.T, locator locate.Locator, opts ...Option) (*Server, Session) {
+	t.Helper()
+	opts = append(opts, Locator(locator))
+	server := newTestServer(t, opts...)
+	require.NoError(t, locator.RegisterNodeEpoch(context.Background(), "game", "node-a", "epoch-a", DefaultNodeEpochTTL))
+	publishTestIdentity(server, nodeIdentity{serviceName: "game", nodeID: "node-a", epoch: "epoch-a"})
+	var session Session
+	server.RegisterRawHandler(1, func(ctx context.Context, _ []byte) ([]byte, error) {
+		session, _ = FromContext(ctx)
+		return nil, nil
+	})
+	_, err := server.forward(context.Background(), testBinding("player-a", "conn-a"), 1, nil)
+	require.NoError(t, err)
+	require.NotNil(t, session)
+	return server, session
+}
+
+func callSessionBinding(ctx context.Context, session Session, method string) error {
+	if method == "BindNode" {
+		return session.BindNode(ctx)
+	}
+	return session.UnbindNode(ctx)
+}

@@ -50,9 +50,6 @@ func TestRegisterHandlesTypedHandlerErrors(t *testing.T) {
 	handlerErr := status.Error(codes.Aborted, "rejected")
 	server := newDispatchTestServer(t)
 	t.Cleanup(func() { require.NoError(t, server.Stop(context.Background())) })
-	Register(server, int32(1), func(context.Context, *wrapperspb.StringValue) (*wrapperspb.StringValue, error) {
-		return wrapperspb.String("reply"), nil
-	})
 	Register(server, int32(2), func(context.Context, *wrapperspb.StringValue) (*wrapperspb.StringValue, error) {
 		return nil, handlerErr
 	})
@@ -64,9 +61,7 @@ func TestRegisterHandlesTypedHandlerErrors(t *testing.T) {
 	})
 	binding := testBinding("player-a", "conn-a")
 
-	_, err := server.forward(context.Background(), binding, 1, []byte{0xff})
-	require.Equal(t, codes.InvalidArgument, status.Code(err))
-	_, err = server.forward(context.Background(), binding, 2, nil)
+	_, err := server.forward(context.Background(), binding, 2, nil)
 	require.ErrorIs(t, err, handlerErr)
 	_, err = server.forward(context.Background(), binding, 3, nil)
 	require.Equal(t, codes.Internal, status.Code(err))

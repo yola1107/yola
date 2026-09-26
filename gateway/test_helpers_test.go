@@ -17,6 +17,7 @@ import (
 	"yola/api/cluster/v1"
 	protocolv1 "yola/api/protocol/v1"
 	"yola/instance"
+	"yola/internal/contextwait"
 	"yola/locate"
 	locateredis "yola/locate/redis"
 	"yola/network"
@@ -388,38 +389,53 @@ func bindTestPlayerNode(t *testing.T, store locate.Locator, serviceName, uid, no
 
 func startTestNode(t *testing.T) string {
 	t.Helper()
-	return startTestNodeInstance(t, "node-a", "game")
-}
-
-func startTestNodeInstance(t *testing.T, id, service string) string {
-	endpoint, stop := startTestNodeServer(t, id, service, false)
-	t.Cleanup(stop)
+	endpoint, _ := startTestNodeServer(t, "node-a", "game")
 	return endpoint
 }
 
-func startTestNodeServer(t *testing.T, id string, serviceName string, sticky bool, opts ...node.Option) (string, func()) {
+func startTestNodeServer(t *testing.T, id string, serviceName string, opts ...node.Option) (string, func()) {
 	t.Helper()
+	const cleanupTimeout = 3 * time.Second
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
+	t.Cleanup(func() { _ = lis.Close() })
 	opts = append(opts, node.Listener(lis))
 	ns, err := node.NewServer(opts...)
 	require.NoError(t, err)
+	// Run 可能在开始调度 Stop 前失败，由创建方保留独立的回收预算。
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
+		defer cancel()
+		if stopErr := ns.Stop(ctx); stopErr != nil {
+			t.Errorf("stop test Node: %v", stopErr)
+		}
+	})
 	serviceImpl := testGameService{}
 	ns.RegisterRawHandler(1, serviceImpl.enter)
 	ns.RegisterRawHandler(2, serviceImpl.enterAndPush)
 	ns.RegisterRawHandler(3, serviceImpl.enterAndBind)
-	appOptions := []kratos.Option{
+	app := kratos.New(
 		kratos.ID(id), kratos.Name(serviceName),
-	}
-	if sticky {
-		appOptions = append(appOptions, kratos.Metadata(instance.StickyMetadata()))
-	}
-	appOptions = append(appOptions, kratos.BeforeStart(ns.BeforeStart), kratos.Server(ns))
-	app := kratos.New(appOptions...)
-	grpcDone := make(chan error, 1)
-	go func() { grpcDone <- app.Run() }()
+		kratos.Metadata(ns.Metadata()), kratos.StopTimeout(cleanupTimeout),
+		kratos.BeforeStart(ns.BeforeStart), kratos.Server(ns),
+	)
+	grpcDone := make(chan struct{})
+	stop := sync.OnceFunc(func() {
+		_ = app.Stop()
+		ctx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
+		defer cancel()
+		if waitErr := contextwait.Done(ctx, grpcDone); waitErr != nil {
+			t.Errorf("wait for test Node: %v", waitErr)
+		}
+	})
+	t.Cleanup(stop)
+	go func() {
+		defer close(grpcDone)
+		_ = app.Run()
+	}()
 	probe, err := grpc.NewClient(lis.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
 	require.NoError(t, err)
+	defer func() { require.NoError(t, probe.Close()) }()
 	health := healthpb.NewHealthClient(probe)
 	require.Eventually(t, func() bool {
 		probeCtx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
@@ -427,11 +443,7 @@ func startTestNodeServer(t *testing.T, id string, serviceName string, sticky boo
 		reply, err := health.Check(probeCtx, &healthpb.HealthCheckRequest{})
 		return err == nil && reply.Status == healthpb.HealthCheckResponse_SERVING
 	}, time.Second, time.Millisecond)
-	require.NoError(t, probe.Close())
-	return "grpc://" + lis.Addr().String(), sync.OnceFunc(func() {
-		_ = app.Stop()
-		<-grpcDone
-	})
+	return "grpc://" + lis.Addr().String(), stop
 }
 
 func initTestGateway(t *testing.T, gateway *Server) {
@@ -599,30 +611,6 @@ func (s *forwardServer) Disconnect(_ context.Context, in *v1.DisconnectRequest) 
 		s.disconnects <- in
 	}
 	return &emptypb.Empty{}, nil
-}
-
-type blockingBindLocator struct {
-	locate.Locator
-	entered     chan locate.GateBinding
-	release     chan struct{}
-	releaseOnce sync.Once
-}
-
-func (s *blockingBindLocator) unblock() {
-	s.releaseOnce.Do(func() { close(s.release) })
-}
-
-func newBlockingBindLocator(store locate.Locator) *blockingBindLocator {
-	return &blockingBindLocator{
-		Locator: store, entered: make(chan locate.GateBinding, 1), release: make(chan struct{}),
-	}
-}
-
-func (s *blockingBindLocator) BindGate(ctx context.Context, binding locate.GateBinding, ttl time.Duration) (locate.GateLease, *locate.GateBinding, error) {
-	lease, previous, err := s.Locator.BindGate(ctx, binding, ttl)
-	s.entered <- binding
-	<-s.release
-	return lease, previous, err
 }
 
 type blockingUnbindLocator struct {

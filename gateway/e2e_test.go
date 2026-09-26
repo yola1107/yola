@@ -59,7 +59,7 @@ func TestGatewayNodeIntegration(t *testing.T) {
 	t.Cleanup(func() { require.NoError(t, discovery.Close()) })
 	serviceName := "yola-test-e2e-" + suffix
 	nodeID := "node-" + suffix
-	endpoint, stopNode := startTestNodeServer(t, nodeID, serviceName, true, node.Locator(store))
+	endpoint, stopNode := startTestNodeServer(t, nodeID, serviceName, node.Locator(store))
 	nodeInstance := &registry.ServiceInstance{
 		ID: nodeID, Name: serviceName, Metadata: instance.StickyMetadata(),
 		Endpoints: []string{endpoint},

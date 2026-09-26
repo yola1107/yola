@@ -361,3 +361,27 @@ func TestTakeoverKickSurvivesCanceledAuthentication(t *testing.T) {
 	require.NoError(t, receiveWithin(t, ctxErr))
 	require.True(t, isClosed(conn.closed)())
 }
+
+type blockingBindLocator struct {
+	locate.Locator
+	entered     chan locate.GateBinding
+	release     chan struct{}
+	releaseOnce sync.Once
+}
+
+func (s *blockingBindLocator) unblock() {
+	s.releaseOnce.Do(func() { close(s.release) })
+}
+
+func newBlockingBindLocator(store locate.Locator) *blockingBindLocator {
+	return &blockingBindLocator{
+		Locator: store, entered: make(chan locate.GateBinding, 1), release: make(chan struct{}),
+	}
+}
+
+func (s *blockingBindLocator) BindGate(ctx context.Context, binding locate.GateBinding, ttl time.Duration) (locate.GateLease, *locate.GateBinding, error) {
+	lease, previous, err := s.Locator.BindGate(ctx, binding, ttl)
+	s.entered <- binding
+	<-s.release
+	return lease, previous, err
+}

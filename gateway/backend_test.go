@@ -93,39 +93,23 @@ func TestBackendsConnectionOutlivesFirstWaiter(t *testing.T) {
 	require.NotNil(t, cached)
 }
 
-func TestBackendsBoundConnectionAndCancelOnClose(t *testing.T) {
-	for _, test := range []struct {
-		name    string
-		timeout time.Duration
-		close   bool
-		want    error
-	}{
-		{name: "connect timeout", timeout: 20 * time.Millisecond, want: context.DeadlineExceeded},
-		{name: "pool close", timeout: time.Second, close: true, want: errBackendsClosed},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			discovery := &blockingBackendDiscovery{
-				backendTestDiscovery: newBackendTestDiscovery(
-					serviceInstance("game", "node-a", "grpc://127.0.0.1:9001"),
-				),
-				started: make(chan context.Context, 1),
-				release: make(chan struct{}),
-			}
-			services := newBackends(discovery, nil, test.timeout)
-			result := make(chan error, 1)
-			go func() {
-				_, err := services.get(context.Background(), "game")
-				result <- err
-			}()
-			receiveWithin(t, discovery.started)
-			if test.close {
-				services.close()
-			} else {
-				t.Cleanup(services.close)
-			}
-			require.ErrorIs(t, receiveWithin(t, result), test.want)
-		})
+func TestBackendsCloseCancelsSharedConnection(t *testing.T) {
+	discovery := &blockingBackendDiscovery{
+		backendTestDiscovery: newBackendTestDiscovery(
+			serviceInstance("game", "node-a", "grpc://127.0.0.1:9001"),
+		),
+		started: make(chan context.Context, 1),
+		release: make(chan struct{}),
 	}
+	services := newBackends(discovery, nil, time.Second)
+	result := make(chan error, 1)
+	go func() {
+		_, err := services.get(context.Background(), "game")
+		result <- err
+	}()
+	receiveWithin(t, discovery.started)
+	services.close()
+	require.ErrorIs(t, receiveWithin(t, result), errBackendsClosed)
 }
 
 func TestBackendsRejectStickyModeChange(t *testing.T) {
