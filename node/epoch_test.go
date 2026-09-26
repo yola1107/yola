@@ -330,6 +330,25 @@ func TestEpochLeaseExpiresWhileRenewalIgnoresCancellation(t *testing.T) {
 	})
 }
 
+func TestEpochRenewalReturnsCurrentLossAfterEarlierCancellation(t *testing.T) {
+	store := &controlledEpochLocator{Locator: newMemoryLocator()}
+	lease, err := claimEpoch(context.Background(), store, nodeIdentity{serviceName: "game", nodeID: "node-a"})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, lease.release(context.Background())) })
+	firstCause := errors.New("earlier epoch loss")
+	store.setRenew(func(context.Context) error {
+		lease.cancel(firstCause)
+		return locate.ErrNodeEpochConflict
+	})
+
+	err = lease.renewOnce(lease.ctx)
+
+	require.ErrorIs(t, err, locate.ErrNodeEpochConflict)
+	require.EqualError(t, err, "node: epoch ownership lost: "+locate.ErrNodeEpochConflict.Error())
+	require.NotSame(t, firstCause, err)
+	require.Same(t, firstCause, context.Cause(lease.ctx))
+}
+
 func TestEpochLeaseUsesCallStartForDeadline(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		store := &controlledEpochLocator{Locator: newMemoryLocator()}

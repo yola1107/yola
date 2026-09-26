@@ -160,6 +160,12 @@ func (e *epochLease) valid() error {
 	return context.Cause(e.ctx)
 }
 
+// loseOwnership 记录存储确认的失权，取消本代工作并返回首次取消原因。
+func (e *epochLease) loseOwnership(err error) error {
+	e.cancel(fmt.Errorf("node: epoch ownership lost: %w", err))
+	return context.Cause(e.ctx)
+}
+
 // requestContext 让租约失效取消已接纳工作；正常排空期间租约继续续期。
 func (e *epochLease) requestContext(ctx context.Context) (context.Context, context.CancelFunc) {
 	if e == nil {
@@ -220,6 +226,7 @@ func (e *epochLease) renewOnce(ctx context.Context) error {
 	}
 	slog.WarnContext(ctx, "node epoch renew failed", "node_id", identity.nodeID, "service", identity.serviceName, "error", err)
 	if errors.Is(err, locate.ErrNodeEpochNotFound) || errors.Is(err, locate.ErrNodeEpochConflict) {
+		// 返回本次续租错误，不能用首次取消原因替代。
 		err = fmt.Errorf("node: epoch ownership lost: %w", err)
 		e.cancel(err)
 	}

@@ -3,7 +3,6 @@ package node
 import (
 	"context"
 	"errors"
-	"fmt"
 
 	"yola/locate"
 
@@ -133,9 +132,7 @@ func (s *Server) handleBindingError(err error) error {
 		return mapNodeLocatorError(err)
 	}
 	// 存储已确认本代失权：先取消已接纳工作，再关闭准入；不能只通知 Start 退出。
-	lease := s.lease.Load()
-	lease.cancel(fmt.Errorf("node: epoch ownership lost: %w", err))
-	s.failLifecycle(context.Cause(lease.ctx))
+	s.failLifecycle(s.lease.Load().loseOwnership(err))
 	return status.Error(codes.Unavailable, "node epoch is unavailable")
 }
 

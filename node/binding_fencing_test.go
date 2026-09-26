@@ -71,6 +71,22 @@ func TestBindingEpochLossCancelsAcceptedWork(t *testing.T) {
 	}
 }
 
+func TestBindingEpochLossPreservesRecordedCause(t *testing.T) {
+	server, _ := savedBindingSession(t, newMemoryLocator())
+	t.Cleanup(func() { require.NoError(t, server.Stop(context.Background())) })
+	lease := server.lease.Load()
+	firstCause := errors.New("earlier epoch loss")
+	lease.cancel(firstCause)
+
+	err := server.handleBindingError(locate.ErrNodeEpochConflict)
+
+	require.Equal(t, codes.Unavailable, status.Code(err))
+	require.Same(t, firstCause, context.Cause(lease.ctx))
+	require.Same(t, firstCause, context.Cause(server.fatalCtx))
+	require.True(t, server.requests.isClosed())
+	require.True(t, server.deliveries.isClosed())
+}
+
 func TestBindingOtherErrorsDoNotRevokeEpoch(t *testing.T) {
 	for _, method := range []string{"BindNode", "UnbindNode"} {
 		for _, failure := range []struct {
