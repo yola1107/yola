@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"yola/api/protocol/v1"
+	"yola/internal/gateclient"
 	"yola/locate"
 
 	"github.com/go-kratos/kratos/v3/transport"
@@ -126,39 +127,6 @@ func authenticationFenceCode(ctx context.Context, sess *session) codes.Code {
 	return codes.Aborted
 }
 
-func (s *Server) heartbeat(ctx context.Context, sess *session) error {
-	now := time.Now()
-	binding, valid, due := sess.heartbeatRoute(now, s.leaseTTL/2)
-	if !valid {
-		_ = sess.conn.Close()
-		return status.Error(codes.Aborted, "session lease expired")
-	}
-	if !due {
-		return nil
-	}
-	renewCtx, cancel := context.WithTimeout(ctx, s.leaseTimeout)
-	defer cancel()
-	lease, err := s.locator.RenewGateLease(renewCtx, binding, s.leaseTTL)
-	if err == nil {
-		sess.finishHeartbeat(binding, now, lease.TTL)
-		return nil
-	}
-	code := locateStatusCode(err)
-	if code == codes.Aborted || code == codes.Internal {
-		_ = sess.conn.Close()
-		msg := "session binding changed"
-		if code == codes.Internal {
-			msg = "invalid Gate location state"
-		}
-		return status.Error(code, msg)
-	}
-	if code == codes.Canceled {
-		return status.Error(codes.Canceled, context.Canceled.Error())
-	}
-	// DeadlineExceeded / Unavailable: keep the connection; the next heartbeat retries.
-	return nil
-}
-
 func (s *Server) authenticateUID(ctx context.Context, serviceName string, token []byte, connID string) (string, error) {
 	remoteIP := ""
 	if tr, ok := transport.FromServerContext(ctx); ok {
@@ -188,35 +156,33 @@ func (s *Server) authenticateUID(ctx context.Context, serviceName string, token 
 	return uid, nil
 }
 
-func (s *Server) unbindGate(ctx context.Context, binding locate.GateBinding) {
-	err := s.locator.UnbindGate(ctx, binding)
-	if err == nil || errors.Is(err, context.Canceled) {
+// kickPrevious 位于已接纳的认证内，断线后的接管清理由 CleanupTimeout 限时。
+func (s *Server) kickPrevious(ctx context.Context, previous locate.GateBinding) {
+	if previous.GateID == s.identity.id {
+		_ = s.kick(ctx, previous, v1.KickCodeSessionReplaced)
 		return
 	}
-	code := locateStatusCode(err)
-	slog.ErrorContext(ctx, "unbind Gate failed",
-		"uid", binding.UID,
-		"conn_id", binding.ConnID,
-		"service", binding.ServiceName,
-		"gate_id", binding.GateID,
+	ctx, cancel := s.cleanupContext(ctx)
+	defer cancel()
+	err := s.gateways.Kick(ctx, previous, v1.KickCodeSessionReplaced)
+	if err == nil {
+		return
+	}
+	code := status.Code(err)
+	if errors.Is(err, gateclient.ErrUnavailable) {
+		code = codes.Unavailable
+	}
+	if code == codes.Canceled {
+		return
+	}
+	slog.ErrorContext(ctx, "kick previous connection failed",
+		"uid", previous.UID,
+		"conn_id", previous.ConnID,
+		"service", previous.ServiceName,
+		"gate_id", s.identity.id,
+		"target_gate_id", previous.GateID,
 		"code", int32(code),
 		"status", code.String(),
 		"error", err,
 	)
-}
-
-func locateStatusCode(err error) codes.Code {
-	switch {
-	case errors.Is(err, locate.ErrGateNotFound), errors.Is(err, locate.ErrGateConflict):
-		return codes.Aborted
-	case errors.Is(err, context.Canceled):
-		return codes.Canceled
-	case errors.Is(err, context.DeadlineExceeded):
-		return codes.DeadlineExceeded
-	case errors.Is(err, locate.ErrInvalidGateBinding), errors.Is(err, locate.ErrInvalidGateLease),
-		errors.Is(err, locate.ErrInvalidGateTTL):
-		return codes.Internal
-	default:
-		return codes.Unavailable
-	}
 }

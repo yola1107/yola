@@ -2,9 +2,11 @@ package gateway
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/url"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,6 +18,8 @@ import (
 
 	"github.com/go-kratos/kratos/v3/middleware"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
 )
 
@@ -184,4 +188,92 @@ func (n *blockedForwardNode) Forward(ctx context.Context, _ *clusterv1.ForwardRe
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
+}
+
+func TestLocateStatusCode(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		err  error
+		want codes.Code
+	}{
+		{name: "gate missing", err: locate.ErrGateNotFound, want: codes.Aborted},
+		{name: "gate conflict", err: locate.ErrGateConflict, want: codes.Aborted},
+		{name: "canceled", err: context.Canceled, want: codes.Canceled},
+		{name: "deadline", err: context.DeadlineExceeded, want: codes.DeadlineExceeded},
+		{name: "invalid binding", err: locate.ErrInvalidGateBinding, want: codes.Internal},
+		{name: "invalid lease", err: locate.ErrInvalidGateLease, want: codes.Internal},
+		{name: "invalid ttl", err: locate.ErrInvalidGateTTL, want: codes.Internal},
+		{name: "redis failure", err: errors.New("connection refused"), want: codes.Unavailable},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			require.Equal(t, tc.want, locateStatusCode(tc.err))
+		})
+	}
+}
+
+func TestHeartbeatClassifiesLocatorFailures(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		err        error
+		wantCode   codes.Code
+		wantClosed bool
+	}{
+		{name: "unavailable", err: errors.New("redis unavailable")},
+		{name: "deadline", err: context.DeadlineExceeded},
+		{name: "canceled", err: context.Canceled, wantCode: codes.Canceled},
+		{name: "missing", err: locate.ErrGateNotFound, wantCode: codes.Aborted, wantClosed: true},
+		{name: "binding changed", err: locate.ErrGateConflict, wantCode: codes.Aborted, wantClosed: true},
+		{name: "invalid lease", err: locate.ErrInvalidGateLease, wantCode: codes.Internal, wantClosed: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			store := &renewLeaseLocator{Locator: testLocator(t), err: test.err}
+			gateway := &Server{locator: store, leaseTimeout: time.Second, leaseTTL: time.Minute}
+			conn := newTestConnection("conn-a")
+			sess := activeSession(conn, testBinding())
+			sess.leaseDeadline = time.Now().Add(gateway.leaseTTL / 2)
+
+			err := gateway.heartbeat(context.Background(), sess)
+
+			require.Equal(t, test.wantCode, status.Code(err))
+			require.Equal(t, test.wantClosed, isClosed(conn.closed)())
+			require.Equal(t, int32(1), store.calls.Load())
+		})
+	}
+}
+
+func TestHeartbeatRenewsAtHalfTTLAndRetriesTransientFailure(t *testing.T) {
+	store := &renewLeaseLocator{Locator: testLocator(t), errors: []error{context.DeadlineExceeded, nil}}
+	gateway := &Server{locator: store, leaseTimeout: time.Second, leaseTTL: time.Minute}
+	sess := activeSession(newTestConnection("conn-a"), testBinding())
+	sess.leaseDeadline = time.Now().Add(gateway.leaseTTL / 2)
+	initialDeadline := sess.leaseDeadline
+
+	require.NoError(t, gateway.heartbeat(context.Background(), sess))
+	require.Equal(t, initialDeadline, sess.leaseDeadline)
+	require.NoError(t, gateway.heartbeat(context.Background(), sess))
+	require.Greater(t, sess.leaseDeadline, initialDeadline)
+	require.NoError(t, gateway.heartbeat(context.Background(), sess))
+	require.Equal(t, int32(2), store.calls.Load())
+}
+
+type renewLeaseLocator struct {
+	locate.Locator
+	err    error
+	errors []error
+	calls  atomic.Int32
+}
+
+func (s *renewLeaseLocator) RenewGateLease(_ context.Context, binding locate.GateBinding, ttl time.Duration) (locate.GateLease, error) {
+	call := int(s.calls.Add(1)) - 1
+	err := s.err
+	if call < len(s.errors) {
+		err = s.errors[call]
+	}
+	if err != nil {
+		return locate.GateLease{}, err
+	}
+	return locate.GateLease{Binding: binding, TTL: ttl}, nil
 }

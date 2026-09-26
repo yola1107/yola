@@ -2,9 +2,6 @@ package node
 
 import (
 	"context"
-	"errors"
-	"fmt"
-	"net/url"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -110,37 +107,6 @@ func NewServer(opts ...Option) (*Server, error) {
 	server.grpcServer = grpc.NewServer(grpcOptions...)
 	v1.RegisterNodeServer(server.grpcServer, &forwardService{server: server})
 	return server, nil
-}
-
-// Endpoint returns the internal endpoint published through the Kratos registry.
-func (s *Server) Endpoint() (*url.URL, error) {
-	s.lifecycleMu.Lock()
-	defer s.lifecycleMu.Unlock()
-	if s.requests.isClosed() {
-		return nil, errors.New("node: server is stopping or stopped")
-	}
-	return s.resolveGRPCEndpoint(context.Background())
-}
-
-func (s *Server) resolveGRPCEndpoint(ctx context.Context) (*url.URL, error) {
-	if err := s.grpcListener.Prepare(ctx); err != nil {
-		return nil, fmt.Errorf("node: prepare gRPC listener: %w", err)
-	}
-	endpoint, err := s.grpcServer.Endpoint()
-	if err != nil {
-		return nil, errors.Join(
-			fmt.Errorf("node: resolve gRPC endpoint: %w", err),
-			s.closeGRPCListener(),
-		)
-	}
-	return endpoint, nil
-}
-
-func (s *Server) closeGRPCListener() error {
-	if err := s.grpcListener.Close(); err != nil {
-		return fmt.Errorf("node: close gRPC listener: %w", err)
-	}
-	return nil
 }
 
 // Metadata returns sticky service metadata when a locator is configured.

@@ -13,6 +13,7 @@ Gateway/Node 是外层原生 Kratos App 的内嵌 transport。应用拥有 ident
 | 发布事件、订阅及在线广播 | [EventBus 接入](./eventbus.md) |
 | 复测性能、评估容量 | [性能基线](./performance.md) |
 | 查看未解决问题和验收缺口 | [当前问题](./issues.md) |
+| 查看 Gateway/Node 文件职责与清理依据 | [文件职责审查](./gateway-node-file-review.md) |
 | 启动最小应用 | [examples](../examples/README.md) |
 | 运行完整游戏、集成测试及压测 | [test](../test/README.md)、[Ludo press](../test/ludo/README.md) |
 
