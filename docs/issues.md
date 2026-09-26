@@ -1,30 +1,63 @@
-# 问题清单与解决方案
+# 问题清单与清理边界
 
-本文汇总问题、设计债和部署约束；已关闭问题保留原条目并划线，实施状态、批次和交接信息由 [架构审查与修复进度](./refactor-progress.md) 维护。
-当前架构契约以 [architecture.md](./architecture.md)、[eventbus.md](./eventbus.md) 为准，候选解决方案不代表已经实现或已经获准改变契约。
+2026-09-26 按 `af33b00` 重新核对。当前任务是根 module 的行为等价清理，Gate/Node 继续作为原生 Kratos v3 App 的内嵌组件。架构契约见 [architecture.md](./architecture.md)，本轮状态与验证见 [进度表](./refactor-progress.md)。
 
-- **审查基线**：2026-09-25，代码提交 `0c8b270`。行号均为该基线的定位提示，实施前须按声明名重新核对。
-- **范围**：根 module 的职责、依赖、状态所有权和生命周期；`test` 是接入与验收案例，业务状态仍由业务层拥有。
-- **证据**：I47、I48、I49、I50、I51、I52、I53、I54、I55 已分别完成修复或契约闭环及验证，I44 已完成指定配置下的容量验收；I46 的框架预算与根链路子项已提交，新发现的 Redis deadline 缺口及完整业务验收仍待处理。原故障及验收记录见进度表；存量运行数据只支持其原始配置和场景。
-- **优先级**：P0 为生产前必须闭环的部署风险；P1 为正确性、可用性或容量验收重点；P2 为契约清晰度、扩展能力或已接受限制。
-- **维护**：保留既有 ID；新增问题补齐影响、证据、方案和关闭条件。关闭后保留原条目并为问题标题划线，追加关闭结果，在进度表同步划线并保留验证证据；不得删除已关闭问题。部分完成时只划掉已完成子项，父 issue 保持未关闭，并列明剩余条件。
+只实施有代码依据、收益明确且风险低的删除、合并、局部命名和控制流清理。保持接口、协议、业务逻辑、求值顺序、锁范围、defer、错误身份及外部 I/O 时机；不把历史候选方案或 skill 能力当作新增需求。
 
-## 整体处置边界
+## 本轮清理
 
-本清单不是按编号顺序执行的修复队列。外层原生 Kratos App 是唯一应用；Gate/Node 保持组件身份，不引入另一套 App/Config、运行器或隐藏原生覆盖语义的组合入口。调用链、所有者与接口边界以 [接入契约](./architecture.md#11-接入与服务边界) 为准。
-
-| 问题组 | 当前性质 | 真实依赖与处理方式 |
+| 范围 | 收益与等价边界 | 验证入口 |
 | --- | --- | --- |
-| I48、I03 | 进程修改权修复与业务绑定存续策略 | I48 已按确认的 service 原子分区关闭；I03 继续区分建立、保活、改绑、撤销，不以进程 epoch 代替业务 owner |
-| I36、I08、I29 | 单活强度、模式迁移和代理信任的契约选择 | 保持当前 best-effort、模式固定及 peer 语义；需求未改变时不自动增加机制 |
-| I46、I45 | Redis deadline 缺口、业务验收与同步投递成本 | 已完成框架预算分离与可控交错；先修真实 Redis I/O 预算，再继续完整游戏副作用窗口、目标规模与稳态 |
-| I41、I44 | 连接发送与订阅接收各自的容量边界 | I44 已完成指定配置验收；I41 继续复用 I55 分层观测，独立验证连接容量 |
-| I04、I34 | Stateful 查询成本与 Gate 续租波次 | 诊断可独立进行；只有改变 fencing、布局或保活原语才与身份设计形成硬依赖 |
-| I40 | 生产部署安全约束 | 在明确目标环境验收；本地开发状态不自动要求改写框架或现有共享服务 |
+| Node 注册与分发 | `Handler`、`RegisterRawHandler`、`OnDisconnect` 集中到 [register.go](../node/register.go)；[dispatch.go](../node/dispatch.go) 聚焦分发。声明名、注册锁、panic 与 middleware 顺序不变 | 注册、dispatch、command、原生 App 生命周期测试 |
+| Gate/Node 错误处理 | [unbindGate](../gateway/auth.go)、[handleBindingError](../node/session.go) 使用 early return；保留短路、错误分类、取消及日志时机 | 认证、清理、绑定失权与排空测试 |
+| Gateway 发现 | [resolver](../gateway/resolver.go) 内联仅初始化两个 map 的单次构造 helper，保留身份冲突校验职责 | 快照冲突、空实例与 sticky 模式测试 |
+| Node sticky claim | 前置分支已排除空 claim，删除重复的空 NodeID 判断；仍按 NodeID、epoch、存储 binding 顺序 fencing | dispatch 与 binding fencing 测试 |
+| 回程连接池 | [cached](../internal/gateclient/client.go) 提前返回未命中；引用计数、timer 操作及锁范围不变 | 复用、取消、回收与关闭测试/race |
 
-按每项的关闭记录判断完成度，不把历史检查或候选原型视为当前修复通过。
+命名返回值已核对：Gateway/Node `BeforeStart` 和 Registry `Register` 的 `err` 参与 defer 回滚；`backendState.mode`、`queue.next` 的名称区分多个返回值语义，保留。本轮核对范围内未发现其他可安全删除的死代码或不必要的命名返回值，不为减少行数扩大改动。
 
-## 架构审查发现
+## 保留的问题（本轮不实施）
+
+- <a id="i03"></a> **I03 · Node binding 缺少安全的业务保活能力**
+  - **事实**：[locate/redis/node.go](../locate/redis/node.go) 固定 6h TTL；Bind 是覆盖写，进程 epoch 有效不等于仍拥有某个玩家。旧业务任务再次 Bind 可能抢回已改绑的定位。
+  - **影响**：业务持续超过 TTL 时可能丢失路由。I48 只保护进程修改权，不解决业务 owner 的存续与释放。
+  - **状态**：需独立确定业务存续契约。本轮不增加保活 manager、索引、业务代次或公共 API，也不延长 TTL；原 ID 重启继承与 LWW 保持不变。
+  - **后续验收边界**：若另行实施，应覆盖超 TTL 活跃业务、改绑与旧保活竞争、同 ID 重启及结果未知窗口。当前不宣称已有安全保活实现，见 [绑定边界](./node-binding-fencing.md#联合契约边界)。
+
+- <a id="i46"></a> **I46 · Redis deadline 与完整业务预算尚未闭环**
+  - **已完成**：框架非请求预算分离、原生 App 验收入口、真实 TCP/WS 取消与已开始任务排空；证据见 [历史记录](./refactor-progress.md#b3-results)、[验收入口](./refactor-progress.md#request-budget-fixture)、[生命周期验收](./refactor-progress.md#request-lifecycle-results)。
+  - **剩余证据**：历史真实连接探针在 caller 100ms deadline 后约 301ms 返回成功，3/3 失败；启用 go-redis caller deadline 后的网络 timeout 仍需分类。该探针不是本轮重跑结果，见 [诊断记录](./refactor-progress.md#redis-deadline)。
+  - **状态**：未修复；client 装配及错误分类会改变运行行为，超出本轮清理范围。不得修改注入 client、覆盖成功结果或把取消解释为存储回滚。
+  - **未完成验收**：完整 Ludo/Whot 副作用与重连窗口、目标规模和稳态未闭环；小规模框架测试不能替代业务验收。
+
+## 从 issue 队列移除的候选方向
+
+删除下列候选方案及自动实施排期，保留对应的事实边界供接入者判断。它们不是“修复完成”，也不因存在工具或历史计划而自动恢复。
+
+| 历史 ID / 方向 | 当前边界 | 移除理由 |
+| --- | --- | --- |
+| <a id="i36"></a>I36 · Gate 强单活 | 跨 Gateway Kick 为 best-effort；已开始业务操作不撤销 | 无新增强单活需求，强化 fencing 会改变业务接纳及副作用语义 |
+| <a id="i08"></a>I08 · sticky 在线切换 | service 模式固定；变化 fail closed，切换须重启 Gateway | 在线迁移需要新路由协议和 binding 迁移，不属于等价清理 |
+| <a id="i29"></a>I29 · 代理客户端 IP | 限流与认证使用 socket peer，不信任任意转发头 | 未确定代理部署与信任来源，新增协议会扩大安全和配置边界 |
+| <a id="i04"></a>I04 · Stateful 查询合并 | 已绑定请求仍执行三次有各自职责的 Redis 查询 | 无当前瓶颈证据；合并、缓存或删除查询可能弱化 fencing |
+| <a id="i34"></a>I34 · 续租整形 | 到期 heartbeat 续租，失败由后续 heartbeat 重试 | 未量化波次成本，新增 jitter、限流或退避状态会改变执行时序 |
+
+## 运行与部署限制
+
+这些是环境和负载的验收边界，不排入本轮框架清理队列。
+
+| 历史 ID / 范围 | 保留的限制与证据 |
+| --- | --- |
+| <a id="i40"></a>I40 · NATS 部署 | 开发 broker 的历史无认证/TLS 观测不是当前生产环境结论。生产目标须独立验收认证、TLS、ACL；Core NATS 保持在线可丢失语义，见 [接入契约](./eventbus.md) |
+| <a id="i41"></a>I41 · 真实连接容量 | 进程内分配与 I55 统计不证明真实连接容量、慢连接 RSS 或业务 SLO；未完成的容量验收不能标为通过 |
+| <a id="i45"></a>I45 · Table Push 与业务长尾 | 同步 Push、桌内串行及失败反馈时机不变；已有小场景和入座数据不代表完整对局、目标规模或长期稳态通过 |
+
+<a id="性能与验收限制"></a>
+性能历史数据、配置、命令和容量口径保留在 [performance.md](./performance.md)，本轮不运行性能优化或容量扩展。I44 的指定配置验收已完成，结果不外推到其他负载。
+
+## 已关闭问题的历史证据
+
+以下十项保留原 ID、划线和关闭记录，便于追溯。条目中的旧代码行号、候选方案和“本批”均属于原验证基线，不是本轮实施指令或新的通过结论；当前接口与行为以架构文档和代码为准。
 
 - <a id="i47"></a> **~~I47 · P1：Node 就绪核验与 Registry 发布缺少共同屏障~~**
   - **影响**：旧实例完成准备后暂停，epoch 过期且同 ID 新实例已接手；旧实例恢复时可能先发布旧 endpoint，再因核验失败退出，覆盖新实例的发现记录。请求 fencing 仍有效，主要风险是新实例不可达。
@@ -104,96 +137,9 @@
   - **关闭条件与风险**：能为 I41/I44 输出可重复的分层容量证据，仍不能把“入队成功”计为客户端已收到。此项完成不自动关闭容量问题。
   - **关闭记录（2026-09-25，随本问题提交）**：由原订阅和连接 owner 实现可选 SubscriptionStatsProvider/SendStatsProvider，复用 BroadcastStats，未新增 manager、注册表或消息队列。缺少观测能力各复现 3/3；内嵌真实 NATS、慢 writer 屏障、Payload/取消/关闭/并发读及分层拒绝验收完成，定向 race 20 轮、五包 race、最终 make check/lint 通过。关闭后保留本地累计值；原生 drop 明确标记最后可得值，连接逻辑 Payload 不代表 RSS，跨层错误不相加。三组热路径成本已对照，详见 [I55 验证](./refactor-progress.md#i55-results)；本项不关闭 I41/I44。
 
-## 功能与语义缺口
-
-- <a id="i36"></a> **I36 · P1：跨 Gateway 重复登录不保证同 UID 强单活**
-  - **影响与证据**：新认证覆盖 Gate binding 后同步 best-effort Kick 旧连接；本地不再丢弃 Kick，但远端失败时旧连接在 lease 失效前仍可 Forward。见 [gateway/takeover.go](../gateway/takeover.go)、[forward.go:20](../gateway/forward.go#L20)。
-  - **解决方案**：先明确业务是否要求强单活；若要求，在框架边界设计当前 Gate binding 校验及副作用 fencing，不散布到每个业务 handler。保持 Node binding 独立于物理连接的生命周期。
-  - **验证方案**：跨 Gateway 同 UID 并发认证、远端 Kick 失败/超时、旧连接继续请求、旧 Disconnect 迟到、lease 过期和新连接正常请求；检查旧操作实际进入业务的边界。
-  - **关闭条件与风险**：按确认的单活强度验收。单次入口校验不能撤销已开始的业务操作；不把 I48 的 Node 代次保护等同于 Gate 单活。
-
-- <a id="i46"></a> **I46 · P1：请求预算分散且与非请求生命周期耦合**
-  - **影响与证据**：Transport、Gateway、Node 各有限时；Ludo 入座独立 5s，已开始桌任务可跨过外层 deadline。Node YAML 5s 与压测夹具 15s 的结论不可互用。修复前（`0c8b270`）RPCTimeout/PushTimeout 还控制建连、续租或清理，现已按下方记录分离；当前不再把这些耦合列为待改代码。预算 owner 见 [当前契约](./architecture.md#63-请求预算与超时职责)。
-  - **解决方案**：在装配处表达请求预算，内部继承 deadline 并按职责缩短；分别确定 Push、Auth、租约、失败清理与停服预算所有者。比较现有每层上限与“无 deadline 才补默认值”的行为差异，不新增一个统管所有职责的全局超时。
-  - **验证方案**：覆盖较短父 deadline、无 deadline、队列中取消、开始/取消竞争、已开始操作、独立失败清理、重连归属及真实 gRPC/外部帧错误传播；单独调整 PushTimeout 不得意外改变经确认的清理预算。与 I50 联合验证心跳，再按同配置复测负载。
-  - **关闭条件与风险**：有效预算及所有者可追踪，取消和已开始操作语义明确，同配置业务目标通过。不得简单把所有 background context 换为请求 context；删除现有上限或改变开始后的完成语义须先确认。
-  - **~~已完成子项：框架非请求预算分离~~（2026-09-25，7c12592）**：Gateway 新增各默认 3s 的 ConnectTimeout、LeaseTimeout、CleanupTimeout，Node 新增默认 3s 的 CleanupTimeout；RPCTimeout/PushTimeout 不再控制这些非请求操作。五条 deadline 耦合各复现 3/3，分离后定向 20 轮通过；真实 gRPC 四种最短 deadline、根包 race、make check/lint、扩展 mailbox/入座/重连/清理 race 通过。保留逐层请求上限及已开始操作语义，未改变协议、游戏默认预算或配置标识符。
-  - **~~已完成子项：原生应用与分层预算验收入口~~（2026-09-26，b1976ed）**：`pushbench` 改为原生 App.Run 启停，使用现有 Node 就绪 Registrar，移除手工 Register；分别配置 Transport/Forward/Node 并输出预算。历史场景保持不变，新增 `TestConfiguredGameDelivery` 从 Node YAML 读取预算，Gateway 两段按当前默认 3s。仅修复测试模块的验收入口，不新增生产 App/Config 或改动业务预算；验证结果见 [当前批次](./refactor-progress.md#request-budget-fixture)。
-  - **~~已完成子项：真实连接取消与已开始任务排空~~（2026-09-26，本批提交）**：真实 TCP/WS Client→Gateway→Node 覆盖本地 cancel/deadline、迟到回复与下一请求重叠、断连/Forward 超时后的业务完成与原生 App.Stop 排空，以及旧 Unbind/Disconnect 迟到的新 Session 归属。测试使用 miniredis、静态 Discovery 和可控业务 handler；生产改动仅为两种 Client.Request 的取消契约注释，未改变运行语义。命令、结果及边界见 [生命周期验收](./refactor-progress.md#request-lifecycle-results)。
-  - **剩余验收**：当前请求预算小规模场景不等于全部 YAML 部署；完整游戏中的副作用/重连窗口、目标规模和稳态仍需 I45/B6 验证。根框架可控交错已补齐，I46 保持待验证，不重做预算分离；历史框架验证见 [B3 记录](./refactor-progress.md#b3-results)。
-
-## 运行与部署限制
-
-- <a id="i40"></a> **I40 · P0：开发 NATS 的认证、TLS 与生产要求不同**
-  - **影响与证据**：2026-08-20 开发 VM NATS 2.10.29 INFO 显示认证和 TLS 关闭，只适合受信网络内开发；这是历史观测，本轮未重查当前 VM。broker 启用 JetStream 不改变 Yola 仅使用 Core NATS、无持久化与重放的语义。
-  - **解决方案**：生产前开启账号认证、mTLS、subject ACL；保持当前在线事件契约。未来若要求可靠事件，单独设计 JetStream 的 ack、重投、存储与恢复，不隐式切换。
-  - **验证方案**：确认目标 broker 后核查当前配置，在获准的隔离环境测试合法/非法凭据、证书和 Topic ACL，并覆盖 I51 的激活错误传播。
-  - **关闭条件**：生产安全配置与验收齐备；不因 broker 存在 JetStream 就宣称事件可靠。
-
-- <a id="i03"></a> **I03 · P2：Node binding 固定 6h TTL，缺少独立续租与批量管理**
-  - **影响与证据**：[locate/redis/node.go:13](../locate/redis/node.go#L13) 固定 6h，BindNode 刷新 TTL；没有 NodeID 反查或批量清理，长业务可能丢失定位。
-  - **根因与边界**：当前 Bind 是覆盖写，不能安全兼任条件保活。A 仍有效但玩家已改绑 B 时，A 再 Bind 会抢回定位，即使检查 A 的进程 epoch 也不能阻止。当前两个测试业务仅在首次入座/重连 Bind，没有落地长业务保活；此前“成功请求中幂等刷新”的文档表述不足以保证安全。
-  - **解决方案**：与 I48 共同区分建立/改绑、仅当前业务 owner 保活及释放；业务负责定义存续，不让各 handler 重复实现 Redis TTL 机制。确认无请求但仍活跃、原 ID 继承和旧 owner 失权边界后再选择能力，不先增加续租 manager 或索引，不能把 TTL 当存活探测。
-  - **验证方案**：模拟 TTL 前后定位、刷新、改绑与旧刷新竞争，覆盖原 ID/新 ID 重启及持续时间超过 TTL 的业务。
-  - **关闭条件与风险**：部署明确采用刷新约定并完成验收，或新能力完整实现；不能以延长 TTL 代替生命周期设计。
-
-- <a id="i08"></a> **I08 · P2：service 的 sticky 模式不能安全在线切换**
-  - **影响与证据**：Gateway 首次使用 service 后固定 sticky，后续变化 fail closed；见 [gateway/backend.go](../gateway/backend.go)、[gateway/resolver.go](../gateway/resolver.go) 及 [粘性路由](./architecture.md#5-stateful-粘性路由)。
-  - **解决方案**：当前 Stateful/Stateless 切换重启全部 Gateway；若确需在线切换，设计独立、版本化的 service 路由策略与 binding 迁移协议，不用实例健康 metadata 隐式触发迁移。
-  - **验证方案**：混合新旧 metadata、滚动发布、空实例集、旧快照与既有 binding；验证 fail closed 和经确认的迁移/回滚流程。
-  - **关闭条件与风险**：部署严格遵守重启约束，或显式在线切换协议完成验收。没有需求时不预建第二套路由配置。
-
-- <a id="i29"></a> **I29 · P2：代理部署没有可信客户端 IP 边界**
-  - **影响与证据**：TCP/WebSocket per-IP 限制和 Auth IP 使用 socket peer，经代理可能把多个客户端计为同一 IP；当前不支持 PROXY protocol 或可信代理头。见 [网络实现](../network)、[gateway/auth.go:162](../gateway/auth.go#L162)。
-  - **解决方案**：直接部署沿用 peer；代理需求明确后定义可信代理名单、协议和来源验证，禁止直接信任任意 X-Forwarded-For。
-  - **验证方案**：直连、可信/不可信代理、伪造头、IPv4/IPv6、每 IP 限流与传给认证器的地址保持一致。
-  - **关闭条件与风险**：部署约束或代理接入方案经验证；不得为了压测绕过来源信任与限流边界。
-
-## 性能与验收限制
-
-- <a id="i41"></a> **I41 · P1：真实连接容量与慢连接内存边界未验收**
-  - **影响与证据**：reader、prepared 广播已降低进程内分配，但发送队列只按帧数限制；独立消息、frame/channel/socket 与真实 RSS 仍未验收。现有收益仅见 [最近基线](./performance.md#最近基线)。
-  - **解决方案**：先补 I55 的排队字节/drop 观测，再根据真实曲线决定字节预算、慢连接处理和 TCP buffer；不无依据放大队列。
-  - **验证方案**：按 [容量验收](./performance.md#容量验收)，单 Gateway、5 个独立出口 IP，独立运行 10,000～50,000 五档；固定配置、消息模型和资源，每档排除预热，记录 RSS/CPU/GC/drop/p99 及每新增 10,000 连接的资源增量，确认压测端未先饱和。
-  - **关闭条件**：五档资源与业务 SLO 证据完整，退化档位和候选安全容量可复测；10 万真实连接不是关闭条件，进程内零分配不是容量证明。
-
-- <a id="i45"></a> **I45 · P1：同步 Table Push 与业务尾延迟尚未完成验收**
-  - **影响与证据**：Ludo/Whot 默认 min(tableNum, 16) 且桌内串行，同步 Push 占用共享 worker。[单 Gateway 对照](./performance.md#ludo-单-gateway-参数对照) 中 16/128/64、32/64/64 各两轮完成 4,000 人入座，Login p99 分别为 2.98～4.47s、2.66～2.75s；不证明稳态或当前 YAML 预算通过。
-  - **解决方案**：框架边界修复后再量化排队、LocateGate、RPC 和发送成本；保留每桌顺序、逐 UID 结果及失败反馈时机。是否定向批量定位/投递须有证据，不直接增加 outbox、并发桌内广播或放大队列。
-  - **验证方案**：1,000 桌固定到达率、完整对局、客户端失败窗口、百人热点桌、长期 SLO；记录 mailbox wait/reject、Push 分段耗时和客户端到达，使用与 I46 一致的预算。
-  - **关闭条件**：完整业务与稳定负载目标通过；突发入座成功不能关闭。此项属于扩展层验收，不作为当前框架审查的主线。
-  - **~~已完成子项：原生应用与分层预算验收入口~~（2026-09-26，b1976ed）**：与 I46 共用同一修复和证据，当前预算 smoke/robots、历史 smoke、消息流核对及 race 已完成；不重复实施。目标规模、完整对局和稳态尾延迟仍待验收，后续步骤见 [执行清单](./refactor-progress.md#next-actions)。
-
 - <a id="i44"></a> **~~I44 · P1：NATS 排队内存与 broker Payload 上限尚未闭环~~**
   - **影响与证据**：默认每订阅 256 条、业务 Payload 64 KiB，理论 Payload 积压约 16 MiB；已有外置 NATS 试验显示 Go heap 随排队 Payload 增长。超限接收消息出队时才校验，实际上限受 broker max_payload 影响；见 [EventBus 容量](./eventbus.md#4-nats-生命周期)。
   - **解决方案**：对齐 broker max_payload，补 I55 的运行中观测；仅在容量证据支持时调整 WithQueueCapacity/WithMaxPayloadBytes，不把出队校验当作入队内存限制。
   - **验证方案**：隔离 broker 中阻塞 handler，改变 Payload、突发量与订阅数，包含超过业务上限但 broker 接受的消息；记录 queue/drop、RSS/heap、handler p99 和释放后的资源。
   - **关闭条件**：给出匹配实际 broker 配置的内存、丢弃与延迟边界；仅有 16 MiB 理论计算不算验收。
   - **关闭记录（2026-09-26，本批提交）**：修正旧基准仅等待首次 drop 的完成边界，复用 I55 统计实现按接收计数分批充队列；独立发布进程隔离接收 RSS。专用 NATS 2.10.29 的 64 KiB/1 MiB 配置下，6 场景各 3 个独立进程通过，覆盖多订阅、合法/超限积压、排空/直接关闭、heap/RSS 高水位和 handler p99；真实上限协议拒绝、包测试、Linux/Windows 适用 race、两个 module lint 通过。生产队列和默认参数不变；对象可回收不等于 OS 内存立即归还，结果限定当前模型，不替代 I40/I41。数值见 [容量记录](./performance.md#i44-capacity)，失败修正及命令见 [验证记录](./refactor-progress.md#i44-results)。
-
-- <a id="i04"></a> **I04 · P1：已绑定 Stateful Forward 的三次顺序 Redis 查询**
-  - **影响与证据**：正常已绑定流程由 Gateway 查询 Node binding、epoch，Node 再查 binding 做 fencing；未绑定只在 Gateway 查一次 binding，Stateless 不走 Node Locator。两类 Stateful 请求的 GET 成本分别约为 `3 × 已绑定 QPS` 和 `1 × 未绑定 QPS`，不含认证、续租及 Push 查询。见 [热路径成本](./performance.md#热路径成本)。
-  - **解决方案**：先测真实请求占比、Redis p99 和 pool wait。只在有收益时比较同一时刻同 Node epoch 查询合并；不得时间缓存 binding/epoch 或删除 Node fencing。移除 epoch GET 还要求业务副作用 fencing 与 (NodeID, epoch, endpoint) 发布契约，关联 I47/I48。
-  - **验证方案**：固定配置对比查询数、p99、pool wait；并发合并须覆盖各调用者独立取消、失败恢复。改变 fencing/发布时覆盖网络分区、续租阻塞、同 ID 新旧进程、旧快照、空实例集及 Cluster slot。
-  - **关闭条件与风险**：有可复核性能收益且安全契约不弱化，或部署按现有成本完成容量验收。并发合并不保证单请求更快；当前两次 Gateway 查询仍依赖先取得 NodeID，不能直接 pipeline。I48 的同 slot 布局不自动减少查询，新的合并原语须单独设计和验证。
-
-- <a id="i34"></a> **I34 · P1：Gate lease 续租波次缺少真实故障容量验收**
-  - **影响与证据**：一次到期 heartbeat 最多续租一次，失败由后续 heartbeat 重试；没有跨 Session 并发整形，同步波次按连接数线性放大。见 [gateway/auth.go:139](../gateway/auth.go#L139)、[热路径成本](./performance.md#热路径成本)。
-  - **解决方案**：先测真实 heartbeat 分布；确认波次后优先评估保留租约安全余量的稳定 renewal jitter 与连接池校准，没有证据时不增加 semaphore 或退避状态机。
-  - **验证方案**：同步/分散建连、Redis 延迟和故障恢复，记录 pool wait、续租 p99、超时、lease 剩余量及连接淘汰；与 I50 区分“心跳没有被处理”和“续租已经发出但拥塞”。
-  - **关闭条件**：真实分布及故障容量通过，或经测量的整形方案实现并验证；不能只用理想心跳分布估算生产容量。
-
-## 复核后保留的设计边界
-
-- Gateway discovery 连接池与回程 endpoint 连接池的寻址、回收职责不同；Registry 快照与 ready SubConn 集合也不是同一份状态，不机械合并。
-- Node 的可服务 identity 与 epochLease 清理凭据撤下时机不同；请求与出站副作用分开排空，使 Drain 期间仍可完成必要操作。
-- TCP/WebSocket 的 framing、writer、关闭语义各自独立；共享 auth、heartbeat、request tracker、queue 的具体不变量，不增加通用 transport 管理层。
-- Locator 同时启用 Stateful 与 Gate 寻址是现有约束；没有真实 Stateless PushToUID 需求时不预先拆分。Bus.Close 无 deadline 是明示契约，不作为新缺陷；若需要进程总停机预算，再单独设计。
-- 首请求 last-write-wins、原 ID 重启复用定位、不保证 actor 唯一性均为当前语义；改为强单活、唯一抢占或自动迁移必须先确定需求和行为变化。
-
-## 实施与验证通则
-
-- 按 [进度表](./refactor-progress.md) 的当前下一步推进；先稳定复现静态风险，再冻结最小方案。问题证据被代码推翻时更新结论，不按旧计划强行修改。
-- 根 module 的契约在根包测试中验收，`test` 用于接入和必要端到端回归；不要只依赖游戏测试通过判断框架正确。
-- 按 [AGENTS.md 验证要求](../AGENTS.md#验证) 执行格式化、受影响测试、make lint，以及适用的 make check、race、build、breaking；检查外部依赖条件后再运行。
-- 真实 Redis/etcd/NATS 使用专用可丢弃资源，先核对目标、容器/端口/数据范围；共享 VM 的既有服务不可作为默认测试目标。每轮记录代码基线、命令、环境、实际结果与未完成项。

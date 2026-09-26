@@ -2,7 +2,6 @@ package node
 
 import (
 	"context"
-	"fmt"
 
 	"yola/locate"
 
@@ -10,41 +9,10 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// Handler 处理原始 command body；可通过 FromContext 和 CommandFromContext 读取本次请求信息。
-type Handler func(context.Context, []byte) ([]byte, error)
-
 // stickyClaim carries Gateway sticky-routing identity for Stateful Node requests.
 type stickyClaim struct {
 	NodeID string
 	Epoch  string
-}
-
-// RegisterRawHandler is the escape hatch for custom codecs and handler decorators.
-// It does not apply node.Middleware and must be called before BeforeStart.
-func (s *Server) RegisterRawHandler(command int32, handler Handler) {
-	if handler == nil {
-		panic("node: nil handler")
-	}
-	s.lifecycleMu.Lock()
-	defer s.lifecycleMu.Unlock()
-	if s.state != stNew || s.requests.isClosed() {
-		panic("node: handlers must be registered before BeforeStart")
-	}
-	if _, exists := s.handlers[command]; exists {
-		panic(fmt.Sprintf("node: duplicate Command=%d", command))
-	}
-	s.handlers[command] = handler
-}
-
-// OnDisconnect registers a best-effort handler before BeforeStart.
-// Passing nil clears the handler. At-most-once delivery; may reorder relative to Forward.
-func (s *Server) OnDisconnect(handler DisconnectHandler) {
-	s.lifecycleMu.Lock()
-	defer s.lifecycleMu.Unlock()
-	if s.state != stNew || s.requests.isClosed() {
-		panic("node: handlers must be registered before BeforeStart")
-	}
-	s.onDisconnect = handler
 }
 
 // forwardTo validates the target service and any Stateful claim before dispatching the command.
@@ -81,7 +49,7 @@ func (s *Server) fenceStickyClaim(ctx context.Context, claim stickyClaim, bindin
 	if claim.NodeID == "" {
 		return nil
 	}
-	if identity.nodeID == "" || identity.nodeID != claim.NodeID {
+	if identity.nodeID != claim.NodeID {
 		return status.Error(codes.Aborted, "node binding changed")
 	}
 	if claim.Epoch != identity.epoch {

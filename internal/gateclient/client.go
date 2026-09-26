@@ -127,22 +127,23 @@ func (c *Client) cached(host string) (*rpc, error) {
 	if c.ctx.Err() != nil || c.byHost == nil {
 		return nil, ErrUnavailable
 	}
-	if entry := c.byHost[host]; entry != nil {
-		entry.inflight++
-		if entry.idleTimer != nil {
-			entry.idleTimer.Stop()
-			entry.idleTimer = nil
-		}
-		return entry, nil
+	entry := c.byHost[host]
+	if entry == nil {
+		return nil, nil
 	}
-	return nil, nil
+	entry.inflight++
+	if entry.idleTimer != nil {
+		entry.idleTimer.Stop()
+		entry.idleTimer = nil
+	}
+	return entry, nil
 }
 
 func (c *Client) connect(host string) error {
 	opts := []kgrpc.ClientOption{
 		kgrpc.WithEndpoint("direct:///" + host),
-		kgrpc.WithTimeout(0),                   // Disable Kratos' implicit 2s deadline; caller context owns it.
-		kgrpc.WithMiddleware(c.middlewares...), //
+		kgrpc.WithTimeout(0), // Disable Kratos' implicit 2s deadline; caller context owns it.
+		kgrpc.WithMiddleware(c.middlewares...),
 	}
 	if c.tlsConfig != nil {
 		opts = append(opts, kgrpc.WithTLSConfig(c.tlsConfig.Clone()))

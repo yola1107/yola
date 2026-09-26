@@ -189,18 +189,20 @@ func (s *Server) authenticateUID(ctx context.Context, serviceName string, token 
 }
 
 func (s *Server) unbindGate(ctx context.Context, binding locate.GateBinding) {
-	if err := s.locator.UnbindGate(ctx, binding); err != nil && !errors.Is(err, context.Canceled) {
-		code := locateStatusCode(err)
-		slog.ErrorContext(ctx, "unbind Gate failed",
-			"uid", binding.UID,
-			"conn_id", binding.ConnID,
-			"service", binding.ServiceName,
-			"gate_id", binding.GateID,
-			"code", int32(code),
-			"status", code.String(),
-			"error", err,
-		)
+	err := s.locator.UnbindGate(ctx, binding)
+	if err == nil || errors.Is(err, context.Canceled) {
+		return
 	}
+	code := locateStatusCode(err)
+	slog.ErrorContext(ctx, "unbind Gate failed",
+		"uid", binding.UID,
+		"conn_id", binding.ConnID,
+		"service", binding.ServiceName,
+		"gate_id", binding.GateID,
+		"code", int32(code),
+		"status", code.String(),
+		"error", err,
+	)
 }
 
 func locateStatusCode(err error) codes.Code {

@@ -82,7 +82,7 @@ flowchart LR
 
 Node 回程不经过服务发现。`GateRoute.gate_endpoint` 是认证时写入 Redis 的 Gateway 内部 gRPC 地址；Gateway 的 Registry 注册主要用于生命周期和运维可见性。
 
-Node 的发现记录必须能定位实现 `cluster.v1.Node` 的 endpoint。当前 resolver 按安全配置选择第一个合法 `grpc`/`grpcs` endpoint，不识别“业务 RPC”与“Node 内部 RPC”的角色。[选择逻辑](../gateway/resolver.go#L259) 同 App 可启动额外的普通 gRPC transport，但面向 Gateway 发布的匹配 scheme endpoint 必须承载 Node 内部协议；普通业务 RPC 须由应用另定直连或发现方案，当前不支持在同一 service 记录中自动选择两种 RPC 角色。HTTP endpoint 不参与该选择。组件内部 gRPC Server 是私有资源，不作为外层任意 service 的注册容器。
+Node 的发现记录必须能定位实现 `cluster.v1.Node` 的 endpoint。当前 resolver 按安全配置选择第一个合法 `grpc`/`grpcs` endpoint，不识别“业务 RPC”与“Node 内部 RPC”的角色。[选择逻辑](../gateway/resolver.go) 同 App 可启动额外的普通 gRPC transport，但面向 Gateway 发布的匹配 scheme endpoint 必须承载 Node 内部协议；普通业务 RPC 须由应用另定直连或发现方案，当前不支持在同一 service 记录中自动选择两种 RPC 角色。HTTP endpoint 不参与该选择。组件内部 gRPC Server 是私有资源，不作为外层任意 service 的注册容器。
 
 Gateway backend 按 service 复用发现连接，回程 gateclient 按 Gate endpoint 管理在途引用和空闲淘汰，二者不合并为通用连接池。Registry 实例集合与 picker 的 Ready SubConn 集合表示不同事实，不能互相替代。
 
@@ -274,7 +274,7 @@ Gateway 不缓存玩家 Node binding 或未绑定结果。Gate close、takeover 
 | Redis 不可用 | 依赖该次查询的认证和粘性请求失败；Node 续租错误在本地有效期内重试，到期关闭准入 |
 | prepared Node 租约过期或被替代 | Start 核验失败，不开放 gRPC |
 
-6h Node binding TTL 只限制存储保留时间，不是业务存活探测。当前没有独立的条件保活能力：`BindNode` 即使以相同 NodeID 调用，仍是覆盖写；旧 Node 的业务任务在玩家已改绑后调用它会抢回定位。因此不能把周期调用 BindNode 当作安全续租。长业务的存续策略、只延长当前 owner 与显式改绑的区别仍待 I03/I48 联合设计；原 ID 重启继承、进程 epoch 和 Gate 连接归属须分别处理。[联合调查](./node-binding-fencing.md#联合契约边界)
+6h Node binding TTL 只限制存储保留时间，不是业务存活探测。当前没有独立的条件保活能力：`BindNode` 即使以相同 NodeID 调用，仍是覆盖写；旧 Node 的业务任务在玩家已改绑后调用它会抢回定位。因此不能把周期调用 BindNode 当作安全续租。I48 的进程修改权已实现，I03 的业务存续与条件保活仍未实现；原 ID 重启继承、进程 epoch 和 Gate 连接归属须分别处理。[绑定边界](./node-binding-fencing.md#联合契约边界)
 
 ## 6. 协议、错误与默认值
 

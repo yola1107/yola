@@ -34,22 +34,14 @@ Node 请求读取原子发布的 identity 与 lease，不获取 lifecycle mutex�
 
 TCP Reader/Writer buffer 均按最大合法帧 `MaxProtoSize + 4B` 创建，即每个 4,100B、每连接固定约 8.0KiB，10 万连接理论约 782MiB；这只计算用户态 I/O buffer，不包含 socket、Session、发送队列和业务状态。WebSocket Upgrader 为每连接保留 4KiB read buffer，write buffer 通过 `WriteBufferPool` 借用，不应按每连接固定 8KiB 预算。真实连接 RSS 仍按 [I41](./issues.md#性能与验收限制) 验收。
 
-## 热路径诊断与优化顺序
+<a id="热路径诊断与优化顺序"></a>
+## 历史诊断边界
 
-2026-08-21 基于 commit `3035fb8` 重新审查请求、Push、广播、heartbeat、mailbox 和 EventBus 路径，并在 macOS/arm64、Apple M1 Pro、Go 1.26.5、`GOMAXPROCS=8` 上做定向 benchmark 与 pprof。当前没有证据表明控制流复杂度是主要性能问题；影响更大的是顺序外部 I/O、同步 Push 占用共享 worker，以及 WebSocket 按连接编码和读包分配。`gocyclo`、`gocognit` 只用于控制流诊断，不能代替这些运行时验证。
+**本轮不做性能优化。** 以下测量用于理解现有成本和复现历史场景，不构成自动实施排期；原 I04/I34/I41/I45 已按 [清理边界](./issues.md) 分别移出候选队列或收敛为验收限制。没有当前 benchmark/profile 和明确需求，不新增缓存、批量 RPC、字节队列、续租整形或管理层。
 
-未实现 `network.HeartbeatHandler` 的自定义 handler 仍由连接 read loop 串行执行。Gateway 已按 I50 分离认证后的业务 FIFO 与心跳读取；默认业务等待容量为 8，满时明确关闭过载连接，业务仍保持顺序，关闭等待所有在途处理。它消除业务占用读循环造成的心跳阻塞，不保证慢 socket 或慢续租依赖下始终保持连接；新增成本见 [I50 调度成本](#i50-dispatch-cost)。
+2026-08-21 在 `3035fb8` 上的 benchmark/pprof 显示顺序外部 I/O、同步 Table Push、WebSocket 编解码是当时的调查方向，不证明当前控制流复杂度或文件数量是性能瓶颈。后续已完成的心跳调度、prepared 广播、I55 观测和 I44 指定配置验收分别以下方记录为准，不重复列为待实现。
 
-当前优化优先级为：
-
-1. **压测基线**：tracked Ludo 配置启用 debug console；即使文件日志关闭，console core 仍同步写 stdout，且 `slog.Debug` 的 `Player.Desc`、JSON 和棋盘路径等参数会在级别过滤前求值。容量测试先使用 `info` 或 `warn`，昂贵调试参数只在对应级别启用时构造，否则结果会混入日志 I/O 和无效计算。
-2. **Stateful Locator**：先采集 Redis p99、pool wait 和请求占比。按 `(service, nodeID)` 合并同一时刻的 epoch 查询只可能降低并发负载，不保证降低单请求延迟，也不得让首个调用者取消影响其他等待者；删除查询的额外条件见 [I04](./issues.md#性能与验收限制)。Kratos 在 BeforeStart 申请 epoch 前已构建 instance，不能靠运行时修改 metadata map 代替身份准备与发布契约。
-3. **Table Push**：[分段基线](#table-push-分段基线) 已复现逐玩家同步 `LocateGate + Gateway gRPC` 占用 mailbox worker、放大等待的现象；[固定到达率对照](#table-worker-固定到达率对照) 支持将 Ludo/Whot worker 默认值改为 `min(tableNum, 16)`。单桌仍串行；百人房间的高频投递应另行评估定向批量定位和 RPC，保留逐 UID 结果、binding 校验和消息顺序。现有广播包含机器人决策与离线状态变更，不能直接并发调用；真实业务 SLO 仍按 [I45](./issues.md#性能与验收限制) 验收。
-4. **WebSocket 分配与广播**：默认 codec 已使用 bounded pooled reader 和单次 fanout 共享的 prepared frame，进程内对照见下文。剩余风险是发送队列只按 32 帧限流，尚未观测每连接排队字节、慢连接比例及单边 RSS，按 [I41](./issues.md#性能与验收限制) 验收。
-5. **Heartbeat 波次**：同步建连或依赖故障可能让大量续租同时进入 Redis pool，按 [I34](./issues.md#性能与验收限制) 测量后再决定整形方式。
-6. **NATS 积压**：dispatch 暂无热点证据，慢 handler 的队列内存与 broker Payload 上限按 [I44](./issues.md#性能与验收限制) 验收。
-
-默认发送队列按帧数限制为 32，不区分 32B 与 4KB 消息。`32 × 100,000 × 4KB ≈ 12.8GB` 是逻辑 Payload 积压上限；默认 protobuf 的同一次广播现已跨连接共享一份 body，不会按连接重复持有这 12.8GB，但自定义 codec、逐连接独立消息以及 frame、channel、Session 和 socket 成本仍然存在。因此真实广播验收必须同时采集排队字节和慢连接比例。Gate client 的 endpoint 解析、全局锁和空闲 timer 存在可消除成本，但当前没有 profile 证据支持其优先于上述路径。
+复现时固定代码、工具、预算、日志级别和负载。历史 15s 入座配置与当前 YAML 不能混用；游戏业务状态和桌内执行顺序不属于框架清理范围。真实连接 RSS、慢连接比例及长期业务 SLO 未完成验收，不从进程内分配或理论队列容量推导生产保证。
 
 <a id="i50-dispatch-cost"></a>
 ## I50 调度成本

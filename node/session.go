@@ -117,14 +117,14 @@ func (s requestSession) validatedIdentity() (nodeIdentity, error) {
 }
 
 func (s *Server) handleBindingError(err error) error {
-	if errors.Is(err, locate.ErrNodeEpochNotFound) || errors.Is(err, locate.ErrNodeEpochConflict) {
-		// 存储已确认本代失权：先取消已接纳工作，再关闭准入；不能只通知 Start 退出。
-		lease := s.lease.Load()
-		lease.cancel(fmt.Errorf("node: epoch ownership lost: %w", err))
-		s.failLifecycle(context.Cause(lease.ctx))
-		return status.Error(codes.Unavailable, "node epoch is unavailable")
+	if !errors.Is(err, locate.ErrNodeEpochNotFound) && !errors.Is(err, locate.ErrNodeEpochConflict) {
+		return mapNodeLocatorError(err)
 	}
-	return mapNodeLocatorError(err)
+	// 存储已确认本代失权：先取消已接纳工作，再关闭准入；不能只通知 Start 退出。
+	lease := s.lease.Load()
+	lease.cancel(fmt.Errorf("node: epoch ownership lost: %w", err))
+	s.failLifecycle(context.Cause(lease.ctx))
+	return status.Error(codes.Unavailable, "node epoch is unavailable")
 }
 
 func normalizeContext(ctx context.Context) context.Context {

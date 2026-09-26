@@ -145,7 +145,10 @@ func (r *backendResolver) reject(err error) {
 func resolveBackendInstances(serviceName string, instances []*registry.ServiceInstance, secure bool) (backendSnapshot, []resolver.Address, error) {
 	seen := make(map[string]struct{}, len(instances))
 	addresses := make([]resolver.Address, 0, len(instances))
-	identities := newBackendIdentities(len(instances))
+	identities := backendIdentities{
+		hostByNodeID: make(map[string]string, len(instances)),
+		nodeIDByHost: make(map[string]string, len(instances)),
+	}
 	sticky := false
 	found := false
 	for _, service := range instances {
@@ -210,13 +213,6 @@ func resolveBackendInstance(serviceName string, service *registry.ServiceInstanc
 type backendIdentities struct {
 	hostByNodeID map[string]string
 	nodeIDByHost map[string]string
-}
-
-func newBackendIdentities(capacity int) backendIdentities {
-	return backendIdentities{
-		hostByNodeID: make(map[string]string, capacity),
-		nodeIDByHost: make(map[string]string, capacity),
-	}
 }
 
 func (i backendIdentities) add(serviceName, nodeID, host string) error {
