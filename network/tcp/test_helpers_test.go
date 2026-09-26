@@ -10,9 +10,17 @@ import (
 	"yola/network"
 )
 
-type tcpTestHandler struct{}
+type tcpTestHandler struct {
+	opened chan network.Connection
+}
 
-func (tcpTestHandler) Open(context.Context, network.Connection) error { return nil }
+func (h tcpTestHandler) Open(_ context.Context, conn network.Connection) error {
+	if h.opened != nil {
+		h.opened <- conn
+	}
+	return nil
+}
+
 func (tcpTestHandler) Handle(_ context.Context, _ network.Connection, message *v1.Proto) (*v1.Proto, error) {
 	switch message.Op {
 	case v1.OpAuth:

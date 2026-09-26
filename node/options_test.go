@@ -1,7 +1,6 @@
 package node
 
 import (
-	"context"
 	"crypto/tls"
 	"errors"
 	"net"
@@ -9,11 +8,7 @@ import (
 	"testing"
 	"time"
 
-	kgrpc "github.com/go-kratos/kratos/v3/transport/grpc"
 	"github.com/stretchr/testify/require"
-	grpcgo "google.golang.org/grpc"
-	"google.golang.org/grpc/credentials"
-	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 )
 
 func TestResolveOptionsDefaultsAndZeroHandlerTimeout(t *testing.T) {
@@ -75,38 +70,6 @@ func TestResolveOptionsClonesClientTLS(t *testing.T) {
 
 	require.NotSame(t, config, o.clientTLS)
 	require.Equal(t, "gateway.internal", o.clientTLS.ServerName)
-}
-
-func TestResolveOptionsClonesServerTLS(t *testing.T) {
-	serverTLS, clientTLS := testTLSConfigs(t)
-	lis, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-
-	o, err := resolveOptions(
-		Listener(lis),
-		ServerTLS(serverTLS),
-		func(*options) error {
-			serverTLS.Certificates = nil
-			return nil
-		},
-	)
-	require.NoError(t, err)
-	server := kgrpc.NewServer(append(o.grpcOptions, kgrpc.Listener(o.listener))...)
-	done := make(chan error, 1)
-	go func() { done <- server.Start(context.Background()) }()
-	t.Cleanup(func() {
-		require.NoError(t, server.Stop(context.Background()))
-		require.NoError(t, <-done)
-	})
-
-	conn, err := grpcgo.NewClient(lis.Addr().String(), grpcgo.WithTransportCredentials(credentials.NewTLS(clientTLS)))
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, conn.Close()) })
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	reply, err := healthpb.NewHealthClient(conn).Check(ctx, &healthpb.HealthCheckRequest{}, grpcgo.WaitForReady(true))
-	require.NoError(t, err)
-	require.Equal(t, healthpb.HealthCheckResponse_SERVING, reply.Status)
 }
 
 func TestAdvertiseHostOptionPublishesEndpoint(t *testing.T) {

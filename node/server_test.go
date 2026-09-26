@@ -25,7 +25,11 @@ func TestServerAcceptsTLSConnection(t *testing.T) {
 	serverTLS, clientTLS := testTLSConfigs(t)
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
-	server := newTestServer(t, Listener(lis), ServerTLS(serverTLS))
+	server := newTestServer(t, Listener(lis), ServerTLS(serverTLS), func(*options) error {
+		// 在 Option 应用后、服务构造前修改原配置，验证证书来自副本。
+		serverTLS.Certificates = nil
+		return nil
+	})
 	ctx := kratos.NewContext(context.Background(), nodeTestAppInfo{})
 	require.NoError(t, server.BeforeStart(ctx))
 	done := make(chan error, 1)

@@ -189,7 +189,7 @@ func TestResponseCompletesRequest(t *testing.T) {
 }
 
 func TestClientDisconnectCallbackCanCloseClient(t *testing.T) {
-	callbacks := queue.New()
+	callbacks := queue.New(64, nil)
 	client := &Client{callbacks: callbacks}
 	go callbacks.Run()
 	done := make(chan struct{})

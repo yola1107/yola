@@ -61,13 +61,9 @@ func newTestGateway(t testing.TB, store locate.Locator, grpcEndpoint string, opt
 	return newTestServer(t, opts...)
 }
 
-type watchDiscovery struct {
-	instances []*registry.ServiceInstance
-}
-
 type watchDiscoveryWatcher struct {
 	ctx       context.Context
-	discovery *watchDiscovery
+	instances []*registry.ServiceInstance
 	first     bool
 }
 
@@ -77,22 +73,10 @@ type pingLocator struct {
 
 func (pingLocator) Ping(context.Context) error { return nil }
 
-func newWatchDiscovery(instances ...*registry.ServiceInstance) *watchDiscovery {
-	return &watchDiscovery{instances: instances}
-}
-
-func (d *watchDiscovery) GetService(_ context.Context, _ string) ([]*registry.ServiceInstance, error) {
-	return append([]*registry.ServiceInstance(nil), d.instances...), nil
-}
-
-func (d *watchDiscovery) Watch(ctx context.Context, _ string) (registry.Watcher, error) {
-	return &watchDiscoveryWatcher{ctx: ctx, discovery: d}, nil
-}
-
 func (w *watchDiscoveryWatcher) Next() ([]*registry.ServiceInstance, error) {
 	if !w.first {
 		w.first = true
-		return w.discovery.GetService(w.ctx, "")
+		return append([]*registry.ServiceInstance(nil), w.instances...), nil
 	}
 	<-w.ctx.Done()
 	return nil, w.ctx.Err()
@@ -146,7 +130,7 @@ func (d staticDiscovery) GetService(_ context.Context, service string) ([]*regis
 }
 
 func (d staticDiscovery) Watch(ctx context.Context, service string) (registry.Watcher, error) {
-	return newWatchDiscovery(d[service]...).Watch(ctx, service)
+	return &watchDiscoveryWatcher{ctx: ctx, instances: d[service]}, nil
 }
 
 func serviceInstance(service, id, endpoint string) *registry.ServiceInstance {

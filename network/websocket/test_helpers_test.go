@@ -20,9 +20,17 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-type websocketTestHandler struct{}
+type websocketTestHandler struct {
+	opened chan network.Connection
+}
 
-func (websocketTestHandler) Open(context.Context, network.Connection) error { return nil }
+func (h websocketTestHandler) Open(_ context.Context, conn network.Connection) error {
+	if h.opened != nil {
+		h.opened <- conn
+	}
+	return nil
+}
+
 func (websocketTestHandler) Handle(_ context.Context, _ network.Connection, message *v1.Proto) (*v1.Proto, error) {
 	switch message.Op {
 	case v1.OpAuth:

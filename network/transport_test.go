@@ -1,4 +1,4 @@
-package header
+package network
 
 import (
 	"testing"
@@ -7,7 +7,7 @@ import (
 )
 
 func TestCarrierNormalizesKeys(t *testing.T) {
-	c := Carrier{}
+	c := headerCarrier{}
 	c.Add("Trace-ID", "first")
 	c.Add("trace-id", "second")
 	require.Equal(t, "first", c.Get("trace-id"))
@@ -16,5 +16,6 @@ func TestCarrierNormalizesKeys(t *testing.T) {
 }
 
 func TestConnectionIDKey(t *testing.T) {
-	require.Equal(t, "conn_id", ConnectionIDKey)
+	tr := NewTransport(KindTCP, "tcp://127.0.0.1:1", "127.0.0.1", "connection-1")
+	require.Equal(t, "connection-1", tr.RequestHeader().Get("conn_id"))
 }

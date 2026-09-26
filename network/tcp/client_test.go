@@ -405,29 +405,8 @@ func TestClientWriteTimeoutClosesBlockedWrite(t *testing.T) {
 	}
 }
 
-type clientCallbackHandler struct {
-	opened chan network.Connection
-}
-
-func (h clientCallbackHandler) Open(_ context.Context, conn network.Connection) error {
-	h.opened <- conn
-	return nil
-}
-
-func (clientCallbackHandler) Handle(_ context.Context, _ network.Connection, message *v1.Proto) (*v1.Proto, error) {
-	switch message.Op {
-	case v1.OpAuth:
-		message.Op = v1.OpAuthReply
-	case v1.OpRequest:
-		message.Op = v1.OpResponse
-	}
-	return message, nil
-}
-
-func (clientCallbackHandler) Close(context.Context, network.Connection) {}
-
 func TestClientCallbacksAreOrderedAndDoNotBlockResponses(t *testing.T) {
-	handler := clientCallbackHandler{opened: make(chan network.Connection, 1)}
+	handler := tcpTestHandler{opened: make(chan network.Connection, 1)}
 	endpoint := startTCPTestServer(t, handler)
 	connected := make(chan struct{})
 	callbackStarted := make(chan struct{})
@@ -471,7 +450,7 @@ func TestClientCallbacksAreOrderedAndDoNotBlockResponses(t *testing.T) {
 }
 
 func TestClientCallbackQueueFullClosesConnection(t *testing.T) {
-	handler := clientCallbackHandler{opened: make(chan network.Connection, 1)}
+	handler := tcpTestHandler{opened: make(chan network.Connection, 1)}
 	endpoint := startTCPTestServer(t, handler)
 	connected := make(chan struct{})
 	callbackStarted := make(chan struct{})
@@ -516,7 +495,7 @@ func TestClientCallbackQueueFullClosesConnection(t *testing.T) {
 }
 
 func TestClientKickRunsAfterPushAndBeforeDisconnect(t *testing.T) {
-	handler := clientCallbackHandler{opened: make(chan network.Connection, 1)}
+	handler := tcpTestHandler{opened: make(chan network.Connection, 1)}
 	endpoint := startTCPTestServer(t, handler)
 	pushStarted := make(chan struct{})
 	releasePush := make(chan struct{})
@@ -649,7 +628,7 @@ func TestClientCloseFailsPendingRequest(t *testing.T) {
 func TestClientDisconnectCallbackCanCloseClient(t *testing.T) {
 	clientConn, serverConn := net.Pipe()
 	defer serverConn.Close()
-	callbacks := queue.New()
+	callbacks := queue.New(64, nil)
 	c := &Client{conn: clientConn, done: make(chan struct{}), callbacks: callbacks}
 	go callbacks.Run()
 	c.disconnectFunc = c.Close

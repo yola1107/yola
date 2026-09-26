@@ -7,8 +7,6 @@ import (
 	"sync"
 )
 
-const defaultCapacity = 64
-
 var (
 	// ErrClosed reports that the queue no longer accepts callbacks.
 	ErrClosed = errors.New("callback queue is closed")
@@ -21,24 +19,6 @@ var (
 // PanicHandler reports a panic recovered while invoking a callback.
 type PanicHandler func(value any, stack []byte)
 
-// Option configures a Queue.
-type Option func(*Queue)
-
-// WithCapacity sets the number of pending callback slots.
-func WithCapacity(capacity int) Option {
-	return func(queue *Queue) {
-		if capacity <= 0 {
-			panic("queue: capacity must be positive")
-		}
-		queue.capacity = capacity
-	}
-}
-
-// WithPanicHandler sets the handler for recovered callback panics.
-func WithPanicHandler(handler PanicHandler) Option {
-	return func(queue *Queue) { queue.panicHandler = handler }
-}
-
 // Queue stores callbacks until one worker executes them in submission order.
 type Queue struct {
 	panicHandler PanicHandler
@@ -50,17 +30,17 @@ type Queue struct {
 	closed       bool
 }
 
-// New creates a queue.
-func New(opts ...Option) *Queue {
-	queue := &Queue{
-		capacity: defaultCapacity,
-		wake:     make(chan struct{}, 1),
+// New 创建队列；capacity 必须为正，panicHandler 可为 nil。
+func New(capacity int, panicHandler PanicHandler) *Queue {
+	if capacity <= 0 {
+		panic("queue: capacity must be positive")
 	}
-	for _, opt := range opts {
-		opt(queue)
+	return &Queue{
+		panicHandler: panicHandler,
+		capacity:     capacity,
+		wake:         make(chan struct{}, 1),
+		tasks:        make([]func(), 0, capacity),
 	}
-	queue.tasks = make([]func(), 0, queue.capacity)
-	return queue
 }
 
 // Submit adds a callback without blocking.

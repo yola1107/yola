@@ -1,24 +1,24 @@
 # 框架优化执行清单
 
-**状态：三轮审查完成，尚未实施。** 基线仍为 `ab0479b`，2026-09-26。保留I56–I64九项P1；第三轮没有新增P0/P1，只补充可选小清理与验收条件，见 [第三轮补充](./architecture-review.md#round3)。完整的问题结构、路径、取舍、风险及估算见 [框架去复杂审查](./architecture-review.md)。本清单不授权 commit、push 或运行环境变更。
+**状态：I56–I64 九项 P1 已实施、验证并复审，随本次清理提交归档。** 2026-09-26，实施基线 `9ca9ad7`；第一轮清理 `ab0479b`、三轮审查 `a9a0cf6` 不重复计收益。[实施记录](./refactor-progress.md#cleanup-results) 保存实际改动、净收益与验证边界；[审查报告](./architecture-review.md) 保留原方案和估算。用户已授权提交全部现有改动，不包含 push 或发布。
 
 优先级只使用 P0（高收益低风险）、P1（收益明确）、P2（收益有限，可选）、Drop（低收益或高风险）。当前没有符合条件的 P0 结构性重构，不为填满优先级制造大改动。
 
-## 待执行候选
+## 本次已完成的 P1
 
-| ID / 优先级 | 当前问题与实际位置 | 建议边界 / 收益 | 风险与完成条件 | 状态 |
+| ID / 优先级 | 当前实现 | 实际净收益 | 保留契约与验收 | 状态 |
 | --- | --- | --- | --- | --- |
-| <a id="i56"></a>I56 / P1 | [queue.go:24](../internal/queue/queue.go#L24) 为两个固定生产调用维护 Option 组合机制 | 内部改为直接构造，删 Option/WithCapacity/WithPanicHandler；预计减24–30生产行、1类型 | 低；保留容量panic、callback终止语义，受影响测试/race及check/lint通过；[完整方案](./architecture-review.md#i56) | 待实施 |
-| <a id="i57"></a>I57 / P1 | [tcp/codec.go:118](../network/tcp/codec.go#L118) 的私有frameAppender只有一个实现 | 原默认codec分支直接调用protobuf，删1 interface和2转交方法；预计减10–16生产行 | 低；custom codec fallback、大小校验、Flush/编码/写入顺序不变；[完整方案](./architecture-review.md#i57) | 待实施 |
-| <a id="i58"></a>I58 / P1 | [header.go:11](../network/internal/header/header.go#L11) 只有Transport一个生产使用方 | 内收为network私有实现，迁移测试；预计减5–12生产行、1包、1文件 | 低；大小写/多值/空值和conn_id接线保留，不直接换Kratos Metadata；[完整方案](./architecture-review.md#i58) | 待实施 |
-| <a id="i59"></a>I59 / P1 | [TCP callback fixture](../network/tcp/client_test.go#L408)、[WS callback fixture](../network/websocket/client_server_test.go#L100) 重复各包基础handler | 复用各自基础fixture，保留可选opened通道；预计减25–35测试行、2类型，不删测试 | 低；保持同步发送、容量、callback/cleanup顺序，原测试及race通过；[完整方案](./architecture-review.md#i59) | 待实施 |
-| <a id="i60"></a>I60 / P1 | [NATS接收/panic](../event/nats/subscription_test.go#L243) 与 [统计](../event/nats/stats_test.go#L107) 三场景重复装配 | 合为一个覆盖完整场景；预计减15–25测试行、2顶层测试 | 低；保留独立publisher、Bus.Publish、两次panic后正常返回及全部统计断言，关闭后QueueDroppedCurrent=false也须保留；不能直接删原场景；[完整方案](./architecture-review.md#i60) | 待实施 |
-| <a id="i61"></a>I61 / P1 | [prepared.go:18](../network/prepared.go#L18) 同时用CAS发布缓存对象和Once初始化编码 | 保留结果指针，把已有Once上移，删除atomic.Pointer/CAS；预计减8–10生产行、1原子发布机制，不删类型或字段 | 中低；保持可比较性、懒分配、先建state再Marshal、Reset无重叠及旧bytes所有权；需race；[修订方案与被否决方案](./architecture-review.md#i61) | 待实施 |
-| <a id="i62"></a>I62 / P1 | [gateway/options_test.go:76](../gateway/options_test.go#L76) 与同文件175行重复依赖缺失测试 | 保留公共NewServer三种缺失case，删重复的resolveOptions测试；预计减30–31测试行、1顶层测试 | 低；精确错误文本与三个输入条件完整保留；[覆盖比较](./architecture-review.md#i62) | 待实施 |
-| <a id="i63"></a>I63 / P1 | [test_helpers_test.go:64](../gateway/test_helpers_test.go#L64) 的静态Discovery绕中间对象创建Watcher | Watcher直接持有slice，删watchDiscovery与3个方法/构造函数；预计减14–18测试行、1类型 | 低；Watch时捕获、Next时复制、nil/空语义及context等待不变；[完整方案](./architecture-review.md#i63) | 待实施 |
-| <a id="i64"></a>I64 / P1 | [node/options_test.go:80](../node/options_test.go#L80) 与 [server_test.go:24](../node/server_test.go#L24) 重复TLS装配 | 把clone的独特时点断言迁入Node握手测试，再删前者；预计减30–36测试行、1顶层测试 | 低；修改Certificates必须在Option应用后、服务构造前；保留真实握手与关闭等待；[完整方案](./architecture-review.md#i64) | 待实施 |
+| <a id="i56"></a>I56 / P1 | [Queue.New](../internal/queue/queue.go#L34) 直接接收容量和 PanicHandler，全部调用方同步 | 生产净减26行、1配置类型、2配置函数 | 非法容量panic、FIFO、普通/terminal callback及关闭协议保留；check/lint与queue、TCP/WS race通过 | 已完成 |
+| <a id="i57"></a>I57 / P1 | [TCP codec](../network/tcp/codec.go#L57) 按protoFrameCodec具体类型识别，直接调用protobuf | 生产净减13行、1私有interface、2转交方法 | 保留custom codec fallback、大小校验、Flush/编码/写入顺序及错误身份；check/lint与TCP race通过 | 已完成 |
+| <a id="i58"></a>I58 / P1 | [headerCarrier](../network/transport.go#L55) 内收至network；[行为测试](../network/transport_test.go) 迁移，TCP/WS检查conn_id字面量 | 生产净减8行、测试净减1行；包与生产文件各减1 | 大小写、多值、空值及Keys行为原样保留；check/lint及network、TCP/WS race通过 | 已完成 |
+| <a id="i59"></a>I59 / P1 | [TCP](../network/tcp/test_helpers_test.go#L13) / [WS](../network/websocket/test_helpers_test.go#L23) 基础fixture接收可选opened通道，替换六处构造 | 测试净减29行、2类型；测试case不减少 | 原通道容量、同步Open发送与cleanup顺序保留；check/lint及TCP/WS race通过 | 已完成 |
+| <a id="i60"></a>I60 / P1 | [NATS统计场景](../event/nats/stats_test.go#L108) 合并超限接收与panic恢复覆盖 | 测试净减26行、2顶层测试 | 独立publisher超限且不调用handler，Bus.Publish边界/空payload，两次panic后正常返回；关闭后Calls=3、Panics=2、PayloadDropped=1、QueueDropped=0、Closed=true、QueueDroppedCurrent=false；check/lint及NATS race通过 | 已完成 |
+| <a id="i61"></a>I61 / P1 | [PreparedProto](../network/prepared.go#L18) 保留结果指针，Once统一发布，删除atomic.Pointer/CAS | 生产净减7行；新增6行比较/map key编译检查；少1套原子发布机制，类型/字段总数不变 | Once内先建state再Marshal，保持懒编码、nil/error缓存、无重叠Reset及旧bytes；比较检查、check/lint及network、WS、Gateway race通过；panic后的状态由代码顺序复核 | 已完成 |
+| <a id="i62"></a>I62 / P1 | [NewServer依赖测试](../gateway/options_test.go#L144) 保留三种缺失条件，删除重复resolveOptions测试 | 测试净减31行、1顶层测试 | 三个输入与精确错误文本均保留，校验前无依赖调用；check/lint与Gateway race通过 | 已完成 |
+| <a id="i63"></a>I63 / P1 | [staticDiscovery.Watch](../gateway/test_helpers_test.go#L132) 直接创建持slice的Watcher | 测试净减16行、1类型、3函数/方法 | Watch捕获slice、首次Next复制，nil/空集合、first、后续context等待和Stop语义保留；check/lint与Gateway race通过 | 已完成 |
+| <a id="i64"></a>I64 / P1 | [Node TLS握手](../node/server_test.go#L24) 同时验证ServerTLS配置副本，删除独立重复装配 | 测试净减33行、1顶层测试 | 在ServerTLS Option应用后、构造服务前清空原Certificates；保留BeforeStart/Start、health握手及Stop等待；check/lint与Node race通过 | 已完成 |
 
-第二轮独立新增预计净减8–10生产行、74–85测试行；第三轮不提高P1估算。九项累计为47–68生产行、114–145测试行，减少一个内部包、一个生产文件、两个生产类型（含一个私有interface）、三个fixture类型及一套原子发布机制；没有重复计算前次候选。这是静态估算，不是已经取得的收益。P2仅保留在审查报告，未排期；已关闭问题不再重复展开历史解决方案。
+九项实际净减 **54生产行、130测试行，共184行**，包含迁入测试和新增比较编译检查；少1内部包、1生产文件、2生产类型（含1私有interface）、3个fixture类型及1套原子发布机制。顶层测试470→466，差额来自I60合并2个、I62/I64各1个，header两项测试迁移保留。原静态估算保留在审查报告，不能当作实测性能收益。P2、Drop、I03/I46及业务/容量优化均未纳入；本次九项无未完成项。
 
 ## 已知问题与部署限制（不纳入去复杂队列）
 

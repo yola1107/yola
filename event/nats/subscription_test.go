@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -238,44 +237,4 @@ func TestFullSubscriptionQueueDropsWithoutBlocking(t *testing.T) {
 	require.ErrorIs(t, bus.conn.LastError(), natsgo.ErrSlowConsumer)
 	_, err = bus.Subscribe(context.Background(), "yola.event.after-drop", func(context.Context, event.Event) {})
 	require.NoError(t, err)
-}
-
-func TestSubscriptionDropsOversizedReceivedPayload(t *testing.T) {
-	url := startTestServer(t)
-	bus := newTestBus(t, url, WithMaxPayloadBytes(4))
-	received := make(chan event.Event, 1)
-	handle, err := bus.Subscribe(context.Background(), "yola.event.oversized", func(_ context.Context, incoming event.Event) {
-		received <- incoming
-	})
-	require.NoError(t, err)
-
-	publisher, err := natsgo.Connect(url)
-	require.NoError(t, err)
-	t.Cleanup(publisher.Close)
-	require.NoError(t, publisher.Publish("yola.event.oversized", []byte("12345")))
-	require.NoError(t, publisher.Flush())
-
-	subscription := handle.(*subscription)
-	require.Eventually(t, func() bool { return subscription.dropped.Load() == 1 }, time.Second, time.Millisecond)
-	select {
-	case incoming := <-received:
-		t.Fatalf("received oversized payload: %+v", incoming)
-	default:
-	}
-}
-
-func TestHandlerPanicDoesNotStopSubscription(t *testing.T) {
-	bus := newTestBus(t, startTestServer(t))
-	var calls atomic.Int32
-	done := make(chan struct{})
-	_, err := bus.Subscribe(context.Background(), "yola.event.panic", func(context.Context, event.Event) {
-		if calls.Add(1) == 1 {
-			panic("test panic")
-		}
-		close(done)
-	})
-	require.NoError(t, err)
-	require.NoError(t, bus.Publish(context.Background(), event.Event{Topic: "yola.event.panic"}))
-	require.NoError(t, bus.Publish(context.Background(), event.Event{Topic: "yola.event.panic"}))
-	waitSignal(t, done, "subscription stopped after handler panic")
 }

@@ -1,6 +1,8 @@
 # 框架去复杂审查
 
-**状态：三轮审查完成，候选未实施。** 基线仍为 `ab0479b`（第一轮清理），2026-09-26。初次审查起点干净，后续保留已有未提交 docs 和非本任务的AGENTS.md改动继续核对；Go源码未变化。只更新 docs，不修改 Go、测试、协议、依赖或运行环境。Gate/Node 继续内嵌原生 Kratos v3 App。
+**状态：三轮审查已归档，I56–I64 已实施并验证。** 审查基线为`ab0479b`，文档归档为`a9a0cf6`；2026-09-26在`9ca9ad7`上完成九项P1，实际净减54生产行、130测试行，随本次清理提交归档。当前实现、检查和边界见 [实施记录](./refactor-progress.md#cleanup-results) 与 [issue状态](./issues.md)。Gate/Node继续内嵌原生Kratos v3 App。
+
+下文§1–13保留三轮审查时的证据、取舍和静态估算，其中“当前”“本次”“未实施”及行数均指审查时点，不作为新待办或当前验证结果。旧代码可用`git show ab0479b:<路径>`追溯；删除文件的链接已转向本次承接实现。P2和Drop未实施。
 
 ## 1. 结论与范围
 
@@ -83,7 +85,7 @@ TCP 分支主链涉及 [server_tcp.go:198](../network/tcp/server_tcp.go#L198)、
 <a id="i58"></a>
 ### I58 · 单一使用方 header 包内收
 
-- **位置与现状**：[header.go:11](../network/internal/header/header.go#L11) 的 Carrier 在生产代码中只由 [transport.go:22](../network/transport.go#L22) 使用；TCP/WS 测试仅额外引用 `ConnectionIDKey`。
+- **位置与现状**：原`network/internal/header/header.go:11`的Carrier（现为 [headerCarrier](../network/transport.go#L55)）在生产代码中只由Transport使用；TCP/WS测试仅额外引用`ConnectionIDKey`。
 - **复杂性**：Transport 的私有实现细节独立成包，需要跨目录阅读；不提供独立资源、替换或共享边界。
 - **建议**：把实现原样移到 `network/transport.go` 的私有类型，测试迁到 `network/transport_test.go`；[TCP:57](../network/tcp/client_server_test.go#L57)、[WS:42](../network/websocket/client_server_test.go#L42) 直接验证协议字面量 `conn_id`。保留大小写归一化、多值和空值语义，不换成 Kratos Metadata。
 - **收益 / 风险**：净减 5–12 生产行、1 包和1生产文件；测试迁移产生一个目标文件，总文件净减1。Carrier 的逻辑和类型仍存在，不把40行迁移计为40行删除。风险低。
@@ -101,7 +103,7 @@ TCP 分支主链涉及 [server_tcp.go:198](../network/tcp/server_tcp.go#L198)、
 <a id="i60"></a>
 ### I60 · 合并 NATS 重复装配，保留不同入口
 
-- **位置与现状**：[subscription_test.go:243](../event/nats/subscription_test.go#L243)、[:267](../event/nats/subscription_test.go#L267)、[stats_test.go:107](../event/nats/stats_test.go#L107) 分别测试超限接收、panic 后继续处理、payload/panic 统计，主体共57行。
+- **位置与现状**：原`event/nats/subscription_test.go:243`、`:267`及`stats_test.go:107`分别测试超限接收、panic后继续处理、payload/panic统计，主体共57行；本次合并后的场景见 [stats_test.go:108](../event/nats/stats_test.go#L108)。
 - **复杂性**：三个 broker/Bus/订阅场景重复装配，但不能原样只保留 stats 测试：前者使用独立 publisher，panic 场景通过 Bus.Publish 且后一次正常返回；stats 使用原生 conn.Publish 且两次都 panic。
 - **建议**：合成一个场景。独立 publisher 发超限数据，确认 PayloadDropped=1 且 handler 未调用；合法边界、空 payload 通过 Bus.Publish 发送；前两次 handler panic，第三次正常返回。关闭后保留 Calls=3、Panics=2、PayloadDropped=1、QueueDropped=0、Closed=true 及 QueueDroppedCurrent=false 的断言；最后一项保护原生订阅退出后的统计有效性边界。
 - **收益 / 风险**：扣除新增装配与断言后净减15–25测试行、2个顶层测试，覆盖不减少。低风险；这是合并，不是可以直接删除两个测试的证明。
@@ -143,7 +145,7 @@ Queue.Submit 虽转交 SubmitBatch，却表达单项提交并集中规则；删�
 | 合并两种连接池与发现快照 | [gateway/backend.go:94](../gateway/backend.go#L94) 按 service 管理发现连接；[gateclient/client.go:95](../internal/gateclient/client.go#L95) 按 endpoint 管理在途与空闲回收；[balancer.go:68](../gateway/balancer.go#L68) 的 Ready SubConn 不是 Registry 快照 | 会新增寻址/回收策略；高风险且增加抽象，Drop。lastUsed 也防止已开始的旧 timer callback 提前回收，不能直接删除 |
 | 用原生 discovery resolver/picker 取代 Gateway 适配 | [resolver.go:110](../gateway/resolver.go#L110) 在空实例时清空旧地址并校验固定 sticky；[balancer.go:22](../gateway/balancer.go#L22)、[:68](../gateway/balancer.go#L68) 还需精确 NodeID 选择 | 默认路径不等于当前 fail-closed 与精确路由契约；收益不足以承担路由回归，Drop |
 | 删除 Node protobuf 注册层、改用内部 gRPC middleware | [register.go:66](../node/register.go#L66) 给 middleware 的是业务 protobuf；K `transport/grpc/interceptor.go:23` 面向 cluster ForwardRequest | 输入类型与 operation 不同；[command_test.go:23](../node/command_test.go#L23) 保护该边界，Drop |
-| 以 Kratos Metadata 取代 Carrier / command context / sticky schema | K `metadata/metadata.go` 没有 Header.Keys，Set 会忽略空 key/value；[header.go:21](../network/internal/header/header.go#L21) 接受空值；[command.go:9](../node/command.go#L9) 区分0与缺失；[instance/metadata.go:15](../instance/metadata.go#L15) 严格解析 sticky | 不等价，或增加字符串转换和 wire 约定；Drop。只做 I58 私有实现内收 |
+| 以 Kratos Metadata 取代 Carrier / command context / sticky schema | K `metadata/metadata.go` 没有 Header.Keys，Set 会忽略空 key/value；原Carrier（现 [headerCarrier.Set](../network/transport.go#L65)）接受空值；[command.go:9](../node/command.go#L9) 区分0与缺失；[instance/metadata.go:15](../instance/metadata.go#L15) 严格解析 sticky | 不等价，或增加字符串转换和 wire 约定；Drop。只做 I58 私有实现内收 |
 | 为 options、logging、config 建统一 Yola 层 | [gateway/options.go:65](../gateway/options.go#L65)、[node/options.go:39](../node/options.go#L39) 是组件参数，框架没有另一套配置加载器；K `app.go:51` / `log/log.go:12` 已设置 slog.Default | 已复用原生能力；新增 BaseServer/ConfigManager/Logger wrapper 只增加概念，保持不变 |
 | NATS 直接暴露原生 Conn/Subscription，或删注册终态 | [event.go:206](../event/nats/event.go#L206)、[subscription.go:136](../event/nats/subscription.go#L136) 定义激活失败终态、handler取消/等待、引用回收；原生 Unsubscribe/Drain 不等价 | 会改变排队丢弃、在途等待和错误语义；高风险，Drop |
 | 删除 public interface 或强行合并所有内部包 | [locate/locator.go:44](../locate/locator.go#L44)、[node/session.go:16](../node/session.go#L16)、[node/epoch.go:26](../node/epoch.go#L26)、[event/event.go:27](../event/event.go#L27) 分别隔离存储、request route、三项epoch能力和Publisher | 有现有注入、测试或消费能力边界；公共API变化大、减量小，保持不变。唯一建议删的interface是 I57 |

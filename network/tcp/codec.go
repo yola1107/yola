@@ -55,8 +55,8 @@ func readFrame(rr *bufio.Reader, codec encoding.Codec, p *v1.Proto) error {
 }
 
 func writeFrame(wr *bufio.Writer, codec encoding.Codec, p *v1.Proto) error {
-	if appender, ok := codec.(frameAppender); ok {
-		return writeFrameAppend(wr, appender, p)
+	if _, ok := codec.(protoFrameCodec); ok {
+		return writeFrameAppend(wr, p)
 	}
 	body, err := codec.Marshal(p)
 	if err != nil {
@@ -75,8 +75,8 @@ func writeFrame(wr *bufio.Writer, codec encoding.Codec, p *v1.Proto) error {
 	return err
 }
 
-func writeFrameAppend(wr *bufio.Writer, codec frameAppender, p *v1.Proto) error {
-	length := codec.size(p)
+func writeFrameAppend(wr *bufio.Writer, p *v1.Proto) error {
+	length := proto.Size(p)
 	if err := validateFrameSize(length); err != nil {
 		return err
 	}
@@ -86,7 +86,7 @@ func writeFrameAppend(wr *bufio.Writer, codec frameAppender, p *v1.Proto) error 
 		}
 	}
 	frame := binary.LittleEndian.AppendUint32(wr.AvailableBuffer(), uint32(length))
-	frame, err := codec.marshalAppend(frame, p)
+	frame, err := proto.MarshalOptions{}.MarshalAppend(frame, p)
 	if err != nil {
 		return err
 	}
@@ -95,8 +95,8 @@ func writeFrameAppend(wr *bufio.Writer, codec frameAppender, p *v1.Proto) error 
 }
 
 func validateFrame(codec encoding.Codec, p *v1.Proto) error {
-	if appender, ok := codec.(frameAppender); ok {
-		return validateFrameSize(appender.size(p))
+	if _, ok := codec.(protoFrameCodec); ok {
+		return validateFrameSize(proto.Size(p))
 	}
 	body, err := codec.Marshal(p)
 	if err != nil {
@@ -115,19 +115,6 @@ func validateFrameSize(size int) error {
 	return nil
 }
 
-type frameAppender interface {
-	size(*v1.Proto) int
-	marshalAppend([]byte, *v1.Proto) ([]byte, error)
-}
-
 type protoFrameCodec struct {
 	encoding.Codec
-}
-
-func (protoFrameCodec) size(p *v1.Proto) int {
-	return proto.Size(p)
-}
-
-func (protoFrameCodec) marshalAppend(dst []byte, p *v1.Proto) ([]byte, error) {
-	return proto.MarshalOptions{}.MarshalAppend(dst, p)
 }

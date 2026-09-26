@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -105,19 +106,33 @@ func TestSubscriptionStatsNativeClosed(t *testing.T) {
 }
 
 func TestSubscriptionStatsPayloadAndPanic(t *testing.T) {
-	bus := newTestBus(t, startTestServer(t), WithMaxPayloadBytes(16))
-	sub, err := bus.Subscribe(context.Background(), "yola.stats.payload", func(context.Context, event.Event) { panic("test") })
+	url := startTestServer(t)
+	bus := newTestBus(t, url, WithMaxPayloadBytes(16))
+	var calls atomic.Int32
+	sub, err := bus.Subscribe(context.Background(), "yola.stats.payload", func(context.Context, event.Event) {
+		if calls.Add(1) <= 2 {
+			panic("test")
+		}
+	})
 	require.NoError(t, err)
 	observer, ok := sub.(event.SubscriptionStatsProvider)
 	require.True(t, ok, "NATS subscription must expose local capacity stats")
-	for _, size := range []int{17, 16, 0} {
-		require.NoError(t, bus.conn.Publish("yola.stats.payload", make([]byte, size)))
+	publisher, err := natsgo.Connect(url)
+	require.NoError(t, err)
+	t.Cleanup(publisher.Close)
+	require.NoError(t, publisher.Publish("yola.stats.payload", make([]byte, 17)))
+	require.NoError(t, publisher.Flush())
+	require.Eventually(t, func() bool { return observer.SubscriptionStats().PayloadDropped == 1 }, time.Second, time.Millisecond)
+	require.Zero(t, calls.Load(), "oversized payload must not reach the handler")
+	for _, size := range []int{16, 0, 0} {
+		require.NoError(t, bus.Publish(context.Background(), event.Event{Topic: "yola.stats.payload", Payload: make([]byte, size)}))
 	}
 	require.NoError(t, bus.conn.Flush())
-	require.Eventually(t, func() bool { return observer.SubscriptionStats().HandlerCalls == 2 }, time.Second, time.Millisecond)
+	require.Eventually(t, func() bool { return observer.SubscriptionStats().HandlerCalls == 3 }, time.Second, time.Millisecond)
 	require.NoError(t, bus.Close())
 	stats := observer.SubscriptionStats()
 	require.Equal(t, uint64(1), stats.PayloadDropped)
+	require.Equal(t, uint64(3), stats.HandlerCalls)
 	require.Equal(t, uint64(2), stats.HandlerPanics)
 	require.Zero(t, stats.QueueDropped)
 	require.True(t, stats.Closed)

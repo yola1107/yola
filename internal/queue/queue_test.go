@@ -7,7 +7,7 @@ import (
 )
 
 func TestStopLetsRunningCallbackFinishAndDiscardsPending(t *testing.T) {
-	queue := New(WithCapacity(1))
+	queue := New(1, nil)
 	running := make(chan struct{})
 	release := make(chan struct{})
 	finished := make(chan struct{})
@@ -43,7 +43,7 @@ func TestStopLetsRunningCallbackFinishAndDiscardsPending(t *testing.T) {
 }
 
 func TestBeginTerminationRunsAfterCurrentCallbackAndDiscardsPending(t *testing.T) {
-	queue := New(WithCapacity(1))
+	queue := New(1, nil)
 	running := make(chan struct{})
 	release := make(chan struct{})
 	pendingRan := make(chan struct{}, 1)
@@ -72,7 +72,7 @@ func TestBeginTerminationRunsAfterCurrentCallbackAndDiscardsPending(t *testing.T
 }
 
 func TestSubmitBatchIsAtomic(t *testing.T) {
-	queue := New(WithCapacity(2))
+	queue := New(2, nil)
 	runs := make(chan string, 2)
 	if err := queue.SubmitBatch(func() { runs <- "first" }, func() { runs <- "second" }); err != nil {
 		t.Fatal(err)
@@ -94,7 +94,7 @@ func TestSubmitBatchIsAtomic(t *testing.T) {
 func TestTerminalCallbacksIsolatePanicsAndPreserveOrder(t *testing.T) {
 	panicked := make(chan any, 1)
 	runs := make(chan string, 2)
-	queue := New(WithPanicHandler(func(value any, _ []byte) { panicked <- value }))
+	queue := New(64, func(value any, _ []byte) { panicked <- value })
 	go queue.Run()
 	finish := queue.BeginTermination(
 		func() {
@@ -115,7 +115,7 @@ func TestTerminalCallbacksIsolatePanicsAndPreserveOrder(t *testing.T) {
 func TestBeginTerminationCopiesCallbackSlice(t *testing.T) {
 	ran := make(chan string, 1)
 	terminals := []func(){func() { ran <- "original" }}
-	queue := New()
+	queue := New(64, nil)
 	finish := queue.BeginTermination(terminals...)
 	terminals[0] = func() { ran <- "changed" }
 	go queue.Run()
@@ -126,7 +126,7 @@ func TestBeginTerminationCopiesCallbackSlice(t *testing.T) {
 }
 
 func TestCallbackCanBeginTermination(t *testing.T) {
-	queue := New()
+	queue := New(64, nil)
 	terminalRan := make(chan struct{})
 	go queue.Run()
 	requireSubmit(t, queue, func() {
@@ -137,7 +137,7 @@ func TestCallbackCanBeginTermination(t *testing.T) {
 }
 
 func TestBeginTerminationWaitsForRelease(t *testing.T) {
-	queue := New()
+	queue := New(64, nil)
 	terminalRan := make(chan struct{})
 	go queue.Run()
 
@@ -154,9 +154,9 @@ func TestBeginTerminationWaitsForRelease(t *testing.T) {
 func TestRunRecoversCallbackPanic(t *testing.T) {
 	panicValue := make(chan any, 1)
 	nextCallbackDone := make(chan struct{})
-	queue := New(WithPanicHandler(func(value any, _ []byte) {
+	queue := New(64, func(value any, _ []byte) {
 		panicValue <- value
-	}))
+	})
 	go queue.Run()
 
 	if err := queue.Submit(func() { panic("boom") }); err != nil {
@@ -174,9 +174,9 @@ func TestRunRecoversCallbackPanic(t *testing.T) {
 
 func TestSubmitRejectsNilCallback(t *testing.T) {
 	panicked := make(chan any, 1)
-	queue := New(WithCapacity(1), WithPanicHandler(func(value any, _ []byte) {
+	queue := New(1, func(value any, _ []byte) {
 		panicked <- value
-	}))
+	})
 
 	if err := queue.Submit(nil); !errors.Is(err, ErrNilCallback) {
 		t.Fatalf("Submit(nil) error = %v, want %v", err, ErrNilCallback)
@@ -206,7 +206,7 @@ func TestSubmitRejectsNilCallback(t *testing.T) {
 }
 
 func TestStopWakesIdleRun(t *testing.T) {
-	queue := New()
+	queue := New(64, nil)
 	workerDone := make(chan struct{})
 	go func() {
 		queue.Run()
@@ -222,7 +222,7 @@ func TestNewRejectsInvalidCapacity(t *testing.T) {
 			t.Fatal("New() did not panic")
 		}
 	}()
-	New(WithCapacity(0))
+	New(0, nil)
 }
 
 func waitSignal(t *testing.T, signal <-chan struct{}) {

@@ -11,7 +11,6 @@ import (
 
 	"yola/api/protocol/v1"
 	"yola/network"
-	"yola/network/internal/header"
 
 	"github.com/go-kratos/kratos/v3/encoding"
 	"github.com/go-kratos/kratos/v3/encoding/protojson"
@@ -39,7 +38,7 @@ func (h *messageContextHandler) Handle(ctx context.Context, _ network.Connection
 		_, hasDeadline := ctx.Deadline()
 		if tr.Operation() != network.ConnectionHandlerOperation || tr.Endpoint() != h.endpoint ||
 			tr.RequestHeader().Get("remote_ip") != "127.0.0.1" ||
-			tr.RequestHeader().Get(header.ConnectionIDKey) == "" || !hasDeadline ||
+			tr.RequestHeader().Get("conn_id") == "" || !hasDeadline ||
 			ctx.Value(messageContextKey{}) != true {
 			h.observed <- fmt.Errorf("unexpected message context: transport=%+v deadline=%t middleware=%v",
 				tr, hasDeadline, ctx.Value(messageContextKey{}))
@@ -96,30 +95,6 @@ func (*kickHandler) Handle(ctx context.Context, conn network.Connection, message
 }
 
 func (*kickHandler) Close(context.Context, network.Connection) {}
-
-type clientCallbackHandler struct {
-	opened chan network.Connection
-}
-
-func (h clientCallbackHandler) Open(_ context.Context, conn network.Connection) error {
-	h.opened <- conn
-	return nil
-}
-
-func (clientCallbackHandler) Handle(_ context.Context, _ network.Connection, message *v1.Proto) (*v1.Proto, error) {
-	switch message.Op {
-	case v1.OpAuth:
-		message.Op = v1.OpAuthReply
-	case v1.OpRequest:
-		message.Op = v1.OpResponse
-	case v1.OpHeartbeat:
-		message.Op = v1.OpHeartbeatReply
-		message.Body = nil
-	}
-	return message, nil
-}
-
-func (clientCallbackHandler) Close(context.Context, network.Connection) {}
 
 type blockedRequestHandler struct {
 	websocketTestHandler
@@ -199,7 +174,7 @@ func TestServerMessageContextAndReplacementReply(t *testing.T) {
 }
 
 func TestClientCallbacksAreOrderedAndDoNotBlockResponses(t *testing.T) {
-	handler := clientCallbackHandler{opened: make(chan network.Connection, 1)}
+	handler := websocketTestHandler{opened: make(chan network.Connection, 1)}
 	endpoint := startWebSocketTestServer(t, handler)
 	connected := make(chan struct{})
 	callbackStarted := make(chan struct{})
@@ -242,7 +217,7 @@ func TestClientCallbacksAreOrderedAndDoNotBlockResponses(t *testing.T) {
 }
 
 func TestClientCallbackQueueFullClosesConnection(t *testing.T) {
-	handler := clientCallbackHandler{opened: make(chan network.Connection, 4)}
+	handler := websocketTestHandler{opened: make(chan network.Connection, 4)}
 	endpoint := startWebSocketTestServer(t, handler)
 	connected := make(chan struct{}, 4)
 	callbackStarted := make(chan struct{})
@@ -288,7 +263,7 @@ func TestClientCallbackQueueFullClosesConnection(t *testing.T) {
 }
 
 func TestClientKickRunsAfterPushAndBeforeDisconnect(t *testing.T) {
-	handler := clientCallbackHandler{opened: make(chan network.Connection, 1)}
+	handler := websocketTestHandler{opened: make(chan network.Connection, 1)}
 	endpoint := startWebSocketTestServer(t, handler)
 	pushStarted := make(chan struct{})
 	releasePush := make(chan struct{})

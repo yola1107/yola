@@ -1,8 +1,44 @@
 # 框架清理进度
 
-本文件区分当前审查和历史实施，执行候选见 [issues.md](./issues.md)。历史修复、排期和提交授权不自动适用于后续任务。
+本文件区分本次实施、三轮审查和历史修复，当前状态见 [issues.md](./issues.md)。历史修复、排期和提交授权不自动适用于后续任务。
 
-## 当前审查（三轮完成，未实施）
+<a id="cleanup-results"></a>
+## I56–I64 实施与验证（已完成）
+
+- **日期与基线**：2026-09-26，`9ca9ad78d4dd8c0803017b5fcf692d90239e7ea4`。起始HEAD、status、暂存/未暂存diff及新增文件均已核对，工作树干净；第一轮清理为`ab0479b`、三轮审核归档为`a9a0cf6`。两者到本次基线的Go源码无变化。AGENTS.md未修改。
+- **范围与状态**：九项P1全部完成代码/测试调整、验证和完整任务diff复审；按网络装配与fixture、PreparedProto缓存发布、NATS覆盖合并、Gateway/Node测试清理分批处理。公共接入API、Kratos内嵌组件边界、协议、业务逻辑、依赖与生成文件保持。没有新增helper、manager、生产依赖或性能机制。
+- **工具核验**：本会话没有gopls MCP，使用已安装gopls v0.21.1 CLI核对Queue调用、frameAppender唯一实现、Carrier引用、callback fixture、PreparedProto.Reset、静态Discovery及resolveOptions调用链，并检查修改文件诊断。ast-grep MCP本次实际可用，成功查询两种transport的Queue构造；CLI也可用。初次位置/模式查询失败或无匹配不作为删除证据，修正后由语义查询与源码复核。不安装、升级或改配置，也不扩展到全库审查。
+
+| 批次 / issue | 实际改动与复审依据 | 生产净减行 | 测试净减行 |
+| --- | --- | ---: | ---: |
+| I56 | Queue直接构造，保留PanicHandler和非法容量panic；同步两种Client及全部测试调用，队列执行/终止逻辑未动 | 26 | 0 |
+| I57 | 默认protoFrameCodec分支直接使用同一proto.Size/MarshalAppend；保留具体类型判定、custom fallback和校验→Flush→编码→Write顺序 | 13 | 0 |
+| I58 | Carrier原样内收到network私有类型，原两项测试迁入transport_test.go，连接ID常量自检改为真实Transport接线断言；TCP/WS用conn_id字面量 | 8 | 1 |
+| I59 | 两种transport各自基础fixture增加可选opened通道，替换六个构造；Handle/Close、通道容量、同步发送与cleanup顺序保持 | 0 | 29 |
+| I60 | 三个NATS场景共用一次broker/Bus/订阅装配；独立publisher超限、Bus.Publish边界/空payload、两次panic后正常返回及全部关闭统计断言保留 | 0 | 26 |
+| I61 | 保留*preparedState，把Once移到PreparedProto；先创建state再Marshal，Reset清引用并重置Once；新增零值比较和map key编译检查 | 7 | -6 |
+| I62 | 删除重复resolveOptions缺依赖测试，保留NewServer全部三种缺失输入与精确错误断言；失败前不调用Locator | 0 | 31 |
+| I63 | 静态Watch直接持有捕获的slice，首次Next仍append到nil slice；删除中间Discovery，保留first/context/Stop与nil/空集合语义 | 0 | 16 |
+| I64 | 清空原Certificates的Option迁入Node TLS握手测试，在ServerTLS应用后、服务构造前执行；保留真实生命周期和health RPC/关闭等待 | 0 | 33 |
+| **合计** | **物理行，包含空白、注释、迁移与新增编译检查** | **54** | **130** |
+
+范围仍为gateway、node、network、internal、locate、registry、event、instance，排除api、examples、独立test module和生成文件。实际为**23包、74生产文件/10,611行、102测试文件/19,716行、466个顶层Test函数**；对比基线净减1包、1生产文件、184总行、2生产类型（含1私有interface）、3测试fixture类型、1套原子缓存发布机制。只合并I60的2个顶层测试及I62/I64各1个，header测试迁移不重复计删除。I61保留使用后不得复制的说明和结果对象，不强求原8–10行估算；不宣称内存、吞吐或延迟改善。
+
+| 本次在根目录执行 | 结果 |
+| --- | --- |
+| `golangci-lint fmt --config .golangci.yml <全部修改/新增Go文件>` | 已完成，只格式化任务Go文件 |
+| `make check` | 通过：buf lint、两个module的tidy diff/vet/staticcheck/测试及工作树/暂存区diff检查。受影响包测试实际运行；日志中无变化包的`(cached)`为Go有效缓存复用，未重跑同配置普通测试 |
+| `make lint` | 通过：根/test module均0 issues，新增与存量告警均为0 |
+| `go test -race ./internal/queue ./network ./network/tcp ./network/websocket ./event/nats ./gateway ./node -count=1 -timeout=180s` | 七包全部通过；覆盖callback关闭、Prepared并发共享/旧bytes、TCP/WS默认与custom codec、Gateway广播顺序/停止、发现和Node TLS生命周期 |
+| 本地文档路径/锚点、完整diff、新增文件、`git status --short`、`git diff --check`、`git diff --cached --check` | 已核对；九项状态与实际patch一致，暂存区为空 |
+
+环境为Go 1.26.6 windows/amd64、golangci-lint 2.13.2；race命令内前置已有`D:\soft\msys64\mingw64\bin`。日志位于`%TEMP%\yola-i56-i64-20260926-9ca9ad7`的`check.log`、`lint.log`、`race.log`；临时日志不保证长期保留。本次未设置YOLA外部集成变量、仓库无TestMain；真实Redis/etcd、Cluster管理与完整游戏按条件跳过，不计为通过。NATS使用本机临时内嵌broker，TCP/WS/gRPC使用本机临时连接，由既有cleanup回收；未访问VM或操作既有服务。
+
+I61的panic后状态由代码顺序复核：state在Marshal前创建，Once即使因panic完成，后续仍返回既有零值body/err，不引入nil解引用；这不是新增panic注入测试的通过声明。没有协议、服务入口或构建链改动，不触发breaking/build；没有运行benchmark或容量验收。P2、Drop及I03/I46保持原状态，本次九项无未完成项。用户随后授权提交全部现有改动，随本次清理提交归档；没有git push或发布。
+
+提交前再次核对完整diff、当前规则及验证日志。Go源码、依赖、配置、工具与环境未变，本次只更新提交状态，复用上述check/lint/race结果；文档引用、工作树和暂存区diff检查重新执行。
+
+## 三轮审查记录（实施前）
 
 - **基线与范围**：2026-09-26，`ab0479b`。初次审查起点干净，后续保留前次未提交docs及AGENTS.md已有改动继续核对，Go源码不变；只审查根框架和有效测试密度。
 - **结论**：没有可信的P0大块删除项。前两轮九项P1维持47–68生产行、114–145测试行的静态净减估算。第三轮无新增P1，只补充约4生产行、10–12测试行的可选P2和别名清理，不加入排期或抬高累计收益；见 [第三轮](./architecture-review.md#round3) 和 [累计估算](./architecture-review.md#10-缩减边界与不重复计算的估算)。
@@ -16,7 +52,7 @@
 <a id="cleanup-handoff"></a>
 ## 新窗口实施提示词
 
-以下文本供用户在新窗口发送后启动实施；本文档本身不自动授权执行历史计划。
+以下提示词已由本次用户授权执行完毕，保留用于追溯范围与验收条件，不再作为待办；本文档本身不授权执行或提交历史计划。
 
 ```text
 请在 D:\src\pitaya\yola 实施已经完成三轮审核的框架清理，重点是去复杂、减代码、降维护成本。本次授权实施 docs/issues.md 中 I56–I64 九项 P1，不要继续进行无目标的全库审查，也不要只输出方案。

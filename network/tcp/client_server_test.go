@@ -13,7 +13,6 @@ import (
 
 	"yola/api/protocol/v1"
 	"yola/network"
-	"yola/network/internal/header"
 
 	"github.com/go-kratos/kratos/v3/encoding"
 	"github.com/go-kratos/kratos/v3/encoding/protojson"
@@ -54,7 +53,7 @@ func (h *messageContextHandler) Handle(ctx context.Context, _ network.Connection
 		_, hasDeadline := ctx.Deadline()
 		if tr.Operation() != network.ConnectionHandlerOperation || tr.Endpoint() != h.endpoint ||
 			tr.RequestHeader().Get("remote_ip") != "127.0.0.1" ||
-			tr.RequestHeader().Get(header.ConnectionIDKey) == "" || !hasDeadline ||
+			tr.RequestHeader().Get("conn_id") == "" || !hasDeadline ||
 			ctx.Value(messageContextKey{}) != true {
 			h.observed <- fmt.Errorf("unexpected message context: transport=%+v deadline=%t middleware=%v",
 				tr, hasDeadline, ctx.Value(messageContextKey{}))

@@ -81,10 +81,7 @@ func NewClient(ctx context.Context, opts ...ClientOption) (*Client, error) {
 		pushHandlers:   o.pushHandler,
 		kickHandler:    o.kickHandler,
 		disconnectFunc: o.disconnectFunc,
-		callbacks: queue.New(
-			queue.WithCapacity(o.callbackQueueSize),
-			queue.WithPanicHandler(logCallbackPanic),
-		),
+		callbacks:      queue.New(o.callbackQueueSize, logCallbackPanic),
 		pingInterval:   o.pingInterval,
 		requestTimeout: o.requestTimeout,
 	}

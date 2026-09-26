@@ -73,37 +73,6 @@ func TestResolveOptionsRejectsEndpointTLSMismatch(t *testing.T) {
 	}
 }
 
-func TestResolveOptionsRequiresDependencies(t *testing.T) {
-	tests := []struct {
-		name string
-		opts []Option
-		want string
-	}{
-		{
-			name: "authenticator",
-			opts: []Option{Locator(pingLocator{}), Discovery(staticDiscovery{})},
-			want: "gateway: authenticator is required",
-		},
-		{
-			name: "locator",
-			opts: []Option{Auth(testAuthenticator{}), Discovery(staticDiscovery{})},
-			want: "gateway: locator is required",
-		},
-		{
-			name: "discovery",
-			opts: []Option{Auth(testAuthenticator{}), Locator(pingLocator{})},
-			want: "gateway: discovery is required",
-		},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			_, err := resolveOptions(test.opts...)
-
-			require.EqualError(t, err, test.want)
-		})
-	}
-}
-
 func TestResolveOptionsClonesMutableConfiguration(t *testing.T) {
 	endpoint := &url.URL{Scheme: "grpc", Host: "127.0.0.1:9010"}
 	clientTLS := &tls.Config{MinVersion: tls.VersionTLS12, ServerName: "node.internal"}
