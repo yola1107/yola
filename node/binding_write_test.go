@@ -71,6 +71,8 @@ func TestLateBindingWritePreservesReplacement(t *testing.T) {
 				{method: "BindNode", replacement: "node-a"},
 				{method: "UnbindNode", replacement: "node-a"},
 				{method: "UnbindNode", replacement: "node-b"},
+				{method: "RenewNode", replacement: "node-a"},
+				{method: "RenewNode", replacement: "node-b"},
 			} {
 				t.Run(scenario.method+"/"+scenario.replacement, func(t *testing.T) {
 					ctx := context.Background()
@@ -98,8 +100,9 @@ func TestLateBindingWritePreservesReplacement(t *testing.T) {
 						Locator: locateredis.New(oldClient), entered: make(chan context.Context, 1), result: make(chan error, 1),
 					}
 					require.NoError(t, store.RegisterNodeEpoch(ctx, service, "node-a", "old", DefaultNodeEpochTTL))
-					// 预热两个脚本及目标 slot 连接，排除 NOSCRIPT 重试在取消后提前结束的假阳性。
+					// 预热绑定脚本及目标 slot 连接，排除 NOSCRIPT 重试在取消后提前结束的假阳性。
 					require.NoError(t, oldStore.Locator.BindNode(ctx, service, "warmup", "node-a", "old"))
+					require.NoError(t, oldStore.Locator.RenewNode(ctx, service, "warmup", "node-a", "old"))
 					require.NoError(t, oldStore.Locator.UnbindNode(ctx, service, "warmup", "node-a", "old"))
 					require.NoError(t, store.BindNode(ctx, service, "player", "node-a", "old"))
 					server := newTestServer(t, Locator(oldStore))
@@ -181,6 +184,13 @@ func (l *observedBindingLocator) BindNode(ctx context.Context, service, uid, nod
 func (l *observedBindingLocator) UnbindNode(ctx context.Context, service, uid, nodeID, epoch string) error {
 	l.entered <- ctx
 	err := l.Locator.UnbindNode(ctx, service, uid, nodeID, epoch)
+	l.result <- err
+	return err
+}
+
+func (l *observedBindingLocator) RenewNode(ctx context.Context, service, uid, nodeID, epoch string) error {
+	l.entered <- ctx
+	err := l.Locator.RenewNode(ctx, service, uid, nodeID, epoch)
 	l.result <- err
 	return err
 }

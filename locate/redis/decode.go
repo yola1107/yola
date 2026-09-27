@@ -16,12 +16,14 @@ const (
 	nodeEpochKeyPrefix = "locate:node:epoch:"
 	maxTTLMillis       = int64((1<<63 - 1) / time.Millisecond)
 
-	statusOK        int64 = 1
-	statusMissing   int64 = 0
-	statusConflict  int64 = -1
-	statusBadLease  int64 = -2
-	statusInvalid   int64 = -3
-	statusMalformed int64 = -4
+	statusOK           int64 = 1
+	statusMissing      int64 = 0
+	statusConflict     int64 = -1
+	statusBadLease     int64 = -2
+	statusInvalid      int64 = -3
+	statusMalformed    int64 = -4
+	statusNodeMissing  int64 = -5
+	statusNodeConflict int64 = -6
 
 	leaseResultFields = 3
 )

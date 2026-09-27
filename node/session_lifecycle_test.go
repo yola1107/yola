@@ -15,7 +15,7 @@ import (
 )
 
 func TestStopWaitsForSavedSessionBinding(t *testing.T) {
-	for _, method := range []string{"BindNode", "UnbindNode"} {
+	for _, method := range []string{"BindNode", "RenewNode", "UnbindNode"} {
 		t.Run(method, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				store := newMemoryLocator()
@@ -24,6 +24,9 @@ func TestStopWaitsForSavedSessionBinding(t *testing.T) {
 				releaseWrite := sync.OnceFunc(func() { close(release) })
 				locator := &blockingSessionLocator{Locator: store, entered: entered, release: release}
 				server, session := savedBindingSession(t, locator)
+				if method == "RenewNode" {
+					require.NoError(t, store.BindNode(t.Context(), "game", "player-a", "node-a", "epoch-a"))
+				}
 				t.Cleanup(func() { require.NoError(t, server.Stop(context.Background())) })
 				t.Cleanup(releaseWrite)
 				written := make(chan error, 1)
@@ -55,7 +58,7 @@ func TestStopWaitsForSavedSessionBinding(t *testing.T) {
 }
 
 func TestSessionBindingDrainTimeoutKeepsEpoch(t *testing.T) {
-	for _, method := range []string{"BindNode", "UnbindNode"} {
+	for _, method := range []string{"BindNode", "RenewNode", "UnbindNode"} {
 		t.Run(method, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				store := newMemoryLocator()
@@ -64,6 +67,9 @@ func TestSessionBindingDrainTimeoutKeepsEpoch(t *testing.T) {
 				releaseWrite := sync.OnceFunc(func() { close(release) })
 				locator := &blockingSessionLocator{Locator: store, entered: entered, release: release}
 				server, session := savedBindingSession(t, locator)
+				if method == "RenewNode" {
+					require.NoError(t, store.BindNode(t.Context(), "game", "player-a", "node-a", "epoch-a"))
+				}
 				t.Cleanup(releaseWrite)
 				written := make(chan error, 1)
 				go func() { written <- callSessionBinding(context.Background(), session, method) }()
@@ -93,6 +99,9 @@ func TestBusinessDrainCanBindAndUnbindSavedSession(t *testing.T) {
 		if err := session.BindNode(ctx); err != nil {
 			return err
 		}
+		if err := session.RenewNode(ctx); err != nil {
+			return err
+		}
 		return session.UnbindNode(ctx)
 	}))
 
@@ -104,12 +113,15 @@ func TestBusinessDrainCanBindAndUnbindSavedSession(t *testing.T) {
 }
 
 func TestEpochLossCancelsSavedSessionBinding(t *testing.T) {
-	for _, method := range []string{"BindNode", "UnbindNode"} {
+	for _, method := range []string{"BindNode", "RenewNode", "UnbindNode"} {
 		t.Run(method, func(t *testing.T) {
 			store := newMemoryLocator()
 			entered := make(chan context.Context, 1)
 			locator := &blockingSessionLocator{Locator: store, entered: entered}
 			server, session := savedBindingSession(t, locator)
+			if method == "RenewNode" {
+				require.NoError(t, store.BindNode(t.Context(), "game", "player-a", "node-a", "epoch-a"))
+			}
 			t.Cleanup(func() { require.NoError(t, server.Stop(context.Background())) })
 			written := make(chan error, 1)
 			go func() { written <- callSessionBinding(context.Background(), session, method) }()
@@ -147,6 +159,13 @@ func (l *blockingSessionLocator) UnbindNode(ctx context.Context, service, uid, n
 		return err
 	}
 	return l.Locator.UnbindNode(ctx, service, uid, nodeID, epoch)
+}
+
+func (l *blockingSessionLocator) RenewNode(ctx context.Context, service, uid, nodeID, epoch string) error {
+	if err := l.wait(ctx); err != nil {
+		return err
+	}
+	return l.Locator.RenewNode(ctx, service, uid, nodeID, epoch)
 }
 
 func (l *blockingSessionLocator) wait(ctx context.Context) error {

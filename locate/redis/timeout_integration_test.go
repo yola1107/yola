@@ -34,7 +34,7 @@ func TestLocatorRedisRequestBudget(t *testing.T) {
 				require.NotEqual(t, "1", address, "an explicit isolated address is required")
 			}
 			for _, name := range []string{
-				"Ping", "BindGate", "LocateGate", "RenewGateLease", "UnbindGate", "BindNode", "LocateNode", "UnbindNode",
+				"Ping", "BindGate", "LocateGate", "RenewGateLease", "UnbindGate", "BindNode", "RenewNode", "LocateNode", "UnbindNode",
 				"RegisterNodeEpoch", "RenewNodeEpoch", "LocateNodeEpoch", "UnregisterNodeEpoch",
 			} {
 				t.Run(name, func(t *testing.T) {

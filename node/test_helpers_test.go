@@ -119,6 +119,28 @@ func (l *memoryNodeLocator) LocateNode(_ context.Context, serviceName, uid strin
 	return nodeID, nil
 }
 
+func (l *memoryNodeLocator) RenewNode(_ context.Context, serviceName, uid, nodeID, epoch string) error {
+	if !locate.ValidNodeLocation(serviceName, uid, nodeID) {
+		return locate.ErrInvalidNodeBinding
+	}
+	if epoch == "" {
+		return locate.ErrInvalidNodeEpoch
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if err := l.checkEpochLocked(serviceName, nodeID, epoch); err != nil {
+		return err
+	}
+	current, ok := l.bindings[serviceName+"\x00"+uid]
+	if !ok {
+		return locate.ErrNodeNotFound
+	}
+	if current != nodeID {
+		return locate.ErrNodeConflict
+	}
+	return nil
+}
+
 func (l *memoryNodeLocator) UnbindNode(_ context.Context, serviceName, uid, nodeID, epoch string) error {
 	if !locate.ValidNodeLocation(serviceName, uid, nodeID) {
 		return locate.ErrInvalidNodeBinding
@@ -302,8 +324,12 @@ func savedBindingSession(t *testing.T, locator locate.Locator, opts ...Option) (
 }
 
 func callSessionBinding(ctx context.Context, session Session, method string) error {
-	if method == "BindNode" {
+	switch method {
+	case "BindNode":
 		return session.BindNode(ctx)
+	case "RenewNode":
+		return session.RenewNode(ctx)
+	default:
+		return session.UnbindNode(ctx)
 	}
-	return session.UnbindNode(ctx)
 }

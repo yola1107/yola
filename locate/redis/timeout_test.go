@@ -102,6 +102,7 @@ func locatorOperations(store locate.Locator, binding locate.GateBinding) map[str
 		},
 		"UnbindGate": func(ctx context.Context) error { return store.UnbindGate(ctx, binding) },
 		"BindNode":   func(ctx context.Context) error { return store.BindNode(ctx, service, uid, "node", "epoch") },
+		"RenewNode":  func(ctx context.Context) error { return store.RenewNode(ctx, service, uid, "node", "epoch") },
 		"LocateNode": func(ctx context.Context) error {
 			_, err := store.LocateNode(ctx, service, uid)
 			return err

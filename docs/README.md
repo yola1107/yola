@@ -200,7 +200,9 @@ node.Register(server, message.WhotEnterCommand,
     })
 ```
 
-离桌由业务调用 `sess.UnbindNode(ctx)`；向本请求的连接推送用 `sess.Push(ctx, command, protobufMessage)`，按 UID 定位当前连接用 `server.PushToUID`。断线不自动解绑 Node，BindNode 也不能作为安全定时保活。持有玩家/Table/后台任务的业务增加 `node.Drain(usecase.Drain)`，返回前停止绑定和推送的生产者。[完整 Stateful 示例](../examples/whot/main.go)、[Session handler](../examples/whot/service.go)
+离桌由业务调用 `sess.UnbindNode(ctx)`；向本请求的连接推送用 `sess.Push(ctx, command, protobufMessage)`，按 UID 定位当前连接用 `server.PushToUID`。断线不自动解绑 Node。绑定保活使用 `sess.RenewNode(ctx)`：仅续期当前 NodeID/epoch 匹配的既有绑定，不能改用会覆盖归属的 BindNode 重试。业务 owner 在6h到期前按自己的生命周期调度续租，框架不自动续租；遇到 Aborted 时按业务归属变化处理。持有玩家/Table/后台任务的业务增加 `node.Drain(usecase.Drain)`，返回前停止绑定、续租和推送的生产者。[完整 Stateful 示例](../examples/whot/main.go)、[Session handler](../examples/whot/service.go)
+
+自定义 `locate.NodeLocator` / `node.Session` 及测试替身按当前接口实现条件续租。原 NodeID 重启取得新 epoch 后可继续使用既有绑定；续租不代表玩家/Table 唯一业务 owner，见[修改权契约](./architecture.md#node-binding)。
 
 上述回环地址用于本机接入；跨主机需显式配置可达的 AdvertiseHost/endpoint，TLS两端成对配置。EventBus是可选的应用依赖，按 [事件接线](./eventbus.md) 单独装配；资源归属和失败回收见 [生命周期](./architecture.md#3-生命周期)。
 

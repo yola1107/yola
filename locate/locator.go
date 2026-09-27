@@ -18,6 +18,7 @@ var (
 	ErrInvalidGateLease   = errors.New("invalid gate binding lease")
 
 	ErrNodeNotFound       = errors.New("node binding not found")
+	ErrNodeConflict       = errors.New("node binding conflict")
 	ErrInvalidNodeBinding = errors.New("invalid node binding")
 	ErrNodeEpochNotFound  = errors.New("node epoch not found")
 	ErrNodeEpochConflict  = errors.New("node epoch conflict")
@@ -62,6 +63,9 @@ type NodeLocator interface {
 	// BindNode 原子校验进程 epoch 后绑定 Node；有效进程的新绑定直接覆盖旧绑定。
 	// 存储中的 epoch 缺失或不匹配分别返回 ErrNodeEpochNotFound、ErrNodeEpochConflict。
 	BindNode(ctx context.Context, serviceName, uid, nodeID, epoch string) error
+	// RenewNode 原子核验 epoch 与当前 NodeID 后刷新绑定 TTL；不创建或覆盖绑定。
+	// 绑定缺失或改绑分别返回 ErrNodeNotFound、ErrNodeConflict。
+	RenewNode(ctx context.Context, serviceName, uid, nodeID, epoch string) error
 	// LocateNode 获取当前 NodeID。
 	LocateNode(ctx context.Context, serviceName, uid string) (string, error)
 	// UnbindNode 原子校验进程 epoch 后，仅在当前 NodeID 匹配时解绑；绑定缺失或改绑视为成功。

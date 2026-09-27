@@ -8,6 +8,7 @@ import (
 
 	v1 "yola/api/cluster/v1"
 	"yola/internal/clusterroute"
+	"yola/locate"
 
 	"github.com/go-kratos/kratos/v3"
 	"github.com/go-kratos/kratos/v3/middleware"
@@ -76,7 +77,29 @@ func TestSessionNodeBindingRequiresLocator(t *testing.T) {
 	sess := requestSession{binding: testBinding("player-a", "conn-a"), server: server}
 
 	require.Equal(t, codes.FailedPrecondition, status.Code(sess.BindNode(context.Background())))
+	require.Equal(t, codes.FailedPrecondition, status.Code(sess.RenewNode(context.Background())))
 	require.Equal(t, codes.FailedPrecondition, status.Code(sess.UnbindNode(context.Background())))
+}
+
+func TestSessionRenewalDoesNotTakeOverReplacement(t *testing.T) {
+	store := newMemoryLocator()
+	server, session := savedBindingSession(t, store)
+	t.Cleanup(func() { require.NoError(t, server.Stop(context.Background())) })
+	require.Equal(t, codes.Aborted, status.Code(session.RenewNode(t.Context())))
+	require.NoError(t, session.BindNode(t.Context()))
+	require.NoError(t, session.RenewNode(t.Context()))
+	require.NoError(t, store.RegisterNodeEpoch(t.Context(), "game", "node-b", "other", DefaultNodeEpochTTL))
+	require.NoError(t, store.BindNode(t.Context(), "game", session.UID(), "node-b", "other"))
+	require.Equal(t, codes.Aborted, status.Code(session.RenewNode(t.Context())))
+	nodeID, err := store.LocateNode(t.Context(), "game", session.UID())
+	require.NoError(t, err)
+	require.Equal(t, "node-b", nodeID)
+	require.NoError(t, server.lease.Load().valid(), "binding migration does not revoke the whole Node")
+	require.False(t, server.deliveries.isClosed())
+	require.NoError(t, session.BindNode(t.Context()), "explicit takeover remains supported")
+	require.NoError(t, session.UnbindNode(t.Context()))
+	_, err = store.LocateNode(t.Context(), "game", session.UID())
+	require.ErrorIs(t, err, locate.ErrNodeNotFound)
 }
 
 func TestCommandMetadataDistinguishesSharedRequestsThroughGRPC(t *testing.T) {

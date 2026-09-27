@@ -31,6 +31,7 @@ func TestNodeBindingRequiresLiveEpoch(t *testing.T) {
 				server.FastForward(testTTL + time.Millisecond)
 			}
 			require.ErrorIs(t, locator.BindNode(ctx, "game", "player", "node-a", "epoch-a"), locate.ErrNodeEpochNotFound)
+			require.ErrorIs(t, locator.RenewNode(ctx, "game", "player", "node-a", "epoch-a"), locate.ErrNodeEpochNotFound)
 			require.ErrorIs(t, locator.UnbindNode(ctx, "game", "player", "node-a", "epoch-a"), locate.ErrNodeEpochNotFound)
 			nodeID, err := locator.LocateNode(ctx, "game", "player")
 			if !expired {
@@ -78,6 +79,8 @@ func assertNodeBindingEpochHandoff(t *testing.T, locator locate.Locator, service
 	require.NoError(t, locator.RegisterNodeEpoch(ctx, service, "node-b", "other", testTTL))
 	require.NoError(t, locator.BindNode(ctx, service, uid, "node-a", "old"))
 	require.NoError(t, locator.BindNode(ctx, service, uid, "node-b", "other"))
+	require.ErrorIs(t, locator.RenewNode(ctx, service, uid, "node-a", "old"), locate.ErrNodeConflict)
+	require.NoError(t, locator.RenewNode(ctx, service, uid, "node-b", "other"))
 	require.NoError(t, locator.UnbindNode(ctx, service, uid, "node-a", "old"))
 	nodeID, err := locator.LocateNode(ctx, service, uid)
 	require.NoError(t, err)
@@ -86,6 +89,7 @@ func assertNodeBindingEpochHandoff(t *testing.T, locator locate.Locator, service
 	require.NoError(t, locator.UnregisterNodeEpoch(ctx, service, "node-a", "old"))
 	require.NoError(t, locator.RegisterNodeEpoch(ctx, service, "node-a", "new", testTTL))
 	require.ErrorIs(t, locator.BindNode(ctx, service, uid, "node-a", "old"), locate.ErrNodeEpochConflict)
+	require.ErrorIs(t, locator.RenewNode(ctx, service, uid, "node-a", "old"), locate.ErrNodeEpochConflict)
 	require.ErrorIs(t, locator.UnbindNode(ctx, service, uid, "node-a", "old"), locate.ErrNodeEpochConflict)
 	nodeID, err = locator.LocateNode(ctx, service, uid)
 	require.NoError(t, err)
@@ -104,6 +108,7 @@ func assertNodeBindingEpochHandoff(t *testing.T, locator locate.Locator, service
 	require.ErrorIs(t, locator.BindNode(ctx, service, uid, "node-a", "new"), locate.ErrNodeEpochNotFound)
 	require.ErrorIs(t, locator.UnbindNode(ctx, service, uid, "node-a", "new"), locate.ErrNodeEpochNotFound)
 	require.NoError(t, locator.RegisterNodeEpoch(ctx, service, "node-a", "restarted", testTTL))
+	require.NoError(t, locator.RenewNode(ctx, service, uid, "node-a", "restarted"))
 	nodeID, err = locator.LocateNode(ctx, service, uid)
 	require.NoError(t, err)
 	require.Equal(t, "node-a", nodeID)
@@ -112,6 +117,7 @@ func assertNodeBindingEpochHandoff(t *testing.T, locator locate.Locator, service
 	require.ErrorIs(t, locator.UnbindNode(ctx, service, uid, "node-a", "old"), locate.ErrNodeEpochConflict)
 	_, err = locator.LocateNode(ctx, service, uid)
 	require.ErrorIs(t, err, locate.ErrNodeNotFound)
+	require.ErrorIs(t, locator.RenewNode(ctx, service, uid, "node-a", "restarted"), locate.ErrNodeNotFound)
 
 	// 相同 NodeID/UID 在其他 service 中不能借用本 service 的 epoch。
 	require.ErrorIs(t, locator.BindNode(ctx, service+"-other", uid, "node-a", "restarted"), locate.ErrNodeEpochNotFound)

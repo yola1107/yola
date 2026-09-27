@@ -46,6 +46,30 @@ func (l *locator) LocateNode(ctx context.Context, serviceName, uid string) (stri
 	return nodeID, nil
 }
 
+func (l *locator) RenewNode(ctx context.Context, serviceName, uid, nodeID, epoch string) error {
+	if !locate.ValidNodeLocation(serviceName, uid, nodeID) {
+		return locate.ErrInvalidNodeBinding
+	}
+	if epoch == "" {
+		return locate.ErrInvalidNodeEpoch
+	}
+	values, err := renewNodeScript.Run(ctx, l.client,
+		[]string{nodeEpochKey(serviceName, nodeID), nodeKey(serviceName, uid)},
+		epoch, nodeID, nodeBindingTTL.Milliseconds(),
+	).Slice()
+	if err != nil {
+		return locatorError(ctx, err)
+	}
+	switch scriptStatus(values) {
+	case statusNodeMissing:
+		return locate.ErrNodeNotFound
+	case statusNodeConflict:
+		return locate.ErrNodeConflict
+	default:
+		return decodeNodeEpochResult(values)
+	}
+}
+
 func (l *locator) UnbindNode(ctx context.Context, serviceName, uid, nodeID, epoch string) error {
 	if !locate.ValidNodeLocation(serviceName, uid, nodeID) {
 		return locate.ErrInvalidNodeBinding

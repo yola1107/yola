@@ -81,6 +81,17 @@ redis.call("DEL", KEYS[1])
 return {1}
 `)
 
+var renewNodeScript = redis.NewScript(`
+local epoch = redis.call("GET", KEYS[1])
+if not epoch then return {0} end
+if epoch ~= ARGV[1] then return {-1} end
+local current = redis.call("GET", KEYS[2])
+if not current then return {-5} end
+if current ~= ARGV[2] then return {-6} end
+redis.call("PEXPIRE", KEYS[2], ARGV[3])
+return {1}
+`)
+
 var renewNodeEpochScript = redis.NewScript(`
 local current = redis.call("GET", KEYS[1])
 if not current then return {0} end

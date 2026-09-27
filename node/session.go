@@ -11,18 +11,20 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// Session is the request-scoped route to the authenticated client.
+// Session 持有本次请求到已认证客户端的回程路由。
 type Session interface {
 	UID() string
 	BindingToken() string
 	BindNode(context.Context) error
+	// RenewNode 仅续期当前 Node 的已有绑定；保活不能调用会覆盖归属的 BindNode。
+	RenewNode(context.Context) error
 	UnbindNode(context.Context) error
 	Push(context.Context, int32, proto.Message) error
 }
 
 type sessionKey struct{}
 
-// NewContext returns a context carrying the current Node session.
+// NewContext 将当前 Node Session 放入 context。
 func NewContext(ctx context.Context, sess Session) context.Context {
 	if sess == nil {
 		panic("node: nil session")
@@ -30,7 +32,7 @@ func NewContext(ctx context.Context, sess Session) context.Context {
 	return context.WithValue(normalizeContext(ctx), sessionKey{}, sess)
 }
 
-// FromContext returns the current Node session, if present.
+// FromContext 返回 context 中的 Node Session 及其是否存在。
 func FromContext(ctx context.Context) (Session, bool) {
 	if ctx == nil {
 		return nil, false
@@ -100,6 +102,25 @@ func (s requestSession) UnbindNode(ctx context.Context) error {
 	))
 }
 
+func (s requestSession) RenewNode(ctx context.Context) error {
+	if s.server.locator == nil {
+		return status.Error(codes.FailedPrecondition, "node locator is not configured")
+	}
+	if !s.server.deliveries.admit() {
+		return status.Error(codes.Unavailable, "node is stopping or stopped")
+	}
+	defer s.server.deliveries.done()
+	identity, err := s.validatedIdentity()
+	if err != nil {
+		return err
+	}
+	ctx, cancel := s.server.lease.Load().requestContext(normalizeContext(ctx))
+	defer cancel()
+	return s.server.handleBindingError(s.server.locator.RenewNode(
+		ctx, identity.serviceName, s.binding.UID, identity.nodeID, identity.epoch,
+	))
+}
+
 func (s requestSession) Push(ctx context.Context, command int32, msg proto.Message) error {
 	if !s.server.deliveries.admit() {
 		return status.Error(codes.Unavailable, "node is stopping or stopped")
@@ -151,7 +172,7 @@ func mapNodeLocatorError(err error) error {
 		return err
 	case errors.Is(err, locate.ErrInvalidNodeBinding), errors.Is(err, locate.ErrInvalidNodeEpoch):
 		return status.Error(codes.Internal, "invalid node locator state")
-	case errors.Is(err, locate.ErrNodeNotFound):
+	case errors.Is(err, locate.ErrNodeNotFound), errors.Is(err, locate.ErrNodeConflict):
 		return status.Error(codes.Aborted, "node binding changed")
 	default:
 		return status.Error(codes.Unavailable, "node locator is unavailable")

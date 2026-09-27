@@ -18,7 +18,7 @@ import (
 )
 
 func TestBindingEpochLossCancelsAcceptedWork(t *testing.T) {
-	for _, method := range []string{"BindNode", "UnbindNode"} {
+	for _, method := range []string{"BindNode", "RenewNode", "UnbindNode"} {
 		for _, loss := range []struct {
 			name string
 			err  error
@@ -88,7 +88,7 @@ func TestBindingEpochLossPreservesRecordedCause(t *testing.T) {
 }
 
 func TestBindingOtherErrorsDoNotRevokeEpoch(t *testing.T) {
-	for _, method := range []string{"BindNode", "UnbindNode"} {
+	for _, method := range []string{"BindNode", "RenewNode", "UnbindNode"} {
 		for _, failure := range []struct {
 			name string
 			err  error
@@ -150,7 +150,7 @@ func TestBindingLossCannotBeUndoneByLateRenewal(t *testing.T) {
 }
 
 func TestBindingEpochLossDuringDrainPreservesNewEpoch(t *testing.T) {
-	for _, method := range []string{"BindNode", "UnbindNode"} {
+	for _, method := range []string{"BindNode", "RenewNode", "UnbindNode"} {
 		t.Run(method, func(t *testing.T) {
 			store := newMemoryLocator()
 			var session Session
@@ -204,5 +204,9 @@ func (l *bindingErrorLocator) BindNode(context.Context, string, string, string, 
 }
 
 func (l *bindingErrorLocator) UnbindNode(context.Context, string, string, string, string) error {
+	return l.err
+}
+
+func (l *bindingErrorLocator) RenewNode(context.Context, string, string, string, string) error {
 	return l.err
 }
