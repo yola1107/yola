@@ -58,8 +58,7 @@ func (l *locator) UnregisterNodeEpoch(ctx context.Context, serviceName, nodeID, 
 	if !locate.ValidServiceName(serviceName) || nodeID == "" || epoch == "" {
 		return locate.ErrInvalidNodeEpoch
 	}
-	key := nodeEpochKey(serviceName, nodeID)
-	values, err := l.run(ctx, deleteIfValueMatchesScript, key, epoch)
+	values, err := l.run(ctx, deleteIfValueMatchesScript, nodeEpochKey(serviceName, nodeID), epoch)
 	if err != nil {
 		return err
 	}

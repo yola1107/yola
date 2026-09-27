@@ -10,7 +10,7 @@ import (
 
 	"yola/examples/env"
 	"yola/examples/message"
-	locateredis "yola/locate/redis"
+	"yola/locate/redis"
 	"yola/node"
 
 	"github.com/go-kratos/kratos/v3"
@@ -57,7 +57,7 @@ func main() {
 
 	nodeServer, err := node.NewServer(
 		node.Address(grpcAddr),
-		node.Locator(locateredis.New(redisClient)),
+		node.Locator(redis.New(redisClient)),
 	)
 	if err != nil {
 		slog.Error("create Whot Node", "error", err)

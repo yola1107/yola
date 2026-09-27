@@ -33,7 +33,7 @@ const (
 	stStarted
 )
 
-// Server is the Yola Node transport for a Kratos application.
+// Server 是供 Kratos 应用装配的 Yola Node transport。
 type Server struct {
 	grpcServer     *grpc.Server
 	grpcListener   *listener.Owner
@@ -75,7 +75,7 @@ type nodeIdentity struct {
 	epoch       string
 }
 
-// NewServer creates a Node transport and its internal gRPC server.
+// NewServer 创建 Node transport 及其内部 gRPC server。
 func NewServer(opts ...Option) (*Server, error) {
 	o, err := resolveOptions(opts...)
 	if err != nil {
@@ -109,7 +109,7 @@ func NewServer(opts ...Option) (*Server, error) {
 	return server, nil
 }
 
-// Metadata returns sticky service metadata when a locator is configured.
+// Metadata 在配置 Locator 时返回粘性服务元数据。
 func (s *Server) Metadata() map[string]string {
 	if s == nil || s.locator == nil {
 		return nil

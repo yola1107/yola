@@ -16,7 +16,7 @@ import (
 
 type channelEvent struct {
 	proto *v1.Proto
-	// done is non-nil only for the final frame, so it also marks writer termination.
+	// done 仅用于最后一帧，同时标记 writer 终止。
 	done chan error
 }
 
@@ -29,7 +29,6 @@ type channel struct {
 	connID string
 	codec  encoding.Codec
 
-	ip                  string
 	cancel              context.CancelFunc
 	mu                  sync.RWMutex
 	replyWG             sync.WaitGroup

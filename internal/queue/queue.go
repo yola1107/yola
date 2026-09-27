@@ -1,4 +1,4 @@
-// Package queue provides ordered, bounded callback execution.
+// Package queue 提供有序、有界的 callback 执行队列。
 package queue
 
 import (
@@ -8,18 +8,18 @@ import (
 )
 
 var (
-	// ErrClosed reports that the queue no longer accepts callbacks.
+	// ErrClosed 表示队列已停止接纳 callback。
 	ErrClosed = errors.New("callback queue is closed")
-	// ErrFull reports that all pending callback slots are occupied.
+	// ErrFull 表示等待队列已满。
 	ErrFull = errors.New("callback queue is full")
-	// ErrNilCallback reports that Submit received a nil callback.
+	// ErrNilCallback 表示提交的 callback 为 nil。
 	ErrNilCallback = errors.New("callback is nil")
 )
 
-// PanicHandler reports a panic recovered while invoking a callback.
+// PanicHandler 接收 callback 执行时捕获的 panic。
 type PanicHandler func(value any, stack []byte)
 
-// Queue stores callbacks until one worker executes them in submission order.
+// Queue 保存 callback，由单个 worker 按提交顺序执行。
 type Queue struct {
 	panicHandler PanicHandler
 	capacity     int
@@ -43,13 +43,12 @@ func New(capacity int, panicHandler PanicHandler) *Queue {
 	}
 }
 
-// Submit adds a callback without blocking.
+// Submit 非阻塞提交一个 callback。
 func (q *Queue) Submit(fn func()) error {
 	return q.SubmitBatch(fn)
 }
 
-// SubmitBatch adds all callbacks without blocking. It rejects the whole batch
-// when any callback is nil or there are not enough pending slots.
+// SubmitBatch 非阻塞提交整批 callback；任一项为 nil 或容量不足时整批拒绝。
 func (q *Queue) SubmitBatch(callbacks ...func()) error {
 	if hasNilCallback(callbacks) {
 		return ErrNilCallback
@@ -64,12 +63,15 @@ func (q *Queue) SubmitBatch(callbacks ...func()) error {
 	}
 	q.tasks = append(q.tasks, callbacks...)
 	if len(callbacks) > 0 {
-		q.signal()
+		select {
+		case q.wake <- struct{}{}:
+		default:
+		}
 	}
 	return nil
 }
 
-// Stop rejects new callbacks and discards callbacks that have not started.
+// Stop 拒绝新 callback，并丢弃尚未开始的 callback。
 func (q *Queue) Stop() {
 	q.closeWithTerminals(nil)
 }
@@ -87,8 +89,7 @@ func (q *Queue) closeWithTerminals(terminals []func()) bool {
 	return true
 }
 
-// BeginTermination rejects pending work immediately and returns a function that
-// releases terminal after the caller has finished closing its owned resources.
+// BeginTermination 立即拒绝等待中的工作，返回的函数须在调用方关闭资源后放行终止 callback。
 func (q *Queue) BeginTermination(terminals ...func()) func() {
 	if len(terminals) == 0 || hasNilCallback(terminals) {
 		q.Stop()
@@ -104,7 +105,7 @@ func (q *Queue) BeginTermination(terminals ...func()) func() {
 	return func() { close(ready) }
 }
 
-// Run executes callbacks until Stop or BeginTermination. It must be called once.
+// Run 执行 callback 直到 Stop 或 BeginTermination；只允许调用一次。
 func (q *Queue) Run() {
 	for {
 		callback, terminals, closed := q.next()
@@ -135,13 +136,6 @@ func (q *Queue) next() (callback func(), terminals []func(), closed bool) {
 		return nil, terminals, true
 	}
 	return nil, nil, false
-}
-
-func (q *Queue) signal() {
-	select {
-	case q.wake <- struct{}{}:
-	default:
-	}
 }
 
 func hasNilCallback(callbacks []func()) bool {

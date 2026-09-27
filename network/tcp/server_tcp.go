@@ -56,7 +56,7 @@ func (s *Server) acceptTCP(ctx context.Context, lis net.Listener) error {
 }
 
 func (s *Server) serveAcceptedTCP(ctx context.Context, conn net.Conn, connID, remoteAddr string) {
-	// Recovery runs before untracking, and untracking completes before shutdown observes Done.
+	// 先恢复 panic，再移除连接，最后通知停机等待者。
 	defer s.connWG.Done()
 	defer s.untrackConnection(conn)
 	defer func() {
@@ -87,8 +87,7 @@ func configureTCPConnection(conn *net.TCPConn) error {
 
 func (s *Server) trackConnection(conn net.Conn) bool {
 	remoteIP, _, _ := net.SplitHostPort(conn.RemoteAddr().String())
-	// The lifecycle lock orders connection admission before shutdown; an admitted
-	// connection remains counted while serveTCP may add its writer goroutine.
+	// 生命周期锁保证准入先于停机；serveTCP 添加 writer 时，连接仍计入在途数量。
 	s.lifecycleMu.Lock()
 	defer s.lifecycleMu.Unlock()
 	if s.stopped || int32(len(s.conns)) >= s.config.maxConnLimit ||
@@ -143,10 +142,15 @@ func (s *Server) serveTCP(baseCtx context.Context, conn net.Conn, connID string)
 		conn:       conn,
 		ch:         ch,
 	}
-	ch.ip, _, _ = net.SplitHostPort(rAddr)
+	remoteIP, _, _ := net.SplitHostPort(rAddr)
 	ch.connID = connID
 	ch.cancel = cancel
-	connectionCtx := s.connectionContext(ctx, ch)
+	endpoint := ""
+	if s.endpoint != nil {
+		endpoint = s.endpoint.String()
+	}
+	tr := network.NewTransport(network.KindTCP, endpoint, remoteIP, ch.connID)
+	connectionCtx := transport.NewServerContext(ctx, tr)
 	handshakeDeadline := time.Now().Add(s.config.handshakeTimeout)
 	openCtx, cancelOpen := context.WithDeadline(connectionCtx, handshakeDeadline)
 	stopHandshake := context.AfterFunc(openCtx, func() {
@@ -234,15 +238,6 @@ func (s *Server) readTCPMessages(ctx context.Context, clientConn tcpConnection, 
 			return err
 		}
 	}
-}
-
-func (s *Server) connectionContext(ctx context.Context, ch *channel) context.Context {
-	endpoint := ""
-	if s.endpoint != nil {
-		endpoint = s.endpoint.String()
-	}
-	tr := network.NewTransport(network.KindTCP, endpoint, ch.ip, ch.connID)
-	return transport.NewServerContext(ctx, tr)
 }
 
 type tcpConnection struct {

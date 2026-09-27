@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"yola/api/cluster/v1"
+	"yola/internal/tlsconfig"
 	"yola/locate"
 
 	"github.com/go-kratos/kratos/v3/registry"
@@ -77,9 +78,7 @@ func (s *backendState) load() backendSnapshot {
 }
 
 func newBackends(discovery registry.Discovery, tlsConfig *tls.Config, connectTimeout time.Duration) *backends {
-	if tlsConfig != nil {
-		tlsConfig = tlsConfig.Clone()
-	}
+	tlsConfig = tlsconfig.Clone(tlsConfig)
 	ctx, cancel := context.WithCancel(context.Background())
 	return &backends{
 		discovery:      discovery,
@@ -148,7 +147,7 @@ func (b *backends) cached(serviceName string) (*backend, error) {
 	if b.byService == nil {
 		return nil, errBackendsClosed
 	}
-	// byService only stores fully connected, non-nil backends; nil means not dialed yet.
+	// byService 只保存建连完成的非 nil backend；nil 表示尚未建连。
 	return b.byService[serviceName], nil
 }
 
@@ -169,7 +168,7 @@ func (b *backends) connectBackend(ctx context.Context, serviceName string) (*bac
 
 	opts := []kgrpc.ClientOption{
 		kgrpc.WithEndpoint("discovery:///" + serviceName),
-		kgrpc.WithTimeout(0), // Disable Kratos' implicit 2s deadline; request context owns it.
+		kgrpc.WithTimeout(0), // 请求 context 持有预算，关闭 Kratos 隐式的 2s 超时。
 	}
 	if b.tlsConfig != nil {
 		opts = append(opts, kgrpc.WithTLSConfig(b.tlsConfig.Clone()))

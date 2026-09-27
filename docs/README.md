@@ -208,7 +208,7 @@ node.Register(server, message.WhotEnterCommand,
 
 ## 源码导航
 
-读主链路时按 [Gateway 入站](../gateway/inbound.go) → [认证](../gateway/auth.go) / [转发](../gateway/forward.go) → [Node 分发](../node/dispatch.go) / [注册](../node/register.go) → [Session](../node/session.go) / [Push](../node/push.go) 阅读，再查看各包 lifecycle.go。
+读主链路时按 [Gateway 入站与认证](../gateway/inbound.go) → [转发](../gateway/forward.go) → [Node RPC 与分发](../node/dispatch.go) / [command 注册](../node/register.go) → [Session](../node/session.go) / [Push](../node/push.go) 阅读。就绪 Registrar 与启动/停止流程均在 [Node lifecycle.go](../node/lifecycle.go)。Gateway/Node 现分别为11/9个生产文件。
 
 ## 开发与验证
 

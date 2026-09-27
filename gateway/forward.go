@@ -83,7 +83,7 @@ func (s *Server) forward(ctx context.Context, sess *session, msg *protocolv1.Pro
 	}
 }
 
-// resolveForwardRoute adds the epoch required to fence a bound sticky Forward.
+// resolveForwardRoute 为已绑定的粘性 Forward 补充 epoch 校验凭据。
 func (s *Server) resolveForwardRoute(ctx context.Context, binding locate.GateBinding) (clusterv1.NodeClient, string, string, error) {
 	client, nodeID, err := s.resolveNodeRoute(ctx, binding)
 	if err != nil || nodeID == "" {
@@ -96,7 +96,7 @@ func (s *Server) resolveForwardRoute(ctx context.Context, binding locate.GateBin
 	return client, nodeID, epoch, nil
 }
 
-// resolveNodeRoute selects the service backend and any bound sticky NodeID.
+// resolveNodeRoute 选择服务 backend，并取得已有粘性绑定的 NodeID。
 func (s *Server) resolveNodeRoute(ctx context.Context, binding locate.GateBinding) (clusterv1.NodeClient, string, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, "", err

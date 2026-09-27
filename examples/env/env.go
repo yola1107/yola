@@ -6,7 +6,7 @@ import (
 	"os"
 	"time"
 
-	eventnats "yola/event/nats"
+	"yola/event/nats"
 	"yola/registry/etcd"
 
 	"github.com/redis/go-redis/v9"
@@ -28,7 +28,7 @@ func envOr(name, fallback string) string {
 	return fallback
 }
 
-// NewRedis creates a Redis client and verifies the configured credentials.
+// NewRedis 创建 Redis client 并验证配置的连接与凭据。
 func NewRedis() (*redis.Client, error) {
 	client := redis.NewClient(&redis.Options{Addr: RedisAddr, Password: RedisPassword, ContextTimeoutEnabled: true})
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -40,15 +40,15 @@ func NewRedis() (*redis.Client, error) {
 	return client, nil
 }
 
-// NewEventBus creates one ready-to-use, process-owned online event bus.
-func NewEventBus() (*eventnats.Bus, error) {
-	return eventnats.New(eventnats.WithURL(NATSURL))
+// NewEventBus 创建由进程持有、可立即使用的在线事件总线。
+func NewEventBus() (*nats.Bus, error) {
+	return nats.New(nats.WithURL(NATSURL))
 }
 
 // Registry 沿用示例类型名，实际资源由共享的 etcd Registry 管理。
 type Registry = etcd.Registry
 
-// NewRegistry creates the configured service registry.
+// NewRegistry 按配置创建服务注册器。
 func NewRegistry() (*Registry, error) {
 	return etcd.New(etcd.WithEndpoints(EtcdAddr), etcd.WithPrefix("/microservices"))
 }

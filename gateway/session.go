@@ -45,7 +45,7 @@ func (r *sessionRegistry) commitAuthentication(ctx context.Context, sess *sessio
 		!sess.canAuthenticate(ctx, time.Now()) {
 		return false
 	}
-	// Holding the registry read lock orders the local commit against Close removal.
+	// 注册表读锁保证本地认证提交与 Close 移除连接有序。
 	return sess.finishAuthentication(lease, boundAt)
 }
 
@@ -77,9 +77,6 @@ func (r *sessionRegistry) takeAll() []*session {
 func (r *sessionRegistry) snapshot(sessions []*session) []*session {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	if r.byConnID == nil {
-		return sessions[:0]
-	}
 	sessions = slices.Grow(sessions[:0], len(r.byConnID))
 	for _, sess := range r.byConnID {
 		sessions = append(sessions, sess)
@@ -111,7 +108,7 @@ func newSession(conn network.Connection, authTimeout time.Duration) *session {
 	return sess
 }
 
-// leaseValidLocked requires bindingMu to be held.
+// leaseValidLocked 要求调用方持有 bindingMu。
 func (s *session) leaseValidLocked(now time.Time) bool {
 	return locate.ValidGateBinding(s.binding) && now.Before(s.leaseDeadline)
 }

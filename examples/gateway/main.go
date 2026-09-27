@@ -15,7 +15,7 @@ import (
 	"yola/examples/message"
 	"yola/gateway"
 	"yola/locate"
-	locateredis "yola/locate/redis"
+	"yola/locate/redis"
 	"yola/network/tcp"
 	"yola/network/websocket"
 
@@ -89,7 +89,7 @@ func main() {
 		gateway.Address(grpcAddr),
 		gateway.AdvertiseHost(env.Host),
 		gateway.Auth(authenticator{}),
-		gateway.Locator(locateredis.New(redisClient)),
+		gateway.Locator(redis.New(redisClient)),
 		gateway.Discovery(registry),
 		gateway.Transport(
 			tcp.NewServer(
