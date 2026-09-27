@@ -3,7 +3,9 @@ package nats
 import (
 	"context"
 	"errors"
+	"net"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -12,6 +14,89 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/require"
 )
+
+func TestUnsubscribeDeadlineIncludesNativeCleanup(t *testing.T) {
+	dialer := &blockedWriteDialer{}
+	conn, err := natsgo.Connect(startTestServer(t), natsgo.SetCustomDialer(dialer), natsgo.NoReconnect())
+	require.NoError(t, err)
+	ctx, cancel := context.WithCancel(context.Background())
+	bus := &Bus{ctx: ctx, cancel: cancel, conn: conn, timeout: time.Second, queueCapacity: 4, maxPayloadBytes: 64 << 10}
+	unblockWrite := sync.OnceFunc(func() { close(dialer.conn.release) })
+	handlerRelease := make(chan struct{})
+	unblockHandler := sync.OnceFunc(func() { close(handlerRelease) })
+	t.Cleanup(func() {
+		unblockWrite()
+		unblockHandler()
+		require.NoError(t, bus.Close())
+	})
+	started := make(chan struct{})
+	canceled := make(chan struct{})
+	handle, err := bus.Subscribe(context.Background(), "yola.event.blocked-unsubscribe", func(ctx context.Context, _ event.Event) {
+		close(started)
+		<-ctx.Done()
+		close(canceled)
+		<-handlerRelease
+	})
+	require.NoError(t, err)
+	require.NoError(t, bus.Publish(context.Background(), event.Event{Topic: "yola.event.blocked-unsubscribe"}))
+	waitSignal(t, started, "handler did not start")
+	dialer.conn.armed.Store(true)
+	published := make(chan error, 1)
+	go func() {
+		published <- bus.Publish(context.Background(), event.Event{Topic: "yola.event.blocked-unsubscribe", Payload: make([]byte, 64<<10)})
+	}()
+	waitSignal(t, dialer.conn.entered, "writer did not reach the barrier")
+	stopCtx, stopCancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer stopCancel()
+	unsubscribed := make(chan error, 1)
+	go func() { unsubscribed <- handle.Unsubscribe(stopCtx) }()
+	select {
+	case err := <-unsubscribed:
+		require.ErrorIs(t, err, context.DeadlineExceeded)
+	case <-time.After(time.Second):
+		t.Fatal("Unsubscribe exceeded its budget while native cleanup was blocked")
+	}
+	waitSignal(t, canceled, "handler was not canceled before native cleanup finished")
+	select {
+	case <-handle.(*subscription).stopDone:
+		t.Fatal("subscription completed before native cleanup and handler exit")
+	default:
+	}
+	unblockWrite()
+	unblockHandler()
+	require.NoError(t, handle.Unsubscribe(context.Background()))
+	require.NoError(t, <-published)
+}
+
+// blockedWriteConn 在握手完成后阻塞一次原生写操作，清理时必须放行。
+type blockedWriteConn struct {
+	net.Conn
+	armed   atomic.Bool
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (c *blockedWriteConn) Write(payload []byte) (int, error) {
+	if c.armed.Load() {
+		c.once.Do(func() { close(c.entered) })
+		<-c.release
+	}
+	return c.Conn.Write(payload)
+}
+
+type blockedWriteDialer struct {
+	conn *blockedWriteConn
+}
+
+func (d *blockedWriteDialer) Dial(network, address string) (net.Conn, error) {
+	conn, err := net.DialTimeout(network, address, time.Second)
+	if err != nil {
+		return nil, err
+	}
+	d.conn = &blockedWriteConn{Conn: conn, entered: make(chan struct{}), release: make(chan struct{})}
+	return d.conn, nil
+}
 
 func TestUnsubscribeCancelsAndWaitsForHandler(t *testing.T) {
 	bus := newTestBus(t, startTestServer(t))
@@ -46,8 +131,11 @@ func TestSubscribePreservesCompletedSubscriptionErrors(t *testing.T) {
 	require.NoError(t, err)
 	stopErr := errors.New("unsubscribe failed")
 	t.Cleanup(func() { require.ErrorIs(t, bus.Close(), stopErr) })
-	failed := &subscription{stopDone: make(chan struct{}), stopErr: stopErr}
-	failed.stopOnce.Do(func() { close(failed.stopDone) })
+	failed := &subscription{deactivated: make(chan struct{}), stopDone: make(chan struct{}), stopErr: stopErr}
+	failed.stopOnce.Do(func() {
+		close(failed.deactivated)
+		close(failed.stopDone)
+	})
 	bus.subscriptions = append(bus.subscriptions, failed)
 
 	handle, err := bus.Subscribe(context.Background(), "yola.event.after-stop-error", func(context.Context, event.Event) {})

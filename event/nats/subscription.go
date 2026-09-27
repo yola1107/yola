@@ -25,8 +25,10 @@ type subscription struct {
 	messages        <-chan *natsgo.Msg
 	dropped         atomic.Uint64
 	stopOnce        sync.Once
-	stopDone        chan struct{}
-	stopErr         error
+	// deactivated 发布原生清理结果；stopDone 还等待消费协程退出。
+	deactivated chan struct{}
+	stopDone    chan struct{}
+	stopErr     error
 }
 
 func (s *subscription) Unsubscribe(ctx context.Context) error {
@@ -137,7 +139,7 @@ func (s *subscription) deactivate() (bool, error) {
 	s.statsMu.Lock()
 	s.sampleDropped()
 	native := s.native
-	cancel := s.cancel
+	started := s.cancel != nil
 	s.native = nil
 	s.cancel = nil
 	dropped := s.stats.QueueDropped
@@ -151,26 +153,29 @@ func (s *subscription) deactivate() (bool, error) {
 		}
 		err = native.Unsubscribe()
 	}
-	if cancel != nil {
-		cancel()
-	}
-	return cancel != nil, err
+	return started, err
 }
 
 func (s *subscription) beginStop() {
 	s.stopOnce.Do(func() {
-		started, err := s.deactivate()
-		s.stopErr = err
-		if !started {
-			s.complete()
+		if s.cancel != nil {
+			s.cancel()
 		}
+		// 原生 unsubscribe 可能等待连接写锁，由唯一清理任务完成并发布结果。
+		go func() {
+			started, err := s.deactivate()
+			s.stopErr = err
+			close(s.deactivated)
+			if !started {
+				s.complete()
+			}
+		}()
 	})
 }
 
 func (s *subscription) finish() {
-	s.stopOnce.Do(func() {
-		_, s.stopErr = s.deactivate()
-	})
+	s.beginStop()
+	<-s.deactivated
 	s.complete()
 }
 
@@ -185,7 +190,12 @@ func (s *subscription) complete() {
 
 func (s *subscription) wait(ctx context.Context) error {
 	if err := contextwait.Done(ctx, s.stopDone); err != nil {
-		return errors.Join(s.stopErr, err)
+		select {
+		case <-s.deactivated:
+			return errors.Join(s.stopErr, err)
+		default:
+			return err
+		}
 	}
 	return s.stopErr
 }

@@ -163,6 +163,9 @@ func (b *Bus) Close() error {
 		for _, subscription := range registered {
 			subscription.beginStop()
 		}
+		for _, subscription := range registered {
+			<-subscription.deactivated
+		}
 		b.conn.Close()
 		b.closeErr = waitSubscriptions(registered)
 	})
@@ -229,6 +232,7 @@ func (b *Bus) Subscribe(ctx context.Context, topic string, handler event.Handler
 		topic:           topic,
 		handler:         handler,
 		maxPayloadBytes: b.maxPayloadBytes,
+		deactivated:     make(chan struct{}),
 		stopDone:        make(chan struct{}),
 	}
 	messages, err := registered.activate(b.conn, b.queueCapacity)
@@ -263,6 +267,7 @@ func (b *Bus) Subscribe(ctx context.Context, topic string, handler event.Handler
 
 func (b *Bus) failRegistration(registered *subscription, cause error) error {
 	registered.beginStop()
+	<-registered.stopDone
 	b.registrationErr = errors.Join(cause, registered.stopErr)
 	return b.registrationErr
 }

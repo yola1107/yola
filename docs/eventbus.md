@@ -38,8 +38,8 @@ if err != nil {
 
 - Publish 成功只表示 adapter 接受发送，不证明存在订阅者或 handler 已执行。无在线订阅、断线或本地队列满时允许丢失；无 ack、重试、重放及离线补发。
 - 同一订阅串行调用 handler，panic 被隔离并记录，消息仍视为丢失；handler 不返回重投结果。
-- Unsubscribe(ctx) 幂等停止接收、取消 handler context 并等待在途返回。超时返回ctx.Err，后台停止继续，可再次等待；Bus仍跟踪取消中的订阅。
-- Bus.Close 幂等拒绝新工作、取消并启动全部订阅停止、关闭自有连接，再等待handler退出。它没有deadline，handler必须协作响应取消；handler不得同步调用自身Unsubscribe或Bus.Close。
+- Unsubscribe(ctx) 幂等发起停止，先取消 handler context，再由唯一清理任务执行原生 unsubscribe。caller 按 ctx 等待原生清理及消费协程退出；超时返回 context 错误，已发布的清理错误仍保留在错误链中，后台停止继续且可再次等待。Bus 仍跟踪取消中的订阅。
+- Bus.Close 幂等拒绝新工作，先取消并启动全部订阅停止，等待原生清理后关闭自有连接，再等待 handler 退出。它没有 deadline，handler 必须协作响应取消；handler 不得同步调用自身 Unsubscribe 或 Bus.Close。
 - 完全退出后释放handler和队列引用；后续注册回收已完成且无错误的记录，带停止错误的记录保留到Close汇总。
 
 ## 4. NATS 生命周期
