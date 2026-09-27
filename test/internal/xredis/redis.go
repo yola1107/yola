@@ -18,14 +18,15 @@ type Option func(*redis.UniversalOptions)
 // NewClient 创建Redis客户端，可接受多个配置选项
 func NewClient(opts ...Option) (redis.UniversalClient, error) {
 	options := &redis.UniversalOptions{
-		Addrs:           []string{"127.0.0.1:6379"},
-		Password:        "",
-		DB:              0,
-		PoolSize:        10,
-		MinIdleConns:    5,
-		MaxIdleConns:    10,
-		ConnMaxLifetime: 2 * time.Minute,
-		ConnMaxIdleTime: 5 * time.Minute,
+		Addrs:                 []string{"127.0.0.1:6379"},
+		Password:              "",
+		DB:                    0,
+		PoolSize:              10,
+		MinIdleConns:          5,
+		MaxIdleConns:          10,
+		ConnMaxLifetime:       2 * time.Minute,
+		ConnMaxIdleTime:       5 * time.Minute,
+		ContextTimeoutEnabled: true,
 	}
 	for _, opt := range opts {
 		opt(options)

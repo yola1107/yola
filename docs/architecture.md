@@ -212,7 +212,7 @@ Gateway不缓存玩家binding或未绑定结果；close、takeover、heartbeat�
 | Gateway LeaseTimeout | 单次Gate续租，仍服从heartbeat handler更短deadline |
 | Gateway CleanupTimeout | 断线/Kick清理独立于caller取消；Session排空服从Stop总预算，启动回滚逐项独立计时 |
 | Node PushTimeout | 每次LocateGate与回程RPC；业务同步多次Push各自计时 |
-| Node CleanupTimeout | 准备/启动失败回滚；正常Stop使用调用方预算，epoch I/O另有3s上限 |
+| Node CleanupTimeout | 准备/启动失败回滚；正常Stop使用调用方预算。epoch申请/单次续租另有3s上限，注销沿用Stop或回滚预算 |
 | Ludo入座 / 清理 | 5s / 独立2s，从Bind后的background context派生，不含创建玩家与Bind |
 | Whot入座 / 清理 | 2s / 独立2s；保留入座与清理错误链 |
 
@@ -220,7 +220,9 @@ Gateway不缓存玩家binding或未绑定结果；close、takeover、heartbeat�
 
 业务mailbox未开始任务可取消，已开始任务必须等完成或业务自行回滚；多次同步Push可超过入座等待预算。`TryPost`只作有界准入，`Post`的context只限制等容量，已接纳的普通任务不随提交context取消。物理断连/Forward超时会取消在途Node context，但handler未返回前Node仍跟踪它，Stop先等请求再Drain；业务自启后台任务由Drain回收。
 
-Redis caller deadline及错误分类尚未闭环，完整游戏、相同预算负载和长期SLO仍待验收，见 [I46](./issues.md#i46)。
+Redis client 创建方须启用 `ContextTimeoutEnabled` 并保留有限的读写 timeout；根示例、测试应用和压测装配已启用。Locator 不修改调用方注入的共享 client。网络 timeout 发生且 caller 取消或 deadline 已生效时，错误链同时保留原始网络错误和相应 context 错误；独立网络 timeout、存储业务错误与成功结果保持原样。[实现](../locate/redis/locator.go)、[回归](../locate/redis/timeout_integration_test.go)
+
+纯 cancel 不保证立即中断已经开始的 Redis I/O，超时也不证明写入未执行；调用方须用有限预算限制等待，并以原子条件写/业务幂等处理迟到结果，不能依靠取消回滚。完整游戏、相同预算负载和长期 SLO 仍按 [当前问题](./issues.md) 单独验收。
 
 ## 7. 部署与安全约束
 

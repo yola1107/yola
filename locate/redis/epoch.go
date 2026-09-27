@@ -17,7 +17,7 @@ func (l *locator) RegisterNodeEpoch(ctx context.Context, serviceName, nodeID, ep
 	}
 	set, err := l.client.SetNX(ctx, nodeEpochKey(serviceName, nodeID), epoch, time.Duration(ttlMillis)*time.Millisecond).Result()
 	if err != nil {
-		return err
+		return locatorError(ctx, err)
 	}
 	if !set {
 		return locate.ErrNodeEpochConflict
@@ -46,7 +46,7 @@ func (l *locator) LocateNodeEpoch(ctx context.Context, serviceName, nodeID strin
 		return "", locate.ErrNodeEpochNotFound
 	}
 	if err != nil {
-		return "", err
+		return "", locatorError(ctx, err)
 	}
 	if epoch == "" {
 		return "", locate.ErrInvalidNodeEpoch

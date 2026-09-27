@@ -24,7 +24,7 @@ func (l *locator) BindNode(ctx context.Context, serviceName, uid, nodeID, epoch 
 		epoch, nodeID, nodeBindingTTL.Milliseconds(),
 	).Slice()
 	if err != nil {
-		return err
+		return locatorError(ctx, err)
 	}
 	return decodeNodeEpochResult(values)
 }
@@ -38,7 +38,7 @@ func (l *locator) LocateNode(ctx context.Context, serviceName, uid string) (stri
 		return "", locate.ErrNodeNotFound
 	}
 	if err != nil {
-		return "", err
+		return "", locatorError(ctx, err)
 	}
 	if !locate.ValidNodeLocation(serviceName, uid, nodeID) {
 		return "", locate.ErrInvalidNodeBinding
@@ -57,7 +57,7 @@ func (l *locator) UnbindNode(ctx context.Context, serviceName, uid, nodeID, epoc
 		[]string{nodeEpochKey(serviceName, nodeID), nodeKey(serviceName, uid)}, epoch, nodeID,
 	).Slice()
 	if err != nil {
-		return err
+		return locatorError(ctx, err)
 	}
 	return decodeNodeEpochResult(values)
 }

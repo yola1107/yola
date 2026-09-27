@@ -66,6 +66,7 @@ defer reg.Close()
 
 redisClient := redis.NewClient(&redis.Options{
     Addr: "127.0.0.1:6379", Password: os.Getenv("YOLA_REDIS_PASS"),
+    ContextTimeoutEnabled: true,
 })
 defer redisClient.Close()
 store := locateredis.New(redisClient)

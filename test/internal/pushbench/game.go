@@ -58,7 +58,7 @@ func GameRedis(t *testing.T) *redis.Client {
 	if address == "" || os.Getenv("YOLA_ETCD_INTEGRATION") == "" {
 		t.Skip("set YOLA_REDIS_INTEGRATION and YOLA_ETCD_INTEGRATION to disposable instances")
 	}
-	client := redis.NewClient(&redis.Options{Addr: address})
+	client := redis.NewClient(&redis.Options{Addr: address, ContextTimeoutEnabled: true})
 	t.Cleanup(func() { require.NoError(t, client.Close()) })
 	require.NoError(t, client.Ping(t.Context()).Err())
 	return client

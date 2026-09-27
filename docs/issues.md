@@ -8,7 +8,6 @@
 
 | ID / 维度 | 问题与影响 | 位置 / 依据 | 优先顺序 | 状态 / 完成条件 |
 | --- | --- | --- | --- | --- |
-| [I46](#i46) / Spec | Redis caller deadline与网络timeout分类未闭环，请求可能超过调用方预算 | [client创建](../examples/env/env.go)、[Locator](../locate/redis/locator.go) | 优先修复 | 未解决；真实Redis验证deadline、取消及错误身份 |
 | [I03](#i03) / Spec | Node binding固定6h，重复Bind是覆盖写，不能安全保活 | [Bind/Unbind](../locate/redis/node.go)、[修改权契约](./architecture.md#node-binding) | 先定契约 | 未解决；明确业务所有权、条件保活及重启继承 |
 | [I40](#i40) / Spec | 开发broker结果不能证明生产认证/TLS/ACL及异步拒绝行为 | [NATS生命周期](./eventbus.md#4-nats-生命周期) | 生产部署前 | 待验收；使用实际安全配置及异步错误观测 |
 | [I41](#i41) / Spec | 真实连接、慢连接RSS、跨机/TLS与长期SLO缺少容量结论 | [容量口径](./performance.md#容量验收) | 容量准入前 | 待验收；固定拓扑/负载、逐档复测并核对客户端投递 |
@@ -16,15 +15,6 @@
 | [Cluster管理场景](#cluster-tests) / Spec | 独立场景曾通过，连续组合race切主仍超时 | [管理回归](../locate/redis/cluster_transition_test.go) | 连续管理操作前 | 组合未通过；仅在专用集群重现并核验 |
 
 ## 正确性与业务契约
-
-<a id="i46"></a>
-### I46 · Redis deadline 与错误分类
-
-**未解决。** go-redis v9.22.0 默认未开启 `ContextTimeoutEnabled`，当前装配未普遍启用 caller deadline，网络 timeout 分类也未闭环。[client 装配](../examples/env/env.go)、[Locator](../locate/redis/locator.go)
-
-历史诊断（`eb182b0`，2026-09-26）中，已预热连接在 caller 100ms deadline 后约 301ms 才成功返回；开启该选项后约 100ms 返回 `net.OpError` timeout，但不匹配 `context.DeadlineExceeded`。纯 cancel 无 deadline 时，两种配置都可能完成已开始读写；不能据此承诺回滚。本次文档整理未重跑诊断。
-
-完成条件：在 client 创建方明确 deadline 策略，修正 Locator 网络错误分类，以专用真实 Redis 验证 deadline、取消和 fencing 错误身份；不修改调用方注入的共享 client，不覆盖已成功结果。完整业务仍须按 [同配置请求预算](./architecture.md#63-请求预算与超时职责) 验收。
 
 <a id="i03"></a>
 ### I03 · Node binding 的业务保活

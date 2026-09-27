@@ -57,7 +57,7 @@ func (s *measuredLocator) LocateGate(ctx context.Context, service, uid string) (
 
 func newPipeline(t testing.TB, address, service string, playerCount int, delay time.Duration, measurements *measurements) (Pusher, *atomic.Uint64) {
 	t.Helper()
-	client := redis.NewClient(&redis.Options{Addr: address})
+	client := redis.NewClient(&redis.Options{Addr: address, ContextTimeoutEnabled: true})
 	t.Cleanup(func() { require.NoError(t, client.Close()) })
 	store := locateredis.New(client)
 	gate, err := gateway.NewServer(

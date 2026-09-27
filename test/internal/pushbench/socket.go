@@ -50,7 +50,7 @@ func newSocketPipeline(t testing.TB, address, service string, tableCount int, me
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	client := redis.NewClient(&redis.Options{Addr: address})
+	client := redis.NewClient(&redis.Options{Addr: address, ContextTimeoutEnabled: true})
 	t.Cleanup(func() { require.NoError(t, client.Close()) })
 	store := locateredis.New(client)
 	socket := websocket.NewServer(websocket.Address("127.0.0.1:0"),

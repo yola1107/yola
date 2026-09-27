@@ -30,7 +30,7 @@ func envOr(name, fallback string) string {
 
 // NewRedis creates a Redis client and verifies the configured credentials.
 func NewRedis() (*redis.Client, error) {
-	client := redis.NewClient(&redis.Options{Addr: RedisAddr, Password: RedisPassword})
+	client := redis.NewClient(&redis.Options{Addr: RedisAddr, Password: RedisPassword, ContextTimeoutEnabled: true})
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	if err := client.Ping(ctx).Err(); err != nil {
