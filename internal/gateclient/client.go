@@ -40,6 +40,8 @@ type Client struct {
 	dials       singleflight.Group
 	mu          sync.Mutex
 	byHost      map[string]*rpc
+	// evictions 跟踪已从连接表移交、仍在关闭的空闲连接。
+	evictions sync.WaitGroup
 }
 
 type rpc struct {
@@ -187,12 +189,15 @@ func (c *Client) release(entry *rpc) {
 
 func (c *Client) evict(entry *rpc) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	if c.byHost == nil || c.byHost[entry.host] != entry || entry.inflight > 0 || time.Since(entry.lastUsed) < c.idle {
+		c.mu.Unlock()
 		return
 	}
 	delete(c.byHost, entry.host)
 	entry.idleTimer = nil
+	c.evictions.Add(1)
+	c.mu.Unlock()
+	defer c.evictions.Done()
 	_ = entry.conn.Close()
 }
 
@@ -216,5 +221,7 @@ func (c *Client) Close() error {
 	for _, conn := range connections {
 		errs = append(errs, conn.Close())
 	}
+	// byHost 已关闭，后续 evict 不会增加在途回收。
+	c.evictions.Wait()
 	return errors.Join(errs...)
 }

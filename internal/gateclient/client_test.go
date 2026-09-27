@@ -16,10 +16,91 @@ import (
 
 	"github.com/go-kratos/kratos/v3/transport/grpc"
 	"github.com/stretchr/testify/require"
+	grpcgo "google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/resolver"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/emptypb"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 )
+
+func TestEvictionDoesNotBlockOtherHostsAndCloseWaits(t *testing.T) {
+	blocked := &blockedCloseResolver{built: make(chan struct{}), closing: make(chan struct{}), release: make(chan struct{})}
+	unblock := sync.OnceFunc(func() { close(blocked.release) })
+	conn, err := grpcgo.NewClient("blocked-close:///unused", grpcgo.WithResolvers(blocked),
+		grpcgo.WithTransportCredentials(insecure.NewCredentials()))
+	require.NoError(t, err)
+	transferred := false
+	t.Cleanup(func() {
+		unblock()
+		if !transferred {
+			require.NoError(t, conn.Close())
+		}
+	})
+	conn.Connect()
+	receiveGateClientValue(t, blocked.built)
+	client := New(nil)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+	t.Cleanup(unblock)
+	fast, err := client.acquire(t.Context(), "grpc://127.0.0.1:1")
+	require.NoError(t, err)
+	client.release(fast)
+	slow := &rpc{host: "slow", conn: conn, lastUsed: time.Now().Add(-2 * client.idle)}
+	client.mu.Lock()
+	client.byHost[slow.host] = slow
+	client.mu.Unlock()
+	transferred = true
+	evicted := make(chan struct{})
+	go func() {
+		client.evict(slow)
+		close(evicted)
+	}()
+	t.Cleanup(func() {
+		unblock()
+		receiveGateClientValue(t, evicted)
+	})
+	receiveGateClientValue(t, blocked.closing)
+	acquired := make(chan error, 1)
+	go func() {
+		entry, acquireErr := client.acquire(t.Context(), "grpc://127.0.0.1:1")
+		if acquireErr == nil {
+			client.release(entry)
+		}
+		acquired <- acquireErr
+	}()
+	select {
+	case err := <-acquired:
+		require.NoError(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("one host's slow eviction blocked another host")
+	}
+	closed := make(chan error, 1)
+	go func() { closed <- client.Close() }()
+	select {
+	case err := <-closed:
+		t.Fatalf("Close returned before the detached connection finished closing: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+	unblock()
+	require.NoError(t, receiveGateClientValue(t, closed))
+}
+
+// blockedCloseResolver 控制真实 gRPC ClientConn.Close 的完成时点。
+type blockedCloseResolver struct {
+	built, closing, release chan struct{}
+}
+
+func (r *blockedCloseResolver) Build(resolver.Target, resolver.ClientConn, resolver.BuildOptions) (resolver.Resolver, error) {
+	close(r.built)
+	return r, nil
+}
+
+func (*blockedCloseResolver) Scheme() string                        { return "blocked-close" }
+func (*blockedCloseResolver) ResolveNow(resolver.ResolveNowOptions) {}
+func (r *blockedCloseResolver) Close() {
+	close(r.closing)
+	<-r.release
+}
 
 type gatewayStub struct {
 	v1.UnimplementedGatewayServer
