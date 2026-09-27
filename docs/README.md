@@ -8,13 +8,13 @@ Gateway/Node 是外层原生 Kratos App 的内嵌 transport。应用拥有 ident
 
 | 要做什么 | 阅读入口 |
 | --- | --- |
-| 从零装配 Gate/Node，发出一次请求 | [最小接入流程](#最小接入流程) |
+| 从零装配 Gate/Node，发出一次请求 | [最小接入流程](./README.md#最小接入流程) |
 | 接入框架、理解路由与生命周期 | [架构契约](./architecture.md) |
 | 发布事件、订阅及在线广播 | [EventBus 接入](./eventbus.md) |
 | 复测性能、评估容量 | [性能验证](./performance.md) |
 | 判断下一步要修什么、何时验收 | [当前待办](./issues.md) |
 | 启动最小应用 | [examples](../examples/README.md) |
-| 运行完整游戏、集成测试及压测 | [test](../test/README.md)、[Ludo press](../test/ludo/README.md) |
+| 运行完整游戏、集成测试及压测 | [测试模块](../test/README.md)、[Ludo 压测入口](../test/ludo/README.md#当前-press-入口) |
 
 文档只描述当前契约和未完成事项，已提交改动由 Git 追溯。
 
@@ -30,7 +30,7 @@ Gateway/Node 是外层原生 Kratos App 的内嵌 transport。应用拥有 ident
 | `YOLA_NATS_URL` | `nats://127.0.0.1:4222` |
 | `YOLA_ADVERTISE_HOST` | `127.0.0.1`；跨主机时设为调用方可达地址 |
 
-在独立终端中依次启动：
+在仓库根目录打开独立终端，依次启动：
 
 ```powershell
 go run ./examples/whot -id whot-1
@@ -59,19 +59,21 @@ Gateway 需要 Authenticator、Redis Locator、Registry/Discovery；Stateless No
 ```go
 reg, err := etcd.New(etcd.WithEndpoints("127.0.0.1:2379"))
 if err != nil {
-    return err
+	return err
 }
 defer reg.Close()
 
 redisClient := redis.NewClient(&redis.Options{
-    Addr: "127.0.0.1:6379", Password: os.Getenv("YOLA_REDIS_PASS"),
-    ContextTimeoutEnabled: true,
+	Addr: "127.0.0.1:6379", Password: os.Getenv("YOLA_REDIS_PASS"),
+	ContextTimeoutEnabled: true,
 })
 defer redisClient.Close()
 store := locateredis.New(redisClient)
 ```
 
-这里 `etcd` 为 `yola/registry/etcd`，`locateredis` 为 `yola/locate/redis`，`redis` 为 `github.com/redis/go-redis/v9`。业务实现 `gateway.Authenticator.Authenticate(ctx, serviceName, token, remoteIP) (string, error)`：验证允许访问的 service 和凭据，返回规范化 UID；拒绝可返回 `gateway.ErrInvalidCredentials`。下例将实现作为 `auth` 注入，不能在生产直接信任 token 中的 UID。[示例认证实现](../examples/gateway/main.go)
+这里 `etcd` 为 `yola/registry/etcd`，`locateredis` 为 `yola/locate/redis`，`redis` 为 `github.com/redis/go-redis/v9`。
+
+业务实现 `gateway.Authenticator.Authenticate(ctx, serviceName, token, remoteIP) (string, error)`：验证允许访问的 service 和凭据，返回规范化 UID；拒绝可返回 `gateway.ErrInvalidCredentials`。下例将实现作为 `auth` 注入，参考[示例认证实现](../examples/gateway/main.go)，不能在生产直接信任 token 中的 UID。
 
 ### 2. Gateway 装配
 
@@ -79,37 +81,37 @@ store := locateredis.New(redisClient)
 
 ```go
 func runGate(auth gateway.Authenticator, store locate.Locator, reg *etcd.Registry) error {
-    gate, err := gateway.NewServer(
-        gateway.Address("127.0.0.1:9010"),
-        gateway.Auth(auth),
-        gateway.Locator(store),
-        gateway.Discovery(reg),
-        gateway.Transport(
-            tcp.NewServer(tcp.Address("127.0.0.1:3101")),
-            websocket.NewServer(websocket.Address("127.0.0.1:3102")),
-        ),
-    )
-    if err != nil {
-        return err
-    }
-    appCtx, cancelApp := context.WithCancel(context.Background())
-    defer func() {
-        cancelApp()
-        cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-        defer cancel()
-        if err := gate.Stop(cleanupCtx); err != nil {
-            slog.Error("stop Gateway", "error", err)
-        }
-    }()
-    app := kratos.New(
-        kratos.Context(appCtx),
-        kratos.ID("gateway-1"), kratos.Name("gateway"),
-        kratos.StopTimeout(10*time.Second),
-        kratos.BeforeStart(gate.BeforeStart),
-        kratos.Server(gate),
-        kratos.Registrar(reg),
-    )
-    return app.Run()
+	gate, err := gateway.NewServer(
+		gateway.Address("127.0.0.1:9010"),
+		gateway.Auth(auth),
+		gateway.Locator(store),
+		gateway.Discovery(reg),
+		gateway.Transport(
+			tcp.NewServer(tcp.Address("127.0.0.1:3101")),
+			websocket.NewServer(websocket.Address("127.0.0.1:3102")),
+		),
+	)
+	if err != nil {
+		return err
+	}
+	appCtx, cancelApp := context.WithCancel(context.Background())
+	defer func() {
+		cancelApp()
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := gate.Stop(cleanupCtx); err != nil {
+			slog.Error("stop Gateway", "error", err)
+		}
+	}()
+	app := kratos.New(
+		kratos.Context(appCtx),
+		kratos.ID("gateway-1"), kratos.Name("gateway"),
+		kratos.StopTimeout(10*time.Second),
+		kratos.BeforeStart(gate.BeforeStart),
+		kratos.Server(gate),
+		kratos.Registrar(reg),
+	)
+	return app.Run()
 }
 ```
 
@@ -119,32 +121,32 @@ func runGate(auth gateway.Authenticator, store locate.Locator, reg *etcd.Registr
 
 ```go
 func runNode(reg *etcd.Registry) error {
-    server, err := node.NewServer(node.Address("127.0.0.1:9002"))
-    if err != nil {
-        return err
-    }
-    node.Register(server, message.EchoCommand,
-        func(_ context.Context, in *wrapperspb.StringValue) (*wrapperspb.StringValue, error) {
-            return wrapperspb.String("hello " + in.Value), nil
-        })
-    appCtx, cancelApp := context.WithCancel(context.Background())
-    defer func() {
-        cancelApp()
-        cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-        defer cancel()
-        if err := server.Stop(cleanupCtx); err != nil {
-            slog.Error("stop Node", "error", err)
-        }
-    }()
-    app := kratos.New(
-        kratos.Context(appCtx),
-        kratos.ID("ludo-1"), kratos.Name("ludo"),
-        kratos.StopTimeout(10*time.Second),
-        kratos.BeforeStart(server.BeforeStart),
-        kratos.Server(server),
-        kratos.Registrar(server.Registrar(reg)),
-    )
-    return app.Run()
+	server, err := node.NewServer(node.Address("127.0.0.1:9002"))
+	if err != nil {
+		return err
+	}
+	node.Register(server, message.EchoCommand,
+		func(_ context.Context, in *wrapperspb.StringValue) (*wrapperspb.StringValue, error) {
+			return wrapperspb.String("hello " + in.Value), nil
+		})
+	appCtx, cancelApp := context.WithCancel(context.Background())
+	defer func() {
+		cancelApp()
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := server.Stop(cleanupCtx); err != nil {
+			slog.Error("stop Node", "error", err)
+		}
+	}()
+	app := kratos.New(
+		kratos.Context(appCtx),
+		kratos.ID("ludo-1"), kratos.Name("ludo"),
+		kratos.StopTimeout(10*time.Second),
+		kratos.BeforeStart(server.BeforeStart),
+		kratos.Server(server),
+		kratos.Registrar(server.Registrar(reg)),
+	)
+	return app.Run()
 }
 ```
 
@@ -156,23 +158,23 @@ func runNode(reg *etcd.Registry) error {
 
 ```go
 client, err := tcp.NewClient(ctx,
-    tcp.WithAddress("127.0.0.1:3101"),
-    tcp.WithServiceName("ludo"), tcp.WithToken(token),
+	tcp.WithAddress("127.0.0.1:3101"),
+	tcp.WithServiceName("ludo"), tcp.WithToken(token),
 )
 if err != nil {
-    return err
+	return err
 }
 defer client.Close()
 body, code, err := client.Request(ctx, message.EchoCommand, wrapperspb.String("Yola"))
 if err != nil {
-    return err
+	return err
 }
 if code != 0 {
-    return fmt.Errorf("Echo failed: code=%d", code)
+	return fmt.Errorf("Echo failed: code=%d", code)
 }
 reply := new(wrapperspb.StringValue)
 if err := proto.Unmarshal(body, reply); err != nil {
-    return err
+	return err
 }
 fmt.Println(reply.Value)
 ```
@@ -187,27 +189,37 @@ Stateful Node 创建时增加 `node.Locator(store)`，用稳定且在线唯一�
 
 ```go
 node.Register(server, message.WhotEnterCommand,
-    func(ctx context.Context, _ *emptypb.Empty) (*emptypb.Empty, error) {
-        sess, ok := node.FromContext(ctx)
-        if !ok {
-            return nil, errors.New("authenticated session is missing")
-        }
-        if err := sess.BindNode(ctx); err != nil {
-            return nil, err
-        }
-        return new(emptypb.Empty), nil
-    })
+	func(ctx context.Context, _ *emptypb.Empty) (*emptypb.Empty, error) {
+		sess, ok := node.FromContext(ctx)
+		if !ok {
+			return nil, errors.New("authenticated session is missing")
+		}
+		if err := sess.BindNode(ctx); err != nil {
+			return nil, err
+		}
+		return new(emptypb.Empty), nil
+	})
 ```
 
-离桌由业务调用 `sess.UnbindNode(ctx)`；向本请求的连接推送用 `sess.Push(ctx, command, protobufMessage)`，按 UID 定位当前连接用 `server.PushToUID`。断线不自动解绑 Node。绑定保活使用 `sess.RenewNode(ctx)`：仅续期当前 NodeID/epoch 匹配的既有绑定，不能改用会覆盖归属的 BindNode 重试。业务 owner 在6h到期前按自己的生命周期调度续租，框架不自动续租；遇到 Aborted 时按业务归属变化处理。持有玩家/Table/后台任务的业务增加 `node.Drain(usecase.Drain)`，返回前停止绑定、续租和推送的生产者。[完整 Stateful 示例](../examples/whot/main.go)、[Session handler](../examples/whot/service.go)
+离桌由业务调用 `sess.UnbindNode(ctx)`；向本请求的连接推送用 `sess.Push(ctx, command, protobufMessage)`，按 UID 定位当前连接用 `server.PushToUID`。断线不自动解绑 Node。
 
-自定义 `locate.NodeLocator` / `node.Session` 及测试替身按当前接口实现条件续租。原 NodeID 重启取得新 epoch 后可继续使用既有绑定；续租不代表玩家/Table 唯一业务 owner，见[修改权契约](./architecture.md#node-binding)。
+绑定保活使用 `sess.RenewNode(ctx)`：仅续期当前 NodeID/epoch 匹配的既有绑定，不能改用会覆盖归属的 BindNode 重试。业务 owner 在6h到期前按自己的生命周期调度续租，框架不自动续租；遇到 Aborted 时按业务归属变化处理。
+
+持有玩家/Table/后台任务的业务增加 `node.Drain(usecase.Drain)`，返回前停止绑定、续租和推送的生产者。参考[完整 Stateful 示例](../examples/whot/main.go)和[Session handler](../examples/whot/service.go)。
+
+自定义 `locate.NodeLocator` / `node.Session` 及测试替身按当前接口实现条件续租。原 NodeID 重启取得新 epoch 后可继续使用既有绑定；续租不代表玩家/Table 唯一业务 owner，见[修改权契约](./architecture.md#node-binding-修改权)。
 
 上述回环地址用于本机接入；跨主机需显式配置可达的 AdvertiseHost/endpoint，TLS两端成对配置。EventBus是可选的应用依赖，按 [事件接线](./eventbus.md) 单独装配；资源归属和失败回收见 [生命周期](./architecture.md#3-生命周期)。
 
 ## 源码导航
 
-读主链路时按 [Gateway 入站与认证](../gateway/inbound.go) → [转发](../gateway/forward.go) → [Node RPC 与分发](../node/dispatch.go) / [command 注册](../node/register.go) → [Session](../node/session.go) / [Push](../node/push.go) 阅读。就绪 Registrar 与启动/停止流程均在 [Node lifecycle.go](../node/lifecycle.go)。Gateway/Node 现分别为11/9个生产文件。
+Gateway/Node 分别为11/9个生产文件，按职责阅读：
+
+| 链路 | 源码入口 |
+| --- | --- |
+| 认证与请求 | [Gateway 入站与认证](../gateway/inbound.go) → [转发](../gateway/forward.go) → [Node RPC 与分发](../node/dispatch.go) → [command 注册](../node/register.go) |
+| 绑定、续租与推送 | [Session](../node/session.go)、[按 UID 推送](../node/push.go) |
+| 启动、就绪与停止 | [Gateway 生命周期](../gateway/lifecycle.go)、[Node 生命周期与 Registrar](../node/lifecycle.go) |
 
 ## 开发与验证
 
@@ -226,4 +238,4 @@ Go 文件按 `golangci-lint fmt --config .golangci.yml <修改文件>` 格式化
 
 真实依赖测试前检查 TestMain、环境变量和资源归属，仅使用任务专用实例、DB/prefix 和可丢弃 UID，不改 tracked 配置、不操作既有服务数据；结束后核对并清理本任务资源。Redis/etcd 通过 `YOLA_REDIS_INTEGRATION`、`YOLA_ETCD_INTEGRATION` 注入；Redis 凭据使用 `YOLA_REDIS_PASSWORD`，NATS 外部测试使用 `YOLA_NATS_URL`。未配置时被跳过的测试不算通过。
 
-Cluster 普通回归使用 `YOLA_REDIS_CLUSTER_INTEGRATION` 注入逗号分隔地址。`TestNodeBindingClusterMigration` 和 `TestNodeBindingClusterCooperativeFailover` 还要求 `YOLA_REDIS_CLUSTER_ADMIN_INTEGRATION=1`，地址包含专用 3 主 3 从全部六个节点；它们会修改 slot/角色，Failover 要求全库为空。每个管理场景使用新建集群，连续切换的稳定性仍有 [验证限制](./issues.md#cluster-tests)。
+Cluster 普通回归使用 `YOLA_REDIS_CLUSTER_INTEGRATION` 注入逗号分隔地址。`TestNodeBindingClusterMigration` 和 `TestNodeBindingClusterCooperativeFailover` 还要求 `YOLA_REDIS_CLUSTER_ADMIN_INTEGRATION=1`，地址包含专用 3 主 3 从全部六个节点；它们会修改 slot/角色，Failover 要求全库为空。每个管理场景使用新建集群，连续切换的稳定性仍有 [验证限制](./issues.md#redis-cluster-拓扑变更)。

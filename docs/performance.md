@@ -18,7 +18,6 @@ Gate lease 默认60s，心跳在剩余不超过30s时续租；健康时约为 `�
 
 这些是结构成本，不能换算为实际 RSS 或安全容量。只有当前 benchmark/profile 指出瓶颈后，才决定缓存、队列或并发调整。
 
-<a id="nats-capacity"></a>
 ## NATS 容量口径
 
 WithMaxPayloadBytes 限制发布和接收出队后的 payload，不能限制已经进入订阅队列的大消息。broker 上限64KiB、队列256时，单订阅仅 payload 可约16MiB；broker 放行1MiB时可达256MiB。需同时固定 broker max_payload、订阅数和队列容量。

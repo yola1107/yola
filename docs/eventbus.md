@@ -15,20 +15,20 @@ Topic 同时表示路由与事件名，Payload 是已编码的只读 bytes。Bus
 ```go
 bus, err := nats.New(nats.WithURL(natsURL))
 if err != nil {
-    return err
+	return err
 }
 defer bus.Close()
 
 const announcementCommand int32 = 5
 _, err = bus.Subscribe(context.Background(), "yola.gateway.announcement.v1",
-    func(ctx context.Context, incoming event.Event) {
-        if err := gate.Broadcast(announcementCommand, incoming.Payload); err != nil &&
-            !errors.Is(err, gateway.ErrBroadcastQueueFull) {
-            slog.WarnContext(ctx, "broadcast announcement", "error", err)
-        }
-    })
+	func(ctx context.Context, incoming event.Event) {
+		if err := gate.Broadcast(announcementCommand, incoming.Payload); err != nil &&
+			!errors.Is(err, gateway.ErrBroadcastQueueFull) {
+			slog.WarnContext(ctx, "broadcast announcement", "error", err)
+		}
+	})
 if err != nil {
-    return err
+	return err
 }
 ```
 
@@ -37,7 +37,7 @@ if err != nil {
 ## 3. 投递与取消语义
 
 - Publish 成功只表示 adapter 接受发送，不证明存在订阅者或 handler 已执行。无在线订阅、断线或本地队列满时允许丢失；无 ack、重试、重放及离线补发。
-- 当前 Publish 仅在入口检查 caller context，原生同步写的等待尚未受该预算约束，见[当前待办](./issues.md#publish-budget)。
+- 当前 Publish 仅在入口检查 caller context，原生同步写的等待尚未受该预算约束，见[当前待办](./issues.md#p2-nats-publish-调用方预算)。
 - 同一订阅串行调用 handler，panic 被隔离并记录，消息仍视为丢失；handler 不返回重投结果。
 - Unsubscribe(ctx) 幂等发起停止，先取消 handler context，再由唯一清理任务执行原生 unsubscribe。caller 按 ctx 等待原生清理及消费协程退出；超时返回 context 错误，已发布的清理错误仍保留在错误链中，后台停止继续且可再次等待。Bus 仍跟踪取消中的订阅。
 - Bus.Close 幂等拒绝新工作，先取消并启动全部订阅停止，等待原生清理后关闭自有连接，再等待 handler 退出。它没有 deadline，handler 必须协作响应取消；handler 不得同步调用自身 Unsubscribe 或 Bus.Close。
@@ -55,9 +55,9 @@ Subscribe注册精确Topic，底层ChanSubscribe加有界channel并等待Flush�
 | 已进入激活后订阅/Flush/context失败 | 注册能力进入终态，后续Subscribe携带首次失败；既有订阅与Publish继续，应用关闭重建Bus |
 | SUB/Publish ACL、订阅上限、slow consumer等异步错误 | slog Error记录`event transport error`及原始error；不直接终止后续注册，不能从返回值推断权限通过 |
 
-异步回调只有携带订阅身份时才记录topic，不从错误文本猜测归属；重复错误分别记录，可能晚于Subscribe返回。被broker拒绝的本地订阅仍由Bus/Subscription回收，nats.go重连时可能重新发送订阅，不构成消息重放或成功恢复保证。生产认证/TLS/ACL须单独验收。[I40](./issues.md#i40)
+异步回调只有携带订阅身份时才记录topic，不从错误文本猜测归属；重复错误分别记录，可能晚于Subscribe返回。被broker拒绝的本地订阅仍由Bus/Subscription回收，nats.go重连时可能重新发送订阅，不构成消息重放或成功恢复保证。生产认证/TLS/ACL须单独验收。[I40](./issues.md#i40-nats-安全配置)
 
-容量默认值为WithQueueCapacity=256、WithMaxPayloadBytes=64KiB。后者限制Publish并在接收出队后丢弃超限Payload，**不能限制已排队的大消息内存**。预算按订阅数×队列容量×broker实际max_payload加运行时余量计算；broker同为64KiB时单订阅仅Payload约16MiB，放行1MiB时可达256MiB。配置须同时记录broker上限和订阅数，释放引用不保证RSS立即回落。[测量边界](./performance.md#nats-capacity)
+容量默认值为WithQueueCapacity=256、WithMaxPayloadBytes=64KiB。后者限制Publish并在接收出队后丢弃超限Payload，**不能限制已排队的大消息内存**。预算按订阅数×队列容量×broker实际max_payload加运行时余量计算；broker同为64KiB时单订阅仅Payload约16MiB，放行1MiB时可达256MiB。配置须同时记录broker上限和订阅数，释放引用不保证RSS立即回落。[测量边界](./performance.md#nats-容量口径)
 
 Subscription可实现 `event.SubscriptionStatsProvider`，可并发采样，不重置累计值：
 
@@ -78,4 +78,4 @@ Subscription可实现 `event.SubscriptionStatsProvider`，可并发采样，不�
 
 只发送给已认证且lease有效的连接。支持PreparedConnection时共享默认protobuf编码，自定义codec仍逐连接编码；各连接的发送队列隔离慢消费者，队列满、连接关闭和停机可丢弃，Gateway限频记录drop。
 
-BroadcastStats的QueueDepth/QueueCapacity为快照，Accepted/Completed/QueueDropped/SendDropped从Server创建起累计；LastFanoutDuration/MaxFanoutDuration只描述本地fanout，不证明客户端收到。连接自身的 [SendStats](./architecture.md#send-stats) 与SendDropped可能记录同一次拒绝，不能跨层相加；订阅、广播、连接的队列拒绝分别发生在不同接纳点。
+BroadcastStats的QueueDepth/QueueCapacity为快照，Accepted/Completed/QueueDropped/SendDropped从Server创建起累计；LastFanoutDuration/MaxFanoutDuration只描述本地fanout，不证明客户端收到。连接自身的 [SendStats](./architecture.md#发送观测) 与SendDropped可能记录同一次拒绝，不能跨层相加；订阅、广播、连接的队列拒绝分别发生在不同接纳点。

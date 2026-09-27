@@ -64,8 +64,9 @@ Client 的 connect、push、Kick、disconnect callback 由有界队列串行执�
 
 TCP/WS Server 持有显式 endpoint 的副本，Endpoint 返回副本。scheme 与 TLS 匹配（tcp/tcps、ws/wss），WS path 与 Path 一致；自动地址依次取 AdvertiseHost、非通配 listen host、global-unicast interface，不能推导时失败。WS 的 http.Server 为私有资源，通过 Option 配置，不绕过组件调用 Serve/Shutdown/Close。
 
-<a id="send-stats"></a>
-**发送观测。** Connection 可实现 `SendStatsProvider`：depth/capacity 来自原队列，QueueDropped 只累计 `ErrSendQueueFull`；Closed 表示拒绝新发送，writer 可能仍在发送最后一帧。PendingPayloadBytes 按每次发送的 Body 长度计等待入队及已排队数据，writer 取走或入队失败时扣除；不含当前帧、编码、socket 或对象开销，不能换算 RSS。关闭不清累计值，残留队列仍可观测；字段不是跨项原子快照。
+#### 发送观测
+
+Connection 可实现 `SendStatsProvider`：depth/capacity 来自原队列，QueueDropped 只累计 `ErrSendQueueFull`；Closed 表示拒绝新发送，writer 可能仍在发送最后一帧。PendingPayloadBytes 按每次发送的 Body 长度计等待入队及已排队数据，writer 取走或入队失败时扣除；不含当前帧、编码、socket 或对象开销，不能换算 RSS。关闭不清累计值，残留队列仍可观测；字段不是跨项原子快照。
 
 ### 2.2 Redis 模型
 
@@ -77,8 +78,9 @@ TCP/WS Server 持有显式 endpoint 的副本，Endpoint 返回副本。scheme �
 
 编码使用无填充 Raw URL Base64。GateBinding 的 ServiceName、UID、GateID、GateEndpoint、ConnID、BindingToken 全部参与条件比较。Gate key 按 UID 分布，Node binding/epoch 按 service 共用 slot；一个 service 的 Node 读写集中在一个 slot，是容量边界。
 
-<a id="node-binding"></a>
-**Node binding 修改权。** Session 从 Node 本代 lease 取得 epoch。单机/Cluster 共用 Lua，先原子核验 epoch，再执行绑定操作：Bind 显式覆盖；RenewNode 仅在当前 NodeID 匹配时将 TTL 刷新为6h，不创建、不覆盖；Unbind 仅删除相同 NodeID，binding 缺失或指向其他 Node 时幂等无操作。epoch 缺失/冲突会使 Node 关闭准入并取消本代工作；普通依赖错误或 caller 取消不自动撤销整个 Node。原 ID 重启取得新 epoch 后可继承并续租原 NodeID binding，旧 epoch 的迟到写被拒绝。[key编码](../locate/redis/decode.go)、[Lua](../locate/redis/script.go)
+#### Node binding 修改权
+
+Session 从 Node 本代 lease 取得 epoch。单机/Cluster 共用 Lua，先原子核验 epoch，再执行绑定操作：Bind 显式覆盖；RenewNode 仅在当前 NodeID 匹配时将 TTL 刷新为6h，不创建、不覆盖；Unbind 仅删除相同 NodeID，binding 缺失或指向其他 Node 时幂等无操作。epoch 缺失/冲突会使 Node 关闭准入并取消本代工作；普通依赖错误或 caller 取消不自动撤销整个 Node。原 ID 重启取得新 epoch 后可继承并续租原 NodeID binding，旧 epoch 的迟到写被拒绝。[key编码](../locate/redis/decode.go)、[Lua](../locate/redis/script.go)
 
 进程修改权不等于玩家业务所有权：仍有效的 A 可在玩家改绑 B 后显式 Bind 接管 B，保活须改用 RenewNode。绑定缺失/改绑分别返回 ErrNodeNotFound/ErrNodeConflict，Session 将其映射为 Aborted，仅拒绝本次续租，不撤销整个 Node。业务 owner 在绑定到期前用有界 context 续租，并在 Drain 返回前停止该生产者；框架不自动定时续租，不因续租失败退回 Bind。
 
@@ -168,7 +170,7 @@ Node配置Locator即启用Stateful租约/绑定能力并声明`sticky=true`；St
 | 同service/NodeID双活 | 后启动者epoch注册失败；不匹配claim返回Aborted |
 | Redis不可用 | 依赖该次查询的请求失败；Node到本地租期截止时关闭准入 |
 
-Gateway不缓存玩家binding或未绑定结果；close、takeover、heartbeat不修改Node binding。6h TTL由业务 owner 通过 RenewNode 条件续租；框架不保证强单活、内存状态恢复、同UID串行、actor唯一性或故障迁移。[修改权边界](#node-binding)
+Gateway不缓存玩家binding或未绑定结果；close、takeover、heartbeat不修改Node binding。6h TTL由业务 owner 通过 RenewNode 条件续租；框架不保证强单活、内存状态恢复、同UID串行、actor唯一性或故障迁移。[修改权边界](./architecture.md#node-binding-修改权)
 
 ## 6. 协议、错误与默认值
 
