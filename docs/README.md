@@ -1,8 +1,8 @@
 # Yola
 
-Yola 是基于 Kratos v3 的长连接框架。Gateway 持有 TCP/WebSocket 连接，通过 Redis Locator 和 gRPC 将请求投递到 Node；业务通过 command handler 和 `node.Session` 绑定 Node、解绑及推送。
+Yola 是基于 Kratos v3 的长连接框架。Gateway 持有 TCP/WebSocket 连接，通过 Redis Locator 和 gRPC 将请求投递到 Node；业务通过 command handler 和 `node.Session` 绑定、续租、解绑及推送。
 
-Gateway/Node 是外层原生 Kratos App 的内嵌 transport。应用拥有 identity、配置、日志和外部依赖，业务拥有玩家、Table 和执行模型。项目处于首版开发阶段，不承诺旧协议、存储布局或 API 的兼容。
+Gateway/Node 是外层原生 Kratos App 的内嵌 transport。应用拥有 identity、配置、日志和外部依赖，业务拥有玩家、Table 和执行模型。项目尚未上线，按当前设计直接演进，不维护历史兼容层或数据迁移流程；改动同步仓内调用方、测试和文档。
 
 ## 文档入口
 
@@ -11,13 +11,12 @@ Gateway/Node 是外层原生 Kratos App 的内嵌 transport。应用拥有 ident
 | 从零装配 Gate/Node，发出一次请求 | [最小接入流程](#最小接入流程) |
 | 接入框架、理解路由与生命周期 | [架构契约](./architecture.md) |
 | 发布事件、订阅及在线广播 | [EventBus 接入](./eventbus.md) |
-| 复测性能、评估容量 | [性能基线](./performance.md) |
-| 查看未解决问题和验收缺口 | [当前问题](./issues.md) |
-| 查看 Gateway/Node 文件职责与清理依据 | [文件职责审查](./gateway-node-file-review.md) |
+| 复测性能、评估容量 | [性能验证](./performance.md) |
+| 判断下一步要修什么、何时验收 | [当前待办](./issues.md) |
 | 启动最小应用 | [examples](../examples/README.md) |
 | 运行完整游戏、集成测试及压测 | [test](../test/README.md)、[Ludo press](../test/ludo/README.md) |
 
-已完成的清理、审核轮次和实施流水账由 Git 保存，不维护第二套待办。需要旧记录时可用 `git show 61faa25:docs/refactor-progress.md` 或 `git show 61faa25:docs/architecture-review.md` 查看。
+文档只描述当前契约和未完成事项，已提交改动由 Git 追溯。
 
 ## 快速开始
 

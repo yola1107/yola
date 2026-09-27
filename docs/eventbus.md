@@ -37,6 +37,7 @@ if err != nil {
 ## 3. 投递与取消语义
 
 - Publish 成功只表示 adapter 接受发送，不证明存在订阅者或 handler 已执行。无在线订阅、断线或本地队列满时允许丢失；无 ack、重试、重放及离线补发。
+- 当前 Publish 仅在入口检查 caller context，原生同步写的等待尚未受该预算约束，见[当前待办](./issues.md#publish-budget)。
 - 同一订阅串行调用 handler，panic 被隔离并记录，消息仍视为丢失；handler 不返回重投结果。
 - Unsubscribe(ctx) 幂等发起停止，先取消 handler context，再由唯一清理任务执行原生 unsubscribe。caller 按 ctx 等待原生清理及消费协程退出；超时返回 context 错误，已发布的清理错误仍保留在错误链中，后台停止继续且可再次等待。Bus 仍跟踪取消中的订阅。
 - Bus.Close 幂等拒绝新工作，先取消并启动全部订阅停止，等待原生清理后关闭自有连接，再等待 handler 退出。它没有 deadline，handler 必须协作响应取消；handler 不得同步调用自身 Unsubscribe 或 Bus.Close。

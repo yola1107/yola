@@ -78,7 +78,7 @@ go test ./ludo/internal/biz/table -run '^$' -bench '^BenchmarkTablePush$' -bench
 go test ./whot/internal/biz/table -run '^$' -bench '^BenchmarkTablePush$' -benchtime=3s -count=3 -timeout=180s
 ```
 
-每桌四人、Payload 为 256B bytes 的 protobuf 消息，8/64 桌分别对照无注入延迟和每条 Push 注入 5ms Gateway 处理延迟。worker 跟随 Ludo/Whot 的 `min(tableNum, 16)` 默认规则，8/64 桌分别为 8/16；闭环并发固定为 `8 × GOMAXPROCS`，上述命令下为 32。接收器只计数、不使用客户端 socket；每轮要求成功投递数等于广播数的四倍。输出各段调用数、均值及直方图分位数所在桶的上界（`p99_le_us`），任何 Push 或 mailbox 调用失败都会使基准失败。历史 8 worker 结果、队列和计时边界见 [性能基线](../docs/performance.md#table-push-分段基线)。
+每桌四人、Payload 为 256B bytes 的 protobuf 消息，8/64 桌分别对照无注入延迟和每条 Push 注入 5ms Gateway 处理延迟。worker 跟随 Ludo/Whot 的 `min(tableNum, 16)` 默认规则，8/64 桌分别为 8/16；闭环并发固定为 `8 × GOMAXPROCS`，上述命令下为 32。接收器只计数、不使用客户端 socket；每轮要求成功投递数等于广播数的四倍。输出各段调用数、均值及直方图分位数所在桶的上界（`p99_le_us`），任何 Push 或 mailbox 调用失败都会使基准失败。成本模型与容量验收方法见 [性能验证](../docs/performance.md)。
 
 ## 固定速率与真实游戏验证
 
