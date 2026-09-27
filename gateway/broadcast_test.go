@@ -5,6 +5,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	protocolv1 "yola/api/protocol/v1"
@@ -13,6 +14,37 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 )
+
+func TestBroadcastChecksLeaseAtEachSend(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		first := newBlockingConnection("first")
+		second := newTestConnection("second")
+		firstBinding, secondBinding := testBinding(), testBinding()
+		firstBinding.ConnID = first.ConnID()
+		secondBinding.ConnID = second.ConnID()
+		firstSession := activeSession(first, firstBinding)
+		secondSession := activeSession(second, secondBinding)
+		secondSession.leaseDeadline = time.Now().Add(time.Second)
+		var prepared network.PreparedProto
+		prepared.Reset(&protocolv1.Proto{Op: protocolv1.OpPush, Cmd: 42})
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			(&broadcaster{}).sendBatch(context.Background(), fanoutBatch{
+				message: &prepared, sessions: []*session{firstSession, secondSession},
+			})
+		}()
+		<-first.started
+		time.Sleep(2 * time.Second)
+		first.unblock()
+		<-done
+		select {
+		case <-second.pushes:
+			t.Fatal("broadcast reached a session that expired during the batch")
+		default:
+		}
+	})
+}
 
 func TestBroadcastSendsToEveryAuthenticatedSession(t *testing.T) {
 	connections := []*testConnection{

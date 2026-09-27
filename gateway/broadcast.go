@@ -212,12 +212,11 @@ func (b *broadcaster) fanoutWorker(running *broadcastRun) {
 }
 
 func (b *broadcaster) sendBatch(ctx context.Context, batch fanoutBatch) {
-	now := time.Now()
 	for _, sess := range batch.sessions {
 		if ctx.Err() != nil {
 			return
 		}
-		matched, err := sess.sendIfAuthenticated(now, batch.message)
+		matched, err := sess.sendIfAuthenticated(batch.message)
 		if !matched || err == nil {
 			continue
 		}

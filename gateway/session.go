@@ -212,10 +212,10 @@ func (s *session) sendIfCurrent(expected locate.GateBinding, msg *v1.Proto) (boo
 	return true, s.conn.SendProto(msg)
 }
 
-func (s *session) sendIfAuthenticated(now time.Time, msg *network.PreparedProto) (bool, error) {
+func (s *session) sendIfAuthenticated(msg *network.PreparedProto) (bool, error) {
 	s.bindingMu.Lock()
 	defer s.bindingMu.Unlock()
-	if !s.leaseValidLocked(now) {
+	if !s.leaseValidLocked(time.Now()) {
 		return false, nil
 	}
 	if conn, ok := s.conn.(network.PreparedConnection); ok {
