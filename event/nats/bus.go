@@ -16,7 +16,7 @@ import (
 
 var _ event.Bus = (*Bus)(nil)
 
-// Bus owns one NATS connection and every subscription created through it.
+// Bus 持有一个 NATS 连接、发布 worker 和通过它创建的全部订阅。
 type Bus struct {
 	ctx             context.Context
 	cancel          context.CancelFunc
@@ -24,6 +24,9 @@ type Bus struct {
 	timeout         time.Duration
 	queueCapacity   int
 	maxPayloadBytes int
+
+	publishRequests chan publishRequest
+	publishDone     chan struct{}
 
 	registrationMu  sync.Mutex
 	subscriptions   []*subscription
@@ -33,8 +36,8 @@ type Bus struct {
 	closeErr  error
 }
 
-// New connects to NATS and returns a ready-to-use Bus. WithContext controls
-// the Bus lifetime; canceling it closes the Bus and its subscriptions.
+// New 连接 NATS 并返回可用的 Bus；WithContext 控制完整生命周期，
+// 取消后关闭 Bus 及其订阅。
 func New(opts ...Option) (*Bus, error) {
 	o := options{
 		ctx:             context.Background(),
@@ -68,6 +71,7 @@ func New(opts ...Option) (*Bus, error) {
 		queueCapacity:   o.queueCapacity,
 		maxPayloadBytes: o.maxPayloadBytes,
 	}
+	bus.startPublisher()
 	if o.ctx.Done() != nil {
 		go bus.closeOnContext()
 	}
@@ -96,8 +100,8 @@ func connect(ctx context.Context, o options) (*natsgo.Conn, error) {
 		conn *natsgo.Conn
 		err  error
 	}
-	// nats.Connect has no context-aware variant. The configured timeout bounds
-	// this worker, which closes a late connection after caller cancellation.
+	// nats.Connect 不接受 context；配置的 timeout 限制此 worker 的等待，
+	// caller 取消后，worker 负责关闭迟到的连接。
 	connected := make(chan result)
 	go func() {
 		conn, err := natsgo.Connect(o.url, connectOptions...)
@@ -127,7 +131,7 @@ func connect(ctx context.Context, o options) (*natsgo.Conn, error) {
 	}
 }
 
-// Close 拒绝新工作，取消订阅并关闭连接，等待在途 handler 后返回。
+// Close 拒绝新工作，取消订阅并关闭连接，等待发布 worker 和在途 handler 后返回。
 func (b *Bus) Close() error {
 	b.closeOnce.Do(func() {
 		b.cancel()
@@ -144,6 +148,7 @@ func (b *Bus) Close() error {
 			<-subscription.deactivated
 		}
 		b.conn.Close()
+		<-b.publishDone
 		b.closeErr = waitSubscriptions(registered)
 	})
 	return b.closeErr
@@ -154,7 +159,9 @@ func (b *Bus) closeOnContext() {
 	_ = b.Close()
 }
 
-// Publish sends an online event without acknowledgement or replay guarantees.
+// Publish 发布在线事件，等待受 ctx 限制；成功不代表订阅者已收到。
+// 返回后可复用 Payload。worker 通过取消检查后，发布尝试即已开始；
+// 此后取消不能撤回发送，即使原生调用仍在等待锁，投递结果也可能不确定。
 func (b *Bus) Publish(ctx context.Context, e event.Event) error {
 	if err := contextError(ctx); err != nil {
 		return err
@@ -168,11 +175,64 @@ func (b *Bus) Publish(ctx context.Context, e event.Event) error {
 	if b.ctx.Err() != nil {
 		return event.ErrClosed
 	}
-	err := b.conn.Publish(e.Topic, e.Payload)
-	if err != nil && b.ctx.Err() != nil {
+	// caller 取消后 worker 仍可能访问消息，交接前复制以隔离其可变切片。
+	e.Payload = slices.Clone(e.Payload)
+	request := publishRequest{ctx: ctx, event: e, result: make(chan error, 1)}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-b.ctx.Done():
 		return event.ErrClosed
+	case b.publishRequests <- request:
 	}
-	return err
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-b.ctx.Done():
+		return event.ErrClosed
+	case err := <-request.result:
+		return err
+	}
+}
+
+type publishRequest struct {
+	ctx    context.Context
+	event  event.Event
+	result chan error
+}
+
+func (b *Bus) startPublisher() {
+	// 无缓冲交接：最多执行一个原生 Publish，排队者仍由 caller 的 context 控制。
+	b.publishRequests = make(chan publishRequest)
+	b.publishDone = make(chan struct{})
+	go b.publishLoop()
+}
+
+func (b *Bus) publishLoop() {
+	defer close(b.publishDone)
+	for {
+		select {
+		case <-b.ctx.Done():
+			return
+		case request := <-b.publishRequests:
+			// select 可能同时选中取消与交接；此检查是发布尝试开始的边界。
+			// 通过后与取消竞争的发送不保证撤回，包括随后的原生锁等待。
+			if err := request.ctx.Err(); err != nil {
+				request.result <- err
+				continue
+			}
+			if b.ctx.Err() != nil {
+				request.result <- event.ErrClosed
+				return
+			}
+			err := b.conn.Publish(request.event.Topic, request.event.Payload)
+			if err != nil && b.ctx.Err() != nil {
+				err = event.ErrClosed
+			}
+			// caller 即使已取消也不会阻塞 worker；Close 会等待此 worker 退出。
+			request.result <- err
+		}
+	}
 }
 
 // Subscribe 注册精确 Topic 并等待 Flush；成功不代表 broker 已接受订阅。

@@ -83,7 +83,9 @@ func TestSubscribeReportsRepeatedPermissionFailureAfterReconnect(t *testing.T) {
 		received <- incoming
 	})
 	require.NoError(t, err)
-	port := natsServer.Addr().(*net.TCPAddr).Port
+	address, ok := natsServer.Addr().(*net.TCPAddr)
+	require.True(t, ok)
+	port := address.Port
 	natsServer.Shutdown()
 	natsServer.WaitForShutdown()
 

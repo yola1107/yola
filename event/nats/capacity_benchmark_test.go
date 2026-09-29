@@ -83,7 +83,9 @@ func BenchmarkSubscriptionCapacity(b *testing.B) {
 					durationsMu.Unlock()
 				})
 				require.NoError(b, err)
-				subs[i] = sub.(event.SubscriptionStatsProvider)
+				observer, ok := sub.(event.SubscriptionStatsProvider)
+				require.True(b, ok)
+				subs[i] = observer
 			}
 			publish(topic, 1, 1)
 			for range subs {

@@ -37,10 +37,11 @@ if err != nil {
 ## 3. 投递与取消语义
 
 - Publish 成功只表示 adapter 接受发送，不证明存在订阅者或 handler 已执行。无在线订阅、断线或本地队列满时允许丢失；无 ack、重试、重放及离线补发。
-- 当前 Publish 仅在入口检查 caller context，原生同步写的等待尚未受该预算约束，见[当前待办](./issues.md#p2-nats-publish-调用方预算)。
+- Publish 的交接与结果等待均受 caller context 限制。Bus 以单个 worker 串行调用原生 Publish，无额外发布等待队列；等待交接时取消，或 worker 执行前检查到取消的请求不会发送。以 worker 通过该取消检查为发布尝试的开始；此后与取消竞争的发送（包括仍在等待原生连接锁）可能投递，不能据此安全重试或承诺撤回。
+- Publish 在交接前复制 Payload，返回后 caller 可复用原切片。等待交接的每个 caller 持有自己的消息副本；应用仍须限制并发调用量。
 - 同一订阅串行调用 handler，panic 被隔离并记录，消息仍视为丢失；handler 不返回重投结果。
 - Unsubscribe(ctx) 幂等发起停止，先取消 handler context，再由唯一清理任务执行原生 unsubscribe。caller 按 ctx 等待原生清理及消费协程退出；超时返回 context 错误，已发布的清理错误仍保留在错误链中，后台停止继续且可再次等待。Bus 仍跟踪取消中的订阅。
-- Bus.Close 幂等拒绝新工作，先取消并启动全部订阅停止，等待原生清理后关闭自有连接，再等待 handler 退出。它没有 deadline，handler 必须协作响应取消；handler 不得同步调用自身 Unsubscribe 或 Bus.Close。
+- Bus.Close 幂等拒绝新工作并唤醒等待的 Publish caller；先取消并启动全部订阅停止，等待原生清理后关闭自有连接，再等待发布 worker 和 handler 退出。它没有 deadline，可能等待已开始的原生调用；handler 必须协作响应取消，且不得同步调用自身 Unsubscribe 或 Bus.Close。
 - 完全退出后释放handler和队列引用；后续注册回收已完成且无错误的记录，带停止错误的记录保留到Close汇总。
 
 ## 4. NATS 生命周期

@@ -59,7 +59,7 @@ func TestBusFansOutToEverySubscriber(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, first.Publish(context.Background(), event.Event{Topic: "yola.event.broadcast"}))
 
-	actual := map[string]bool{}
+	actual := make(map[string]bool)
 	for range 2 {
 		select {
 		case name := <-received:
@@ -74,7 +74,9 @@ func TestBusFansOutToEverySubscriber(t *testing.T) {
 func TestBusConstructionReportsConnectionFailure(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
-	port := listener.Addr().(*net.TCPAddr).Port
+	address, ok := listener.Addr().(*net.TCPAddr)
+	require.True(t, ok)
+	port := address.Port
 	require.NoError(t, listener.Close())
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	_, err = New(WithContext(ctx), WithURL(fmt.Sprintf("nats://127.0.0.1:%d", port)), WithTimeout(time.Second))

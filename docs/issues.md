@@ -6,22 +6,9 @@
 
 | 项目 / 类型 | 问题与影响 | 位置 / 依据 | 处理时机 | 状态 / 完成条件 |
 | --- | --- | --- | --- | --- |
-| [Publish 预算](./issues.md#p2-nats-publish-调用方预算) / 代码问题 | 原生同步写可能超过 caller deadline，拖住请求和排空 | [Publish 实现](../event/nats/bus.go)、[Whot 调用方](../examples/whot/service.go) | **现在优先，P2** | 已复现、未修复；补齐预算语义与取消/Close/并发回归 |
 | [I40](./issues.md#i40-nats-安全配置) / 部署验收 | 实际 NATS 认证、TLS、ACL 与异步拒绝尚未联调 | [EventBus](./eventbus.md#4-nats-生命周期) | 选定 NATS 部署后、上线前 | 待验收；使用实际账号、证书、ACL 与容量配置 |
 | [I41/I45](./issues.md#i41-和-i45-容量与延迟) / 容量验收 | 目标负载下的连接容量、完整业务与长尾尚无结论 | [性能验证](./performance.md#容量验收) | 确定规模、机器和 SLO 后 | 待验收；无瓶颈证据时不增加缓存、队列或并发层 |
 | [Cluster 管理](./issues.md#redis-cluster-拓扑变更) / 可选验收 | 三主三从槽重分配/切主的历史组合曾超时，原因未定 | [管理测试](../locate/redis/cluster_test.go) | 选择 Cluster 且要求拓扑变更时 | 待重现并覆盖 RenewNode；单机 Redis 首版不阻塞开发 |
-
-## 现在需要处理
-
-### P2 NATS Publish 调用方预算
-
-[Publish](../event/nats/bus.go) 只在入口检查 context，随后同步调用原生 Publish，锁等待和 socket 写可能超过 caller deadline。[Whot 示例](../examples/whot/service.go) 在 handler 内同步发布，因此会影响请求完成和停机排空。这与是否上线无关。
-
-2026-09-27 在当前代码上使用嵌入 NATS 和可控写屏障复核：50ms caller deadline 到期后，约201ms时仍未返回；放行写操作后返回 nil，连续3次成立。探针在临时 overlay 中运行，未修改生产代码；这是预算缺口的证据，不是网络性能基准。
-
-下一步直接确定并实现首版发布语义：caller 的等待受 context 限制；尚未开始的取消请求不得再发布；已开始 I/O 的结果可能不确定，不能承诺撤回。新增的后台工作必须有界、由 Bus 持有并可等待回收，不能用无归属 goroutine 或固定写超时冒充 caller deadline。
-
-完成条件：阻塞写反例通过，取消/Close/并发发布无泄漏和竞态，明确成功与取消后的投递边界，运行相关 race。此处仅完成评审，修复尚未实施。
 
 ## 按部署选择验收
 

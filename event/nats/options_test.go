@@ -63,7 +63,7 @@ func TestRedactedURL(t *testing.T) {
 
 func TestWithTLSClonesConfiguration(t *testing.T) {
 	tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12}
-	configured := new(options)
+	configured := &options{}
 	WithTLS(tlsConfig)(configured)
 	tlsConfig.MinVersion = tls.VersionTLS13
 	require.Equal(t, uint16(tls.VersionTLS12), configured.tls.MinVersion)

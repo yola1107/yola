@@ -25,7 +25,7 @@ type options struct {
 	maxPayloadBytes int
 }
 
-// WithContext controls the Bus lifetime, including the initial connection.
+// WithContext 控制 Bus 的完整生命周期，包括首次建连。
 func WithContext(ctx context.Context) Option {
 	return func(o *options) { o.ctx = ctx }
 }

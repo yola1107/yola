@@ -45,7 +45,8 @@ func verifyBrokerPayloadLimits(t *testing.T, address string) {
 	topic := natsgo.NewInbox()
 	sub, err := bus.Subscribe(t.Context(), topic, func(context.Context, event.Event) {})
 	require.NoError(t, err)
-	observer := sub.(event.SubscriptionStatsProvider)
+	observer, ok := sub.(event.SubscriptionStatsProvider)
+	require.True(t, ok)
 	require.Error(t, bus.Publish(t.Context(), event.Event{Topic: topic, Payload: make([]byte, applicationLimit+1)}))
 	var handled, discarded uint64
 	sizes := []int{applicationLimit, applicationLimit + 1, maximum, maximum + 1}

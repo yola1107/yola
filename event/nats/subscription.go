@@ -108,7 +108,7 @@ func (s *subscription) handle(ctx context.Context, message *natsgo.Msg) {
 	}
 	received := event.Event{
 		Topic: message.Subject,
-		// nats.go owns this buffer and does not reuse it after delivery.
+		// 此缓冲区归 nats.go 所有，投递后不会被它复用。
 		Payload: message.Data,
 	}
 	s.statsMu.Lock()

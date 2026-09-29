@@ -138,7 +138,9 @@ func newActivationTestBus(t *testing.T) (*Bus, *activationPeer) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, listener.Close()) })
-	require.NoError(t, listener.(*net.TCPListener).SetDeadline(time.Now().Add(5*time.Second)))
+	tcpListener, ok := listener.(*net.TCPListener)
+	require.True(t, ok)
+	require.NoError(t, tcpListener.SetDeadline(time.Now().Add(5*time.Second)))
 	type result struct {
 		bus *Bus
 		err error

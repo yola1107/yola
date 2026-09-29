@@ -125,7 +125,7 @@ func measureSubscriptionBacklog(b *testing.B, url string, capacity, payloadSize 
 		}
 	})
 	require.NoError(b, err)
-	registered := subscribed.(*subscription)
+	registered := testSubscription(b, subscribed)
 	payload := make([]byte, payloadSize)
 	published := event.Event{Topic: registered.topic, Payload: payload}
 	require.NoError(b, bus.Publish(context.Background(), published))

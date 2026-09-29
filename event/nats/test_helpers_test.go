@@ -1,12 +1,17 @@
 package nats
 
 import (
+	"context"
+	"net"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"yola/event"
 
 	"github.com/nats-io/nats-server/v2/server"
+	natsgo "github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/require"
 )
 
@@ -66,4 +71,66 @@ func newTestBus(t testing.TB, url string, opts ...Option) *Bus {
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, bus.Close()) })
 	return bus
+}
+
+func testSubscription(t testing.TB, handle event.Subscription) *subscription {
+	t.Helper()
+	registered, ok := handle.(*subscription)
+	require.True(t, ok, "NATS adapter returned an unexpected subscription: %T", handle)
+	return registered
+}
+
+func newBlockedWriteBus(t *testing.T) (*Bus, *blockedWriteConn, func()) {
+	t.Helper()
+	dialer := &blockedWriteDialer{}
+	conn, err := natsgo.Connect(
+		startTestServer(t), natsgo.SetCustomDialer(dialer), natsgo.NoReconnect(),
+	)
+	require.NoError(t, err)
+	ctx, cancel := context.WithCancel(context.Background())
+	bus := &Bus{
+		ctx:             ctx,
+		cancel:          cancel,
+		conn:            conn,
+		timeout:         time.Second,
+		queueCapacity:   4,
+		maxPayloadBytes: 64 << 10,
+	}
+	bus.startPublisher()
+	release := sync.OnceFunc(func() { close(dialer.conn.release) })
+	t.Cleanup(func() {
+		release()
+		require.NoError(t, bus.Close())
+	})
+	return bus, dialer.conn, release
+}
+
+// blockedWriteConn 在握手完成后阻塞一次原生写操作，清理时必须放行。
+type blockedWriteConn struct {
+	net.Conn
+	armed   atomic.Bool
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (c *blockedWriteConn) Write(payload []byte) (int, error) {
+	if c.armed.Load() {
+		c.once.Do(func() { close(c.entered) })
+		<-c.release
+	}
+	return c.Conn.Write(payload)
+}
+
+type blockedWriteDialer struct {
+	conn *blockedWriteConn
+}
+
+func (d *blockedWriteDialer) Dial(network, address string) (net.Conn, error) {
+	conn, err := net.DialTimeout(network, address, time.Second)
+	if err != nil {
+		return nil, err
+	}
+	d.conn = &blockedWriteConn{Conn: conn, entered: make(chan struct{}), release: make(chan struct{})}
+	return d.conn, nil
 }

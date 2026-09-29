@@ -58,7 +58,7 @@ func TestSubscriptionStatsBacklogAndClose(t *testing.T) {
 			}
 		})
 	}
-	sub.(*subscription).beginStop()
+	testSubscription(t, sub).beginStop()
 	unblock()
 	require.NoError(t, sub.Unsubscribe(context.Background()))
 	close(readDone)
@@ -89,7 +89,8 @@ func TestSubscriptionStatsNativeClosed(t *testing.T) {
 		<-ctx.Done()
 	})
 	require.NoError(t, err)
-	observer := sub.(event.SubscriptionStatsProvider)
+	observer, ok := sub.(event.SubscriptionStatsProvider)
+	require.True(t, ok)
 	require.NoError(t, bus.conn.Publish("yola.stats.native", nil))
 	waitSignal(t, started, "handler did not start")
 	for range 2 {
@@ -97,7 +98,7 @@ func TestSubscriptionStatsNativeClosed(t *testing.T) {
 	}
 	require.NoError(t, bus.conn.Flush())
 	require.Eventually(t, func() bool { return observer.SubscriptionStats().QueueDropped == 1 }, time.Second, time.Millisecond)
-	require.NoError(t, sub.(*subscription).native.Unsubscribe())
+	require.NoError(t, testSubscription(t, sub).native.Unsubscribe())
 	stats := observer.SubscriptionStats()
 	require.False(t, stats.QueueDroppedCurrent)
 	require.Equal(t, uint64(1), stats.QueueDropped)
