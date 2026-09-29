@@ -18,7 +18,7 @@ func BenchmarkBroadcast(b *testing.B) {
 	for _, sessionCount := range []int{1_000, 10_000, 100_000} {
 		b.Run(fmt.Sprintf("sessions=%d", sessionCount), func(b *testing.B) {
 			sessions := newBenchmarkSessions(sessionCount)
-			broadcaster, running, stop := startBenchmarkFanout(sessions)
+			broadcaster, running := startBenchmarkFanout(b, sessions)
 			message := &protocolv1.Proto{Op: protocolv1.OpPush, Cmd: 1, Body: make([]byte, 256)}
 			if !broadcaster.fanout(running, message) {
 				b.Fatal("fanout stopped during warmup")
@@ -32,7 +32,6 @@ func BenchmarkBroadcast(b *testing.B) {
 				}
 			}
 			b.StopTimer()
-			stop()
 		})
 	}
 }
@@ -57,7 +56,7 @@ func BenchmarkBroadcastWebSocketEncoding(b *testing.B) {
 	for _, payloadSize := range []int{256, 4_000} {
 		b.Run(fmt.Sprintf("payload=%d", payloadSize), func(b *testing.B) {
 			sessions := newEncodingBenchmarkSessions(100_000)
-			broadcaster, running, stop := startBenchmarkFanout(sessions)
+			broadcaster, running := startBenchmarkFanout(b, sessions)
 			message := &protocolv1.Proto{Op: protocolv1.OpPush, Cmd: 1, Body: make([]byte, payloadSize)}
 			running.sessions = sessions.snapshot(nil)
 			clear(running.sessions)
@@ -71,12 +70,12 @@ func BenchmarkBroadcastWebSocketEncoding(b *testing.B) {
 				}
 			}
 			b.StopTimer()
-			stop()
 		})
 	}
 }
 
-func startBenchmarkFanout(sessions *sessionRegistry) (*broadcaster, *broadcastRun, func()) {
+func startBenchmarkFanout(b *testing.B, sessions *sessionRegistry) (*broadcaster, *broadcastRun) {
+	b.Helper()
 	workers := max(1, runtime.GOMAXPROCS(0))
 	broadcaster := newBroadcaster(sessions, workers, 1)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -86,14 +85,19 @@ func startBenchmarkFanout(sessions *sessionRegistry) (*broadcaster, *broadcastRu
 		batches:   make(chan fanoutBatch, workers),
 		batchDone: make(chan struct{}, workers),
 	}
+	b.Cleanup(func() {
+		running.cancel()
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := waitGroupContext(ctx, &running.wg); err != nil {
+			b.Errorf("stop benchmark fanout: %v", err)
+		}
+	})
 	running.wg.Add(workers)
 	for range workers {
 		go broadcaster.fanoutWorker(running)
 	}
-	return broadcaster, running, func() {
-		running.cancel()
-		running.wg.Wait()
-	}
+	return broadcaster, running
 }
 
 func newBenchmarkSessions(count int) *sessionRegistry {

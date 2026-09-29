@@ -28,7 +28,6 @@ func BenchmarkGateLeaseRenewalFailureWave(b *testing.B) {
 func benchmarkRenewalWave(b *testing.B, connectionCount int, delay, leaseTimeout time.Duration) {
 	b.Helper()
 	store := &renewalWaveLocator{delay: delay}
-	store.failing.Store(true)
 	server := &Server{locator: store, leaseTimeout: leaseTimeout, leaseTTL: time.Minute}
 	sessions := renewalWaveSessions(connectionCount, server.leaseTTL)
 
@@ -79,13 +78,12 @@ func runRenewalWave(server *Server, sessions []*session) {
 type renewalWaveLocator struct {
 	locate.Locator
 	delay     time.Duration
-	failing   atomic.Bool
 	calls     atomic.Int64
 	active    atomic.Int64
 	maxActive atomic.Int64
 }
 
-func (s *renewalWaveLocator) RenewGateLease(ctx context.Context, binding locate.GateBinding, ttl time.Duration) (locate.GateLease, error) {
+func (s *renewalWaveLocator) RenewGateLease(ctx context.Context, _ locate.GateBinding, _ time.Duration) (locate.GateLease, error) {
 	s.calls.Add(1)
 	active := s.active.Add(1)
 	defer s.active.Add(-1)
@@ -103,8 +101,5 @@ func (s *renewalWaveLocator) RenewGateLease(ctx context.Context, binding locate.
 			return locate.GateLease{}, ctx.Err()
 		}
 	}
-	if s.failing.Load() {
-		return locate.GateLease{}, errRenewalUnavailable
-	}
-	return locate.GateLease{Binding: binding, TTL: ttl}, nil
+	return locate.GateLease{}, errRenewalUnavailable
 }

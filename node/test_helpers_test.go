@@ -71,7 +71,7 @@ func (s *Server) forward(ctx context.Context, binding locate.GateBinding, comman
 }
 
 // memoryLocator 模拟 Node 绑定、epoch 和 Push 所需的 Gate 查询，不模拟 TTL 流逝。
-// Gate 续租、解绑不属于 Node 职责，意外调用会使测试立即失败。
+// Gate 写入不属于 Node 职责，意外调用会使测试立即失败。
 type memoryLocator struct {
 	mu        sync.Mutex
 	bindings  map[string]string
@@ -213,24 +213,8 @@ func (l *memoryLocator) UnregisterNodeEpoch(_ context.Context, serviceName, node
 	return nil
 }
 
-func (l *memoryLocator) BindGate(_ context.Context, candidate locate.GateBinding, ttl time.Duration) (locate.GateLease, *locate.GateBinding, error) {
-	if !locate.ValidGateBinding(candidate) {
-		return locate.GateLease{}, nil, locate.ErrInvalidGateBinding
-	}
-	if ttl < time.Millisecond {
-		return locate.GateLease{}, nil, locate.ErrInvalidGateTTL
-	}
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	key := candidate.ServiceName + "\x00" + candidate.UID
-	var previous *locate.GateBinding
-	if current, ok := l.gateways[key]; ok {
-		prev := current.Binding
-		previous = &prev
-	}
-	lease := locate.GateLease{Binding: candidate, TTL: ttl.Truncate(time.Millisecond)}
-	l.gateways[key] = lease
-	return lease, previous, nil
+func (*memoryLocator) BindGate(context.Context, locate.GateBinding, time.Duration) (locate.GateLease, *locate.GateBinding, error) {
+	panic("node test: unexpected BindGate call")
 }
 
 func (l *memoryLocator) LocateGate(_ context.Context, serviceName, uid string) (locate.GateLease, error) {

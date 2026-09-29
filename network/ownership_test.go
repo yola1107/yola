@@ -89,6 +89,7 @@ func startOwnershipConnection(t *testing.T, transportName string, customCodec bo
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
+	t.Cleanup(func() { _ = listener.Close() })
 	var server interface {
 		SetHandler(network.ConnectionHandler) error
 		BeforeStart(context.Context) error
@@ -108,15 +109,27 @@ func startOwnershipConnection(t *testing.T, transportName string, customCodec bo
 		}
 		server = websocket.NewServer(opts...)
 	}
+	var stopped chan error
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := server.Stop(ctx); err != nil {
+			t.Errorf("stop ownership test server: %v", err)
+		}
+		if stopped != nil {
+			select {
+			case err := <-stopped:
+				require.NoError(t, err)
+			case <-ctx.Done():
+				t.Error("ownership test server did not stop")
+			}
+		}
+	})
 	opened := make(chan network.Connection, 1)
 	require.NoError(t, server.SetHandler(ownershipHandler{opened: opened}))
 	require.NoError(t, server.BeforeStart(context.Background()))
-	stopped := make(chan error, 1)
+	stopped = make(chan error, 1)
 	go func() { stopped <- server.Start(context.Background()) }()
-	t.Cleanup(func() {
-		require.NoError(t, server.Stop(context.Background()))
-		require.NoError(t, <-stopped)
-	})
 	received := make(chan []byte, 32)
 	if transportName == "tcp" {
 		client, createErr := tcp.NewClient(context.Background(),

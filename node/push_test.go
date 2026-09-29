@@ -158,8 +158,7 @@ func TestAcceptedHandlerPushToUIDCompletesWhileStopDrains(t *testing.T) {
 	binding := testBinding("player-a", "conn-a")
 	binding.GateEndpoint = "grpc://" + startGatewayStub(t, stub)
 	store := newMemoryLocator()
-	_, _, err := store.BindGate(context.Background(), binding, time.Minute)
-	require.NoError(t, err)
+	store.setGate(binding)
 	server := newDispatchTestServer(t, Locator(store), PushTimeout(time.Second))
 	t.Cleanup(func() { require.NoError(t, server.Stop(context.Background())) })
 	checkAcceptedPushDuringStop(t, server, binding, stub.pushes, func(ctx context.Context) error {
@@ -199,8 +198,7 @@ func TestBusinessDrainCanPushToUID(t *testing.T) {
 	binding := testBinding("player-a", "conn-a")
 	binding.GateEndpoint = "grpc://" + startGatewayStub(t, stub)
 	store := newMemoryLocator()
-	_, _, err := store.BindGate(context.Background(), binding, time.Minute)
-	require.NoError(t, err)
+	store.setGate(binding)
 	var server *Server
 	server = newDispatchTestServer(t, Locator(store), Drain(func(ctx context.Context) error {
 		return server.PushToUID(ctx, binding.UID, 2, wrapperspb.String("drain"))
@@ -225,8 +223,7 @@ func TestStopWaitsForDeliveriesBeforeReleasingEpoch(t *testing.T) {
 			binding := testBinding("player-a", "conn-a")
 			binding.GateEndpoint = "grpc://" + startGatewayStub(t, stub)
 			store := newMemoryLocator()
-			_, _, err := store.BindGate(context.Background(), binding, time.Minute)
-			require.NoError(t, err)
+			store.setGate(binding)
 			require.NoError(t, store.RegisterNodeEpoch(context.Background(), "game", "node-a", "epoch-a", DefaultNodeEpochTTL))
 			server := newDispatchTestServer(t, Locator(store))
 			publishTestIdentity(server, nodeIdentity{serviceName: "game", nodeID: "node-a", epoch: "epoch-a"})
@@ -271,8 +268,7 @@ func TestDeliveryDrainTimeoutKeepsEpochUntilTTL(t *testing.T) {
 	binding := testBinding("player-a", "conn-a")
 	binding.GateEndpoint = "grpc://" + startGatewayStub(t, stub)
 	store := newMemoryLocator()
-	_, _, err := store.BindGate(context.Background(), binding, time.Minute)
-	require.NoError(t, err)
+	store.setGate(binding)
 	require.NoError(t, store.RegisterNodeEpoch(context.Background(), "game", "node-a", "epoch-a", DefaultNodeEpochTTL))
 	server := newDispatchTestServer(t, Locator(store))
 	publishTestIdentity(server, nodeIdentity{serviceName: "game", nodeID: "node-a", epoch: "epoch-a"})
@@ -298,8 +294,7 @@ func TestPushToUIDLocatesGateAndPushes(t *testing.T) {
 	binding := testBinding("player-a", "conn-a")
 	binding.GateEndpoint = "grpc://" + gateAddress
 	locator := newMemoryLocator()
-	_, _, err := locator.BindGate(context.Background(), binding, time.Minute)
-	require.NoError(t, err)
+	locator.setGate(binding)
 
 	server := newTestServer(t, Locator(locator), PushTimeout(time.Second))
 	publishTestIdentity(server, nodeIdentity{serviceName: "game", nodeID: "node-a"})
@@ -332,8 +327,7 @@ func TestClientMiddlewareObservesPushWithoutChangingResult(t *testing.T) {
 			binding := testBinding("player-a", "conn-a")
 			binding.GateEndpoint = "grpc://" + startGatewayStub(t, stub)
 			store := newMemoryLocator()
-			_, _, err := store.BindGate(context.Background(), binding, time.Minute)
-			require.NoError(t, err)
+			store.setGate(binding)
 			var middlewareCalls []string
 			var observedDeadline time.Time
 			var observedErr error
@@ -474,4 +468,11 @@ func TestPushRejectsInvalidMessage(t *testing.T) {
 			require.Equal(t, codes.InvalidArgument, status.Code(err))
 		})
 	}
+}
+
+// setGate 配置 Push 场景的既有 lease，不模拟 Gateway 的绑定写入。
+func (l *memoryLocator) setGate(binding locate.GateBinding) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.gateways[binding.ServiceName+"\x00"+binding.UID] = locate.GateLease{Binding: binding, TTL: time.Minute}
 }

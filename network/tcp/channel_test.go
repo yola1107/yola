@@ -113,7 +113,12 @@ func TestReplyWaitsForQueueAndCloseCancelsIt(t *testing.T) {
 		t.Fatal(err)
 	}
 	replied := make(chan error, 1)
+	t.Cleanup(func() {
+		ch.close()
+		_ = waitTCPValue(t, replied)
+	})
 	go func() {
+		defer close(replied)
 		replied <- ch.reply(context.Background(), &v1.Proto{Op: v1.OpResponse})
 	}()
 	select {
@@ -138,7 +143,12 @@ func TestReplyWaitsForFinalClose(t *testing.T) {
 		t.Fatal(err)
 	}
 	replied := make(chan error, 1)
+	t.Cleanup(func() {
+		ch.close()
+		_ = waitTCPValue(t, replied)
+	})
 	go func() {
+		defer close(replied)
 		replied <- ch.reply(context.Background(), &v1.Proto{Op: v1.OpResponse})
 	}()
 	select {
@@ -147,26 +157,31 @@ func TestReplyWaitsForFinalClose(t *testing.T) {
 	case <-time.After(20 * time.Millisecond):
 	}
 	closed := make(chan error, 1)
+	t.Cleanup(func() {
+		ch.close()
+		_ = waitTCPValue(t, closed)
+	})
 	go func() {
+		defer close(closed)
 		closed <- ch.closeWithProto(context.Background(), &v1.Proto{Op: v1.OpKick})
 	}()
-	<-ch.closing
+	waitTCPValue(t, ch.closing)
 	select {
 	case err := <-replied:
 		t.Fatalf("reply() returned before final frame completed: %v", err)
 	case <-time.After(20 * time.Millisecond):
 	}
-	<-ch.outbound
-	final := <-ch.outbound
+	waitTCPValue(t, ch.outbound)
+	final := waitTCPValue(t, ch.outbound)
 	if final.done == nil {
 		t.Fatal("close did not enqueue a final frame")
 	}
 	final.done <- nil
 	ch.close()
-	if err := <-closed; err != nil {
+	if err := waitTCPValue(t, closed); err != nil {
 		t.Fatalf("closeWithProto() error = %v", err)
 	}
-	if err := <-replied; !errors.Is(err, network.ErrConnectionClosed) {
+	if err := waitTCPValue(t, replied); !errors.Is(err, network.ErrConnectionClosed) {
 		t.Fatalf("reply() error = %v, want %v", err, network.ErrConnectionClosed)
 	}
 }
@@ -207,7 +222,12 @@ func TestWaitFinalPrefersCompletedWrite(t *testing.T) {
 func TestCloseWithProtoReturnsWhenStoppedBeforeWriterStarts(t *testing.T) {
 	ch := newChannel(1, defaultCodec())
 	closed := make(chan error, 1)
+	t.Cleanup(func() {
+		ch.close()
+		_ = waitTCPValue(t, closed)
+	})
 	go func() {
+		defer close(closed)
 		closed <- ch.closeWithProto(context.Background(), &v1.Proto{Op: v1.OpKick})
 	}()
 	select {

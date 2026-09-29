@@ -95,7 +95,6 @@ func BenchmarkTCPServer(b *testing.B) {
 		b.Run(fmt.Sprintf("connections=%d", count), func(b *testing.B) {
 			b.StopTimer()
 			env := newTCPBenchmarkServer(b, count)
-			b.Cleanup(func() { env.close(b) })
 			for _, payloadSize := range []int{32, 4000} {
 				request := benchmarkProto(v1.OpRequest, payloadSize)
 				requestFrame := marshalBenchmarkFrame(b, request)
@@ -151,11 +150,14 @@ func newTCPBenchmarkServer(b *testing.B, count int) *tcpBenchmarkServer {
 		b.Fatal(err)
 	}
 	env := &tcpBenchmarkServer{server: s, done: make(chan error, 1)}
-	go func() { env.done <- s.Start(context.Background()) }()
+	b.Cleanup(func() { env.close(b) })
+	go func() {
+		defer close(env.done)
+		env.done <- s.Start(context.Background())
+	}()
 	for range count {
 		conn, dialErr := net.DialTimeout("tcp", endpoint.Host, 5*time.Second)
 		if dialErr != nil {
-			env.close(b)
 			b.Fatal(dialErr)
 		}
 		env.clients = append(env.clients, &tcpBenchmarkClient{conn: conn, reader: bufio.NewReaderSize(conn, defaultIOBufferSize)})

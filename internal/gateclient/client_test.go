@@ -124,39 +124,28 @@ func (s *gatewayStub) Kick(_ context.Context, in *v1.KickRequest) (*emptypb.Empt
 }
 
 func TestPushAndKickUseCurrentRoute(t *testing.T) {
-	lis, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-	server := grpc.NewServer(grpc.Listener(lis), grpc.Timeout(0))
 	stub := &gatewayStub{
 		pushes:        make(chan *v1.PushRequest, 1),
 		kicks:         make(chan *v1.KickRequest, 1),
 		pushDeadlines: make(chan bool, 1),
 	}
-	v1.RegisterGatewayServer(server, stub)
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() { done <- server.Start(ctx) }()
-
+	address := startTestGateway(t, stub, grpc.Timeout(0))
 	client := New(nil)
-	binding := testBinding("grpc://" + lis.Addr().String())
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+	binding := testBinding("grpc://" + address)
 	msg := wrapperspb.String("push")
 	body, err := proto.Marshal(msg)
 	require.NoError(t, err)
 	require.NoError(t, client.Push(context.Background(), binding, 2, msg))
-	push := <-stub.pushes
+	push := receiveGateClientValue(t, stub.pushes)
 	require.Equal(t, body, push.Body)
 	require.Equal(t, binding.BindingToken, push.Route.BindingToken)
-	require.False(t, <-stub.pushDeadlines)
+	require.False(t, receiveGateClientValue(t, stub.pushDeadlines))
 
 	require.NoError(t, client.Kick(context.Background(), binding, 7))
-	kick := <-stub.kicks
+	kick := receiveGateClientValue(t, stub.kicks)
 	require.Equal(t, int32(7), kick.Code)
 	require.Equal(t, binding.ConnID, kick.Route.ConnId)
-
-	require.NoError(t, client.Close())
-	cancel()
-	require.NoError(t, server.Stop(context.Background()))
-	require.NoError(t, <-done)
 }
 
 func TestPushUsesVerifiedTLS(t *testing.T) {
@@ -166,19 +155,8 @@ func TestPushUsesVerifiedTLS(t *testing.T) {
 	roots.AddCert(certificateSource.Certificate())
 	certificateSource.Close()
 
-	lis, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-	server := grpc.NewServer(grpc.Listener(lis), grpc.TLSConfig(serverTLS))
 	stub := &gatewayStub{pushes: make(chan *v1.PushRequest, 1)}
-	v1.RegisterGatewayServer(server, stub)
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() { done <- server.Start(ctx) }()
-	t.Cleanup(func() {
-		cancel()
-		require.NoError(t, server.Stop(context.Background()))
-		require.NoError(t, <-done)
-	})
+	address := startTestGateway(t, stub, grpc.TLSConfig(serverTLS))
 
 	tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: roots}
 	client := New(tlsConfig)
@@ -186,11 +164,11 @@ func TestPushUsesVerifiedTLS(t *testing.T) {
 	tlsConfig.ServerName = "invalid-after-client-creation"
 	require.NoError(t, client.Push(
 		context.Background(),
-		testBinding("grpcs://"+lis.Addr().String()),
+		testBinding("grpcs://"+address),
 		2,
 		wrapperspb.String("push"),
 	))
-	require.NotNil(t, <-stub.pushes)
+	require.NotNil(t, receiveGateClientValue(t, stub.pushes))
 }
 
 func TestClientReusesConcurrentConnection(t *testing.T) {
@@ -316,6 +294,29 @@ func TestClientRejectsEndpointSecurityMismatchBeforeDial(t *testing.T) {
 			require.Empty(t, client.byHost)
 		})
 	}
+}
+
+func startTestGateway(t *testing.T, stub *gatewayStub, opts ...grpc.ServerOption) string {
+	t.Helper()
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = lis.Close() })
+	opts = append([]grpc.ServerOption{grpc.Listener(lis)}, opts...)
+	server := grpc.NewServer(opts...)
+	v1.RegisterGatewayServer(server, stub)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	t.Cleanup(func() {
+		cancel()
+		stopCtx, stopCancel := context.WithTimeout(context.Background(), time.Second)
+		defer stopCancel()
+		if err := server.Stop(stopCtx); err != nil {
+			t.Errorf("stop test Gateway: %v", err)
+		}
+		require.NoError(t, receiveGateClientValue(t, done))
+	})
+	go func() { done <- server.Start(ctx) }()
+	return lis.Addr().String()
 }
 
 func testBinding(endpoint string) locate.GateBinding {
