@@ -23,7 +23,12 @@ func TestAppPreparedNodeCannotOverwriteReplacement(t *testing.T) {
 	if os.Getenv("YOLA_REDIS_INTEGRATION") == "" || os.Getenv("YOLA_ETCD_INTEGRATION") == "" {
 		t.Skip("set YOLA_REDIS_INTEGRATION and YOLA_ETCD_INTEGRATION to disposable instances")
 	}
-	redisClient := redis.NewClient(&redis.Options{Addr: os.Getenv("YOLA_REDIS_INTEGRATION"), DB: 9})
+	redisClient := redis.NewClient(&redis.Options{
+		Addr:                  os.Getenv("YOLA_REDIS_INTEGRATION"),
+		Password:              os.Getenv("YOLA_REDIS_PASSWORD"),
+		DB:                    9,
+		ContextTimeoutEnabled: true,
+	})
 	t.Cleanup(func() { require.NoError(t, redisClient.Close()) })
 	store := locateredis.New(redisClient)
 	service := "yola-i47-" + uuid.NewString()
