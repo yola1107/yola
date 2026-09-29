@@ -2,10 +2,18 @@ package redis
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"yola/locate"
+)
+
+const (
+	gateKeyPrefix     = "locate:gate:"
+	maxTTLMillis      = int64((1<<63 - 1) / time.Millisecond)
+	leaseResultFields = 3
 )
 
 func (l *locator) BindGate(ctx context.Context, candidate locate.GateBinding, ttl time.Duration) (locate.GateLease, *locate.GateBinding, error) {
@@ -87,4 +95,84 @@ func (l *locator) UnbindGate(ctx context.Context, expected locate.GateBinding) e
 		return locate.ErrInvalidGateLease
 	}
 	return errInvalidScriptResult
+}
+
+func gateKey(serviceName, uid string) string {
+	key := base64.RawURLEncoding.EncodeToString([]byte(serviceName + "\x00" + uid))
+	return gateKeyPrefix + "{" + key + "}"
+}
+
+func leaseMilliseconds(ttl time.Duration) (int64, error) {
+	millis := ttl.Milliseconds()
+	if millis <= 0 {
+		return 0, locate.ErrInvalidGateTTL
+	}
+	return millis, nil
+}
+
+func decodeBindGateResult(values []any, serviceName, uid string) (locate.GateLease, *locate.GateBinding, error) {
+	if len(values) != leaseResultFields && len(values) != leaseResultFields+1 {
+		return locate.GateLease{}, nil, errInvalidScriptResult
+	}
+	lease, err := decodeLease(values[:leaseResultFields], serviceName, uid)
+	if err != nil {
+		return locate.GateLease{}, nil, err
+	}
+	if len(values) == leaseResultFields {
+		return lease, nil, nil
+	}
+	previousRaw, ok := values[leaseResultFields].(string)
+	if !ok {
+		return locate.GateLease{}, nil, errInvalidScriptResult
+	}
+	previous, err := decodeBinding(previousRaw, serviceName, uid)
+	if err != nil {
+		return locate.GateLease{}, nil, err
+	}
+	return lease, &previous, nil
+}
+
+func decodeLeaseResult(values []any, serviceName, uid string) (locate.GateLease, error) {
+	switch scriptStatus(values) {
+	case statusOK:
+		return decodeLease(values, serviceName, uid)
+	case statusMissing:
+		return locate.GateLease{}, locate.ErrGateNotFound
+	case statusConflict:
+		return locate.GateLease{}, locate.ErrGateConflict
+	case statusBadLease:
+		return locate.GateLease{}, locate.ErrInvalidGateLease
+	default:
+		return locate.GateLease{}, errInvalidScriptResult
+	}
+}
+
+func decodeLease(values []any, serviceName, uid string) (locate.GateLease, error) {
+	if len(values) != leaseResultFields {
+		return locate.GateLease{}, errInvalidScriptResult
+	}
+	raw, ok := values[1].(string)
+	if !ok {
+		return locate.GateLease{}, errInvalidScriptResult
+	}
+	ttlMillis, ok := values[2].(int64)
+	if !ok || ttlMillis <= 0 || ttlMillis > maxTTLMillis {
+		return locate.GateLease{}, locate.ErrInvalidGateLease
+	}
+	binding, err := decodeBinding(raw, serviceName, uid)
+	if err != nil {
+		return locate.GateLease{}, err
+	}
+	return locate.GateLease{Binding: binding, TTL: time.Duration(ttlMillis) * time.Millisecond}, nil
+}
+
+func decodeBinding(raw, serviceName, uid string) (locate.GateBinding, error) {
+	var binding locate.GateBinding
+	if err := json.Unmarshal([]byte(raw), &binding); err != nil {
+		return locate.GateBinding{}, fmt.Errorf("%w: decode stored value", locate.ErrInvalidGateBinding)
+	}
+	if binding.ServiceName != serviceName || binding.UID != uid || !locate.ValidGateBinding(binding) {
+		return locate.GateBinding{}, locate.ErrInvalidGateBinding
+	}
+	return binding, nil
 }

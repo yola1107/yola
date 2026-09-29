@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"yola/event"
-	"yola/internal/tlsconfig"
 
 	natsgo "github.com/nats-io/nats.go"
 )
@@ -73,28 +72,6 @@ func New(opts ...Option) (*Bus, error) {
 		go bus.closeOnContext()
 	}
 	return bus, nil
-}
-
-func validateOptions(o options) error {
-	if o.timeout <= 0 {
-		return errors.New("nats: timeout must be positive")
-	}
-	if o.queueCapacity <= 0 {
-		return errors.New("nats: queue capacity must be positive")
-	}
-	if o.maxPayloadBytes <= 0 {
-		return errors.New("nats: maximum payload size must be positive")
-	}
-	if o.tlsSet && o.tls == nil {
-		return errors.New("nats: TLS configuration is required")
-	}
-	if o.url == "" {
-		return errors.New("nats: URL is required")
-	}
-	if err := tlsconfig.ValidateClient(o.tls); err != nil {
-		return fmt.Errorf("nats: %w", err)
-	}
-	return nil
 }
 
 func connect(ctx context.Context, o options) (*natsgo.Conn, error) {
@@ -239,13 +216,11 @@ func (b *Bus) Subscribe(ctx context.Context, topic string, handler event.Handler
 	if err != nil {
 		return nil, b.failRegistration(registered, fmt.Errorf("nats: subscribe %q: %w", topic, err))
 	}
-	if err := flush(activationCtx, b.conn, b.timeout); err != nil {
-		if b.ctx.Err() != nil {
-			err = event.ErrClosed
-		}
-		return nil, b.failRegistration(registered, fmt.Errorf("nats: subscribe %q: %w", topic, err))
+	err = flush(activationCtx, b.conn, b.timeout)
+	if err == nil {
+		err = activationCtx.Err()
 	}
-	if err := activationCtx.Err(); err != nil {
+	if err != nil {
 		if b.ctx.Err() != nil {
 			err = event.ErrClosed
 		}

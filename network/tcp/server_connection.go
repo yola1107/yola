@@ -246,8 +246,10 @@ type tcpConnection struct {
 	ch         *channel
 }
 
-func (c tcpConnection) ConnID() string              { return c.ch.connID }
-func (c tcpConnection) RemoteAddr() string          { return c.remoteAddr }
+func (c tcpConnection) ConnID() string { return c.ch.connID }
+
+func (c tcpConnection) RemoteAddr() string { return c.remoteAddr }
+
 func (c tcpConnection) SendProto(p *v1.Proto) error { return c.ch.push(p) }
 
 // SendStats 返回连接发送队列的只读快照。

@@ -80,7 +80,7 @@ Connection 可实现 `SendStatsProvider`：depth/capacity 来自原队列，Queu
 
 #### Node binding 修改权
 
-Session 从 Node 本代 lease 取得 epoch。单机/Cluster 共用 Lua，先原子核验 epoch，再执行绑定操作：Bind 显式覆盖；RenewNode 仅在当前 NodeID 匹配时将 TTL 刷新为6h，不创建、不覆盖；Unbind 仅删除相同 NodeID，binding 缺失或指向其他 Node 时幂等无操作。epoch 缺失/冲突会使 Node 关闭准入并取消本代工作；普通依赖错误或 caller 取消不自动撤销整个 Node。原 ID 重启取得新 epoch 后可继承并续租原 NodeID binding，旧 epoch 的迟到写被拒绝。[key编码](../locate/redis/decode.go)、[Lua](../locate/redis/script.go)
+Session 从 Node 本代 lease 取得 epoch。单机/Cluster 共用 Lua，先原子核验 epoch，再执行绑定操作：Bind 显式覆盖；RenewNode 仅在当前 NodeID 匹配时将 TTL 刷新为6h，不创建、不覆盖；Unbind 仅删除相同 NodeID，binding 缺失或指向其他 Node 时幂等无操作。epoch 缺失/冲突会使 Node 关闭准入并取消本代工作；普通依赖错误或 caller 取消不自动撤销整个 Node。原 ID 重启取得新 epoch 后可继承并续租原 NodeID binding，旧 epoch 的迟到写被拒绝。[Gate 绑定](../locate/redis/gate.go)、[Node 绑定与 epoch](../locate/redis/node.go)、[Lua 与返回值约定](../locate/redis/script.go)
 
 进程修改权不等于玩家业务所有权：仍有效的 A 可在玩家改绑 B 后显式 Bind 接管 B，保活须改用 RenewNode。绑定缺失/改绑分别返回 ErrNodeNotFound/ErrNodeConflict，Session 将其映射为 Aborted，仅拒绝本次续租，不撤销整个 Node。业务 owner 在绑定到期前用有界 context 续租，并在 Drain 返回前停止该生产者；框架不自动定时续租，不因续租失败退回 Bind。
 
@@ -224,7 +224,7 @@ Gateway不缓存玩家binding或未绑定结果；close、takeover、heartbeat�
 
 业务mailbox未开始任务可取消，已开始任务必须等完成或业务自行回滚；多次同步Push可超过入座等待预算。`TryPost`只作有界准入，`Post`的context只限制等容量，已接纳的普通任务不随提交context取消。物理断连/Forward超时会取消在途Node context，但handler未返回前Node仍跟踪它，Stop先等请求再Drain；业务自启后台任务由Drain回收。
 
-Redis client 创建方须启用 `ContextTimeoutEnabled` 并保留有限的读写 timeout；根示例、测试应用和压测装配已启用。Locator 不修改调用方注入的共享 client。网络 timeout 发生且 caller 取消或 deadline 已生效时，错误链同时保留原始网络错误和相应 context 错误；独立网络 timeout、存储业务错误与成功结果保持原样。[实现](../locate/redis/locator.go)、[回归](../locate/redis/timeout_integration_test.go)
+Redis client 创建方须启用 `ContextTimeoutEnabled` 并保留有限的读写 timeout；根示例、测试应用和压测装配已启用。Locator 不修改调用方注入的共享 client。网络 timeout 发生且 caller 取消或 deadline 已生效时，错误链同时保留原始网络错误和相应 context 错误；独立网络 timeout、存储业务错误与成功结果保持原样。[实现](../locate/redis/locator.go)、[回归](../locate/redis/locator_test.go)
 
 纯 cancel 不保证立即中断已经开始的 Redis I/O，超时也不证明写入未执行；调用方须用有限预算限制等待，并以原子条件写/业务幂等处理迟到结果，不能依靠取消回滚。完整游戏、相同预算负载和长期 SLO 仍按 [当前问题](./issues.md) 单独验收。
 

@@ -17,6 +17,15 @@ import (
 	"google.golang.org/protobuf/types/known/emptypb"
 )
 
+var (
+	errInvalidPush       = errors.New("invalid push")
+	errInvalidKick       = errors.New("invalid kick")
+	errConnectionMissing = errors.New("connection not found")
+	errBindingChanged    = errors.New("gate binding changed")
+	errConnectionBusy    = errors.New("connection queue is full")
+	errConnectionClosed  = errors.New("connection is unavailable")
+)
+
 type pushService struct {
 	clusterv1.UnimplementedGatewayServer
 	server *Server

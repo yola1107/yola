@@ -2,6 +2,7 @@ package queue
 
 import (
 	"errors"
+	"sync"
 	"testing"
 	"time"
 )
@@ -12,11 +13,9 @@ func TestStopLetsRunningCallbackFinishAndDiscardsPending(t *testing.T) {
 	release := make(chan struct{})
 	finished := make(chan struct{})
 	pendingRan := make(chan struct{}, 1)
-	workerDone := make(chan struct{})
-	go func() {
-		queue.Run()
-		close(workerDone)
-	}()
+	workerDone := startTestQueue(t, queue)
+	unblock := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(unblock)
 	if err := queue.Submit(func() {
 		close(running)
 		<-release
@@ -29,7 +28,7 @@ func TestStopLetsRunningCallbackFinishAndDiscardsPending(t *testing.T) {
 		t.Fatal(err)
 	}
 	queue.Stop()
-	close(release)
+	unblock()
 	waitSignal(t, finished)
 	waitSignal(t, workerDone)
 	select {
@@ -48,7 +47,9 @@ func TestBeginTerminationRunsAfterCurrentCallbackAndDiscardsPending(t *testing.T
 	release := make(chan struct{})
 	pendingRan := make(chan struct{}, 1)
 	terminalRan := make(chan struct{})
-	go queue.Run()
+	startTestQueue(t, queue)
+	unblock := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(unblock)
 	requireSubmit(t, queue, func() {
 		close(running)
 		<-release
@@ -62,7 +63,7 @@ func TestBeginTerminationRunsAfterCurrentCallbackAndDiscardsPending(t *testing.T
 		t.Fatal("terminal callback overlapped the running callback")
 	default:
 	}
-	close(release)
+	unblock()
 	waitSignal(t, terminalRan)
 	select {
 	case <-pendingRan:
@@ -84,7 +85,7 @@ func TestSubmitBatchIsAtomic(t *testing.T) {
 		t.Fatalf("nil SubmitBatch() error = %v, want %v", err, ErrNilCallback)
 	}
 
-	go queue.Run()
+	startTestQueue(t, queue)
 	if first, second := waitValue(t, runs), waitValue(t, runs); first != "first" || second != "second" {
 		t.Fatalf("callback order = %q, %q", first, second)
 	}
@@ -95,7 +96,7 @@ func TestTerminalCallbacksIsolatePanicsAndPreserveOrder(t *testing.T) {
 	panicked := make(chan any, 1)
 	runs := make(chan string, 2)
 	queue := New(64, func(value any, _ []byte) { panicked <- value })
-	go queue.Run()
+	startTestQueue(t, queue)
 	finish := queue.BeginTermination(
 		func() {
 			runs <- "first"
@@ -118,7 +119,7 @@ func TestBeginTerminationCopiesCallbackSlice(t *testing.T) {
 	queue := New(64, nil)
 	finish := queue.BeginTermination(terminals...)
 	terminals[0] = func() { ran <- "changed" }
-	go queue.Run()
+	startTestQueue(t, queue)
 	finish()
 	if got := waitValue(t, ran); got != "original" {
 		t.Fatalf("terminal callback = %q, want original", got)
@@ -128,7 +129,7 @@ func TestBeginTerminationCopiesCallbackSlice(t *testing.T) {
 func TestCallbackCanBeginTermination(t *testing.T) {
 	queue := New(64, nil)
 	terminalRan := make(chan struct{})
-	go queue.Run()
+	startTestQueue(t, queue)
 	requireSubmit(t, queue, func() {
 		finish := queue.BeginTermination(func() { close(terminalRan) })
 		finish()
@@ -139,9 +140,10 @@ func TestCallbackCanBeginTermination(t *testing.T) {
 func TestBeginTerminationWaitsForRelease(t *testing.T) {
 	queue := New(64, nil)
 	terminalRan := make(chan struct{})
-	go queue.Run()
+	startTestQueue(t, queue)
 
-	finish := queue.BeginTermination(func() { close(terminalRan) })
+	finish := sync.OnceFunc(queue.BeginTermination(func() { close(terminalRan) }))
+	t.Cleanup(finish)
 	select {
 	case <-terminalRan:
 		t.Fatal("terminal callback ran before release")
@@ -157,7 +159,7 @@ func TestRunRecoversCallbackPanic(t *testing.T) {
 	queue := New(64, func(value any, _ []byte) {
 		panicValue <- value
 	})
-	go queue.Run()
+	startTestQueue(t, queue)
 
 	if err := queue.Submit(func() { panic("boom") }); err != nil {
 		t.Fatal(err)
@@ -187,11 +189,7 @@ func TestSubmitRejectsNilCallback(t *testing.T) {
 		t.Fatalf("Submit(valid callback) error = %v, want nil", err)
 	}
 
-	workerDone := make(chan struct{})
-	go func() {
-		queue.Run()
-		close(workerDone)
-	}()
+	workerDone := startTestQueue(t, queue)
 	waitSignal(t, callbackDone)
 	select {
 	case value := <-panicked:
@@ -207,11 +205,7 @@ func TestSubmitRejectsNilCallback(t *testing.T) {
 
 func TestStopWakesIdleRun(t *testing.T) {
 	queue := New(64, nil)
-	workerDone := make(chan struct{})
-	go func() {
-		queue.Run()
-		close(workerDone)
-	}()
+	workerDone := startTestQueue(t, queue)
 	queue.Stop()
 	waitSignal(t, workerDone)
 }
@@ -223,6 +217,20 @@ func TestNewRejectsInvalidCapacity(t *testing.T) {
 		}
 	}()
 	New(0, nil)
+}
+
+func startTestQueue(t *testing.T, queue *Queue) <-chan struct{} {
+	t.Helper()
+	done := make(chan struct{})
+	t.Cleanup(func() {
+		queue.Stop()
+		waitSignal(t, done)
+	})
+	go func() {
+		defer close(done)
+		queue.Run()
+	}()
+	return done
 }
 
 func waitSignal(t *testing.T, signal <-chan struct{}) {

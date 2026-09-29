@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 
 	"yola/api/protocol/v1"
@@ -13,6 +15,7 @@ import (
 	"yola/network/internal/inbound"
 
 	"github.com/go-kratos/kratos/v3/transport"
+	"github.com/gorilla/websocket"
 	"google.golang.org/grpc/status"
 )
 
@@ -143,4 +146,71 @@ func (s *Server) connectionContext(ctx context.Context, ch *Channel) context.Con
 	}
 	tr := network.NewTransport(network.KindWebSocket, endpoint, remoteIP, ch.ConnID())
 	return transport.NewServerContext(ctx, tr)
+}
+
+func (s *Server) reserveConnection(remoteIP string) bool {
+	// The lifecycle lock orders the last Add before stopConnections begins Wait.
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+	if s.stopped || s.connCount >= s.config.maxConnLimit ||
+		s.connectionsPerIP[remoteIP] >= s.config.maxConnPerIP {
+		return false
+	}
+	s.connCount++
+	s.connectionsPerIP[remoteIP]++
+	s.connWG.Add(1)
+	return true
+}
+
+func (s *Server) commitConnection(ctx context.Context, conn *websocket.Conn) *Channel {
+	// Stop either snapshots this channel or wins first and rejects the commit.
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+	if s.stopped {
+		return nil
+	}
+	ch := newChannel(ctx, conn, s.config.codec, *s.config.channel)
+	s.channels[ch.ConnID()] = ch
+	return ch
+}
+
+func (s *Server) releaseConnection(remoteIP string, ch *Channel) {
+	s.lifecycleMu.Lock()
+	if ch != nil {
+		delete(s.channels, ch.ConnID())
+	}
+	if s.connectionsPerIP[remoteIP] == 1 {
+		delete(s.connectionsPerIP, remoteIP)
+	} else {
+		s.connectionsPerIP[remoteIP]--
+	}
+	s.connCount--
+	s.lifecycleMu.Unlock()
+	s.connWG.Done()
+}
+
+func (s *Server) checkOrigin(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return true
+	}
+	if len(s.config.allowedOrigins) > 0 {
+		_, ok := s.config.allowedOrigins[origin]
+		return ok
+	}
+	u, err := url.Parse(origin)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || (u.Path != "" && u.Path != "/") {
+		return false
+	}
+	return strings.EqualFold(u.Host, r.Host)
+}
+
+func (s *Server) rejectConnection(ctx context.Context, w http.ResponseWriter, remoteIP string) {
+	w.WriteHeader(http.StatusServiceUnavailable)
+	slog.WarnContext(ctx, "[websocket] connection rejected",
+		"remote_ip", remoteIP,
+		"connection_limit", s.config.maxConnLimit,
+		"per_ip_limit", s.config.maxConnPerIP,
+		"reason", "connection limit reached",
+	)
 }

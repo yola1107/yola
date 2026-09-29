@@ -2,24 +2,17 @@ package websocket
 
 import (
 	"context"
-	"crypto/tls"
 	"errors"
-	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
-	"strings"
 	"sync"
-	"time"
 
 	"yola/internal/contextwait"
-	"yola/internal/tlsconfig"
 	"yola/network"
 	"yola/network/internal/host"
 
-	"github.com/go-kratos/kratos/v3/encoding"
-	"github.com/go-kratos/kratos/v3/middleware"
 	"github.com/go-kratos/kratos/v3/transport"
 	"github.com/gorilla/websocket"
 )
@@ -49,24 +42,6 @@ type Server struct {
 	connDone         chan struct{}
 
 	handler network.ConnectionHandler
-}
-
-type serverConfig struct {
-	network          string
-	address          string
-	advertiseHost    string
-	path             string
-	tls              *tls.Config
-	codec            encoding.Codec
-	middlewares      []middleware.Middleware
-	timeout          time.Duration
-	allowedOrigins   map[string]struct{}
-	handshakeTimeout time.Duration
-	maxHeaderBytes   int
-	channel          *ChannelConfig
-	maxConnLimit     int32
-	maxConnPerIP     int32
-	requestQueueSize int
 }
 
 // NewServer creates a WebSocket transport server.
@@ -148,62 +123,6 @@ func (s *Server) prepare() error {
 		return err
 	}
 	return s.listenAndEndpoint()
-}
-
-func (s *Server) validateConfig() error {
-	if !validPath(s.config.path) {
-		return errors.New("websocket: invalid path")
-	}
-	if s.config.codec == nil {
-		return errors.New("websocket: codec is required")
-	}
-	if err := s.config.channel.validate(); err != nil {
-		return err
-	}
-	if s.config.maxConnLimit <= 0 {
-		return errors.New("websocket: connection limit must be positive")
-	}
-	if s.config.maxConnPerIP <= 0 {
-		return errors.New("websocket: per-IP connection limit must be positive")
-	}
-	if s.config.handshakeTimeout <= 0 {
-		return errors.New("websocket: handshake timeout must be positive")
-	}
-	if s.config.maxHeaderBytes <= 0 {
-		return errors.New("websocket: max header bytes must be positive")
-	}
-	if s.config.timeout < 0 {
-		return errors.New("websocket: handler timeout cannot be negative")
-	}
-	if s.config.requestQueueSize <= 0 {
-		return errors.New("websocket: request queue size must be positive")
-	}
-	if err := tlsconfig.ValidateServer(s.config.tls); err != nil {
-		return fmt.Errorf("websocket: %w", err)
-	}
-	if s.endpoint == nil {
-		return nil
-	}
-	scheme := s.config.endpointScheme()
-	if s.endpoint.Scheme != scheme || s.endpoint.Host == "" {
-		return fmt.Errorf("websocket: endpoint must use %s:// with a host", scheme)
-	}
-	if s.endpoint.Path != s.config.path {
-		return errors.New("websocket: endpoint path must match server path")
-	}
-	return nil
-}
-
-func (c serverConfig) endpointScheme() string {
-	if c.tls != nil {
-		return "wss"
-	}
-	return "ws"
-}
-
-func validPath(path string) bool {
-	parsed, err := url.ParseRequestURI(path)
-	return err == nil && parsed.Path == path
 }
 
 // Endpoint returns the server endpoint.
@@ -335,71 +254,4 @@ func (s *Server) closeChannels() {
 	for _, ch := range channels {
 		_ = ch.closeWithReason("server shutdown")
 	}
-}
-
-func (s *Server) reserveConnection(remoteIP string) bool {
-	// The lifecycle lock orders the last Add before stopConnections begins Wait.
-	s.lifecycleMu.Lock()
-	defer s.lifecycleMu.Unlock()
-	if s.stopped || s.connCount >= s.config.maxConnLimit ||
-		s.connectionsPerIP[remoteIP] >= s.config.maxConnPerIP {
-		return false
-	}
-	s.connCount++
-	s.connectionsPerIP[remoteIP]++
-	s.connWG.Add(1)
-	return true
-}
-
-func (s *Server) commitConnection(ctx context.Context, conn *websocket.Conn) *Channel {
-	// Stop either snapshots this channel or wins first and rejects the commit.
-	s.lifecycleMu.Lock()
-	defer s.lifecycleMu.Unlock()
-	if s.stopped {
-		return nil
-	}
-	ch := newChannel(ctx, conn, s.config.codec, *s.config.channel)
-	s.channels[ch.ConnID()] = ch
-	return ch
-}
-
-func (s *Server) releaseConnection(remoteIP string, ch *Channel) {
-	s.lifecycleMu.Lock()
-	if ch != nil {
-		delete(s.channels, ch.ConnID())
-	}
-	if s.connectionsPerIP[remoteIP] == 1 {
-		delete(s.connectionsPerIP, remoteIP)
-	} else {
-		s.connectionsPerIP[remoteIP]--
-	}
-	s.connCount--
-	s.lifecycleMu.Unlock()
-	s.connWG.Done()
-}
-
-func (s *Server) checkOrigin(r *http.Request) bool {
-	origin := r.Header.Get("Origin")
-	if origin == "" {
-		return true
-	}
-	if len(s.config.allowedOrigins) > 0 {
-		_, ok := s.config.allowedOrigins[origin]
-		return ok
-	}
-	u, err := url.Parse(origin)
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || (u.Path != "" && u.Path != "/") {
-		return false
-	}
-	return strings.EqualFold(u.Host, r.Host)
-}
-
-func (s *Server) rejectConnection(ctx context.Context, w http.ResponseWriter, remoteIP string) {
-	w.WriteHeader(http.StatusServiceUnavailable)
-	slog.WarnContext(ctx, "[websocket] connection rejected",
-		"remote_ip", remoteIP,
-		"connection_limit", s.config.maxConnLimit,
-		"per_ip_limit", s.config.maxConnPerIP,
-		"reason", "connection limit reached",
-	)
 }

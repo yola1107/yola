@@ -21,31 +21,6 @@ import (
 	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
-type gatewayRequestClient interface {
-	Request(context.Context, int32, proto.Message) ([]byte, int32, error)
-}
-
-func assertGatewayRequests(ctx context.Context, t *testing.T, client gatewayRequestClient, pushes <-chan []byte, commands ...int32) {
-	t.Helper()
-	request := wrapperspb.String("request")
-	body, err := proto.Marshal(request)
-	require.NoError(t, err)
-	for _, command := range commands {
-		reply, code, err := client.Request(ctx, command, request)
-		require.NoError(t, err)
-		require.Zero(t, code)
-		require.Equal(t, append([]byte("node:"), body...), reply)
-	}
-	var push protocolv1.Proto
-	select {
-	case pushBody := <-pushes:
-		require.NoError(t, proto.Unmarshal(pushBody, &push))
-	case <-ctx.Done():
-		t.Fatal("gateway push timed out")
-	}
-	require.Equal(t, body, push.Body)
-}
-
 func TestNewServerWiresTCPTransport(t *testing.T) {
 	store := testLocator(t)
 	grpcEndpoint := startTestNode(t)
@@ -180,4 +155,29 @@ func TestGatewayConstructionReportsSetHandlerFailure(t *testing.T) {
 		Transport(&stubTransport{handlerErr: handlerErr}),
 	)
 	require.ErrorIs(t, err, handlerErr)
+}
+
+type gatewayRequestClient interface {
+	Request(context.Context, int32, proto.Message) ([]byte, int32, error)
+}
+
+func assertGatewayRequests(ctx context.Context, t *testing.T, client gatewayRequestClient, pushes <-chan []byte, commands ...int32) {
+	t.Helper()
+	request := wrapperspb.String("request")
+	body, err := proto.Marshal(request)
+	require.NoError(t, err)
+	for _, command := range commands {
+		reply, code, err := client.Request(ctx, command, request)
+		require.NoError(t, err)
+		require.Zero(t, code)
+		require.Equal(t, append([]byte("node:"), body...), reply)
+	}
+	var push protocolv1.Proto
+	select {
+	case pushBody := <-pushes:
+		require.NoError(t, proto.Unmarshal(pushBody, &push))
+	case <-ctx.Done():
+		t.Fatal("gateway push timed out")
+	}
+	require.Equal(t, body, push.Body)
 }

@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
-	"fmt"
 	"log/slog"
 	"net"
 	"net/url"
@@ -12,12 +11,9 @@ import (
 	"time"
 
 	"yola/internal/contextwait"
-	"yola/internal/tlsconfig"
 	"yola/network"
 	"yola/network/internal/host"
 
-	"github.com/go-kratos/kratos/v3/encoding"
-	"github.com/go-kratos/kratos/v3/middleware"
 	"github.com/go-kratos/kratos/v3/transport"
 )
 
@@ -45,22 +41,6 @@ type Server struct {
 	connectionsPerIP map[string]int32
 	connWG           sync.WaitGroup
 	handler          network.ConnectionHandler
-}
-
-type serverConfig struct {
-	network          string
-	address          string
-	advertiseHost    string
-	tls              *tls.Config
-	codec            encoding.Codec
-	middlewares      []middleware.Middleware
-	timeout          time.Duration
-	handshakeTimeout time.Duration
-	heartbeatTimeout time.Duration
-	writeTimeout     time.Duration
-	maxConnLimit     int32
-	maxConnPerIP     int32
-	requestQueueSize int
 }
 
 // NewServer creates a TCP transport server.
@@ -123,51 +103,6 @@ func (s *Server) prepare() error {
 		return err
 	}
 	return s.listenAndEndpoint()
-}
-
-func (s *Server) validateConfig() error {
-	if s.config.codec == nil {
-		return errors.New("tcp: codec is required")
-	}
-	if s.config.timeout < 0 {
-		return errors.New("tcp: handler timeout cannot be negative")
-	}
-	if s.config.requestQueueSize <= 0 {
-		return errors.New("tcp: request queue size must be positive")
-	}
-	if s.config.maxConnLimit <= 0 {
-		return errors.New("tcp: connection limit must be positive")
-	}
-	if s.config.maxConnPerIP <= 0 {
-		return errors.New("tcp: per-IP connection limit must be positive")
-	}
-	if s.config.handshakeTimeout <= 0 {
-		return errors.New("tcp: handshake timeout must be positive")
-	}
-	if s.config.heartbeatTimeout <= 0 {
-		return errors.New("tcp: heartbeat timeout must be positive")
-	}
-	if s.config.writeTimeout <= 0 {
-		return errors.New("tcp: write timeout must be positive")
-	}
-	if err := tlsconfig.ValidateServer(s.config.tls); err != nil {
-		return fmt.Errorf("tcp: %w", err)
-	}
-	if s.endpoint == nil {
-		return nil
-	}
-	scheme := s.config.endpointScheme()
-	if s.endpoint.Scheme != scheme || s.endpoint.Host == "" {
-		return fmt.Errorf("tcp: endpoint must use %s:// with a host", scheme)
-	}
-	return nil
-}
-
-func (c serverConfig) endpointScheme() string {
-	if c.tls != nil {
-		return "tcps"
-	}
-	return "tcp"
 }
 
 // Start starts the TCP server

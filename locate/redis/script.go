@@ -1,8 +1,26 @@
 package redis
 
-import "github.com/redis/go-redis/v9"
+import (
+	"context"
+	"errors"
 
-// Lua 返回值首项是 decode.go 定义的状态码；Gate Bind 还返回当前绑定、TTL 和可选旧绑定。
+	"github.com/redis/go-redis/v9"
+)
+
+const (
+	statusOK           int64 = 1
+	statusMissing      int64 = 0
+	statusConflict     int64 = -1
+	statusBadLease     int64 = -2
+	statusInvalid      int64 = -3
+	statusMalformed    int64 = -4
+	statusNodeMissing  int64 = -5
+	statusNodeConflict int64 = -6
+)
+
+var errInvalidScriptResult = errors.New("locate redis returned an invalid result")
+
+// bindGateScript 返回状态码、当前绑定、TTL 和可选旧绑定。
 var bindGateScript = redis.NewScript(`
 local function valid_binding(raw)
   local ok, binding = pcall(cjson.decode, raw)
@@ -99,3 +117,30 @@ if current ~= ARGV[1] then return {-1} end
 redis.call("PEXPIRE", KEYS[1], ARGV[2])
 return {1}
 `)
+
+func (l *locator) run(ctx context.Context, script *redis.Script, key string, args ...any) ([]any, error) {
+	values, err := script.Run(ctx, l.client, []string{key}, args...).Slice()
+	return values, locatorError(ctx, err)
+}
+
+func scriptStatus(values []any) int64 {
+	if len(values) == 0 {
+		return statusMalformed
+	}
+	status, ok := values[0].(int64)
+	if !ok {
+		return statusMalformed
+	}
+	return status
+}
+
+// ackIdempotentUnbind reports whether an unbind/unregister script status is a success.
+// Missing and Conflict are treated as success so retries stay idempotent.
+func ackIdempotentUnbind(status int64) bool {
+	switch status {
+	case statusOK, statusMissing, statusConflict:
+		return true
+	default:
+		return false
+	}
+}

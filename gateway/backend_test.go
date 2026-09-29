@@ -10,7 +10,6 @@ import (
 	"yola/api/cluster/v1"
 	"yola/instance"
 
-	"github.com/go-kratos/kratos/v3/registry"
 	kgrpc "github.com/go-kratos/kratos/v3/transport/grpc"
 	"github.com/stretchr/testify/require"
 )
@@ -184,29 +183,8 @@ func TestBackendsVerifiedTLSAuthority(t *testing.T) {
 	}
 }
 
-func TestClientTLSRejectsNilConfig(t *testing.T) {
-	var nilOptions options
-	require.EqualError(t, ClientTLS(nil)(&nilOptions), "gateway: gRPC TLS config is required")
-}
-
 type tlsBackendNode struct {
 	v1.UnimplementedNodeServer
-}
-
-type blockingBackendDiscovery struct {
-	*backendTestDiscovery
-	started chan context.Context
-	release chan struct{}
-}
-
-func (d *blockingBackendDiscovery) GetService(ctx context.Context, service string) ([]*registry.ServiceInstance, error) {
-	d.started <- ctx
-	select {
-	case <-d.release:
-		return d.backendTestDiscovery.GetService(ctx, service)
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
 }
 
 func (*tlsBackendNode) Forward(context.Context, *v1.ForwardRequest) (*v1.ForwardReply, error) {

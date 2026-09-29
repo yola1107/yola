@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"yola/event"
+
 	"github.com/stretchr/testify/require"
 )
 
@@ -65,4 +67,29 @@ func TestWithTLSClonesConfiguration(t *testing.T) {
 	WithTLS(tlsConfig)(configured)
 	tlsConfig.MinVersion = tls.VersionTLS13
 	require.Equal(t, uint16(tls.VersionTLS12), configured.tls.MinVersion)
+}
+
+func TestNewRejectsInvalidConfiguration(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		option Option
+	}{
+		{name: "timeout", option: WithTimeout(0)},
+		{name: "queue capacity", option: WithQueueCapacity(0)},
+		{name: "payload size", option: WithMaxPayloadBytes(0)},
+		{name: "TLS", option: WithTLS(nil)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := New(test.option)
+			require.Error(t, err)
+		})
+	}
+
+	var nilCtx context.Context
+	_, err := New(WithContext(nilCtx))
+	require.ErrorIs(t, err, event.ErrInvalidContext)
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = New(WithContext(canceled))
+	require.ErrorIs(t, err, context.Canceled)
 }

@@ -147,9 +147,7 @@ func TestServerKickUsesSingleCleanupTimeout(t *testing.T) {
 	output := captureGatewayLogs(t)
 	store := &blockingUnbindLocator{Locator: testLocator(t), called: make(chan context.Context, 1)}
 	gateway := newTestServer(t,
-		Auth(testAuthenticator{}),
 		Locator(store),
-		Discovery(staticDiscovery{}),
 		CleanupTimeout(30*time.Millisecond),
 		LeaseTTL(time.Minute),
 	)
@@ -210,15 +208,7 @@ func TestServerKickCleanupDoesNotUnbindThirdBinding(t *testing.T) {
 func newAuthenticatedServer(t *testing.T) (*Server, locate.Locator, *testConnection, locate.GateBinding) {
 	t.Helper()
 	store := testLocator(t)
-	grpcEndpoint := startTestNode(t)
-	gateway := newTestServer(t,
-		Auth(testAuthenticator{}),
-		Locator(store),
-		Discovery(staticDiscovery{"game": {
-			serviceInstance("game", "node-a", grpcEndpoint),
-		}}),
-		LeaseTTL(time.Minute),
-	)
+	gateway := newTestServer(t, Locator(store), LeaseTTL(time.Minute))
 	initTestGateway(t, gateway)
 	conn := newTestConnection("conn-a")
 	require.NoError(t, gateway.Open(context.Background(), conn))

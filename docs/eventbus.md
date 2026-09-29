@@ -45,7 +45,7 @@ if err != nil {
 
 ## 4. NATS 生命周期
 
-[adapter实现](../event/nats/event.go) 使用一个独占连接，关闭reconnect buffer；断线期间Publish不会被缓存后延迟补发。WithContext的父context控制完整Bus生命周期，默认Background；连接失败需创建新Bus重试，父取消触发同一Close流程。
+[adapter实现](../event/nats/bus.go) 使用一个独占连接，关闭reconnect buffer；断线期间Publish不会被缓存后延迟补发。WithContext的父context控制完整Bus生命周期，默认Background；连接失败需创建新Bus重试，父取消触发同一Close流程。
 
 Subscribe注册精确Topic，底层ChanSubscribe加有界channel并等待Flush。返回成功仅表示本地装配/Flush完成，**不证明broker接受订阅**，也不是异步错误回调完成屏障。
 

@@ -3,6 +3,8 @@ package nats
 import (
 	"context"
 	"crypto/tls"
+	"errors"
+	"fmt"
 	"net/url"
 	"time"
 
@@ -65,4 +67,26 @@ func RedactedURL(raw string) string {
 	}
 	parsed.User = nil
 	return parsed.String()
+}
+
+func validateOptions(o options) error {
+	if o.timeout <= 0 {
+		return errors.New("nats: timeout must be positive")
+	}
+	if o.queueCapacity <= 0 {
+		return errors.New("nats: queue capacity must be positive")
+	}
+	if o.maxPayloadBytes <= 0 {
+		return errors.New("nats: maximum payload size must be positive")
+	}
+	if o.tlsSet && o.tls == nil {
+		return errors.New("nats: TLS configuration is required")
+	}
+	if o.url == "" {
+		return errors.New("nats: URL is required")
+	}
+	if err := tlsconfig.ValidateClient(o.tls); err != nil {
+		return fmt.Errorf("nats: %w", err)
+	}
+	return nil
 }

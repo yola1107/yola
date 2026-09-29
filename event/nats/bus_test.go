@@ -217,31 +217,6 @@ func TestReconnectBufferIsDisabled(t *testing.T) {
 	require.ErrorIs(t, err, natsgo.ErrReconnectBufExceeded)
 }
 
-func TestNewRejectsInvalidConfiguration(t *testing.T) {
-	for _, test := range []struct {
-		name   string
-		option Option
-	}{
-		{name: "timeout", option: WithTimeout(0)},
-		{name: "queue capacity", option: WithQueueCapacity(0)},
-		{name: "payload size", option: WithMaxPayloadBytes(0)},
-		{name: "TLS", option: WithTLS(nil)},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			_, err := New(test.option)
-			require.Error(t, err)
-		})
-	}
-
-	var nilCtx context.Context
-	_, err := New(WithContext(nilCtx))
-	require.ErrorIs(t, err, event.ErrInvalidContext)
-	canceled, cancel := context.WithCancel(context.Background())
-	cancel()
-	_, err = New(WithContext(canceled))
-	require.ErrorIs(t, err, context.Canceled)
-}
-
 func TestBusRejectsInvalidInput(t *testing.T) {
 	var nilCtx context.Context
 	bus := newTestBus(t, startTestServer(t), WithMaxPayloadBytes(4))

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -12,32 +13,12 @@ import (
 
 	"yola/api/protocol/v1"
 	"yola/network"
+
+	"github.com/go-kratos/kratos/v3/encoding"
+	"github.com/go-kratos/kratos/v3/encoding/protojson"
+	"github.com/go-kratos/kratos/v3/middleware"
+	"github.com/go-kratos/kratos/v3/transport"
 )
-
-type blockingOpenHandler struct {
-	started  chan<- struct{}
-	release  <-chan struct{}
-	finished chan<- error
-}
-
-func (h blockingOpenHandler) Open(ctx context.Context, _ network.Connection) error {
-	h.started <- struct{}{}
-	select {
-	case <-h.release:
-		return nil
-	case <-ctx.Done():
-		if h.finished != nil {
-			h.finished <- ctx.Err()
-		}
-		return ctx.Err()
-	}
-}
-
-func (blockingOpenHandler) Handle(context.Context, network.Connection, *v1.Proto) (*v1.Proto, error) {
-	return nil, nil
-}
-
-func (blockingOpenHandler) Close(context.Context, network.Connection) {}
 
 func TestServerHandshakeDeadlineClosesIdleConnection(t *testing.T) {
 	endpoint := startTCPTestServer(t, tcpTestHandler{}, HandshakeTimeout(40*time.Millisecond))
@@ -80,44 +61,6 @@ func TestServerHandshakeDeadlineIncludesOpen(t *testing.T) {
 	releaseOpen()
 }
 
-type handshakeDeadlineHandler struct {
-	deadline chan<- time.Time
-	release  <-chan struct{}
-}
-
-func (h handshakeDeadlineHandler) Open(ctx context.Context, _ network.Connection) error {
-	deadline, _ := ctx.Deadline()
-	h.deadline <- deadline
-	<-h.release
-	return nil
-}
-
-func (handshakeDeadlineHandler) Handle(context.Context, network.Connection, *v1.Proto) (*v1.Proto, error) {
-	return nil, nil
-}
-
-func (handshakeDeadlineHandler) Close(context.Context, network.Connection) {}
-
-type lateOpenHandler struct {
-	started chan struct{}
-	release chan struct{}
-	closed  chan error
-}
-
-func (h lateOpenHandler) Open(context.Context, network.Connection) error {
-	close(h.started)
-	<-h.release
-	return nil
-}
-
-func (lateOpenHandler) Handle(context.Context, network.Connection, *v1.Proto) (*v1.Proto, error) {
-	return nil, nil
-}
-
-func (h lateOpenHandler) Close(ctx context.Context, _ network.Connection) {
-	h.closed <- ctx.Err()
-}
-
 func TestServeTCPCloseRunsWhenOpenReturnsAfterHandshakeDeadline(t *testing.T) {
 	serverConn, clientConn := net.Pipe()
 	t.Cleanup(func() { _ = clientConn.Close() })
@@ -144,16 +87,6 @@ func TestServeTCPCloseRunsWhenOpenReturnsAfterHandshakeDeadline(t *testing.T) {
 		t.Fatalf("Close context error = %v, want %v", err, context.Canceled)
 	}
 	waitTCPValue(t, done)
-}
-
-type readDeadlineConn struct {
-	net.Conn
-	deadline chan<- time.Time
-}
-
-func (c *readDeadlineConn) SetReadDeadline(deadline time.Time) error {
-	c.deadline <- deadline
-	return c.Conn.SetReadDeadline(deadline)
 }
 
 func TestServeTCPReusesOpenHandshakeDeadlineForFirstRead(t *testing.T) {
@@ -209,38 +142,6 @@ func TestServerHeartbeatExtendsReadDeadline(t *testing.T) {
 	}
 }
 
-func roundTripTCPProto(t *testing.T, reader *bufio.Reader, writer *bufio.Writer, message *v1.Proto) *v1.Proto {
-	t.Helper()
-	if err := writeFrame(writer, defaultCodec(), message); err != nil {
-		t.Fatal(err)
-	}
-	if err := writer.Flush(); err != nil {
-		t.Fatal(err)
-	}
-	reply := new(v1.Proto)
-	if err := readFrame(reader, defaultCodec(), reply); err != nil {
-		t.Fatal(err)
-	}
-	return reply
-}
-
-type messageTimeoutHandler struct {
-	timedOut chan<- error
-}
-
-func (*messageTimeoutHandler) Open(context.Context, network.Connection) error { return nil }
-
-func (h *messageTimeoutHandler) Handle(ctx context.Context, _ network.Connection, message *v1.Proto) (*v1.Proto, error) {
-	if message.Op == v1.OpAuth {
-		return &v1.Proto{Op: v1.OpAuthReply, Seq: message.Seq}, nil
-	}
-	<-ctx.Done()
-	h.timedOut <- ctx.Err()
-	return nil, ctx.Err()
-}
-
-func (*messageTimeoutHandler) Close(context.Context, network.Connection) {}
-
 func TestServerMessageTimeoutCancelsHandlerContext(t *testing.T) {
 	timedOut := make(chan error, 1)
 	endpoint := startTCPTestServer(t, &messageTimeoutHandler{timedOut: timedOut}, Timeout(20*time.Millisecond))
@@ -263,46 +164,6 @@ func TestServerMessageTimeoutCancelsHandlerContext(t *testing.T) {
 	if err := waitTCPValue(t, timedOut); !errors.Is(err, context.DeadlineExceeded) {
 		t.Errorf("handler context error = %v, want %v", err, context.DeadlineExceeded)
 	}
-}
-
-type acceptedConnectionHandler struct {
-	opened chan struct{}
-}
-
-func (h *acceptedConnectionHandler) Open(context.Context, network.Connection) error {
-	h.opened <- struct{}{}
-	return nil
-}
-
-func (*acceptedConnectionHandler) Handle(_ context.Context, _ network.Connection, message *v1.Proto) (*v1.Proto, error) {
-	return message, nil
-}
-
-func (*acceptedConnectionHandler) Close(context.Context, network.Connection) {}
-
-type delayedTCPListener struct {
-	net.Listener
-	accepting chan struct{}
-	release   <-chan struct{}
-	accepted  atomic.Bool
-	closes    atomic.Int32
-}
-
-func (l *delayedTCPListener) Accept() (net.Conn, error) {
-	conn, err := l.Listener.Accept()
-	if err != nil {
-		return nil, err
-	}
-	if l.accepted.CompareAndSwap(false, true) {
-		close(l.accepting)
-		<-l.release
-	}
-	return conn, nil
-}
-
-func (l *delayedTCPListener) Close() error {
-	l.closes.Add(1)
-	return l.Listener.Close()
 }
 
 func TestServerRejectsAcceptedConnectionAfterStop(t *testing.T) {
@@ -345,38 +206,6 @@ func TestServerRejectsAcceptedConnectionAfterStop(t *testing.T) {
 	default:
 	}
 }
-
-type connectionLifecycleHandler struct {
-	openErr error
-	opened  chan struct{}
-	closed  atomic.Int32
-}
-
-func (h *connectionLifecycleHandler) Open(context.Context, network.Connection) error {
-	h.opened <- struct{}{}
-	return h.openErr
-}
-
-func (*connectionLifecycleHandler) Handle(_ context.Context, _ network.Connection, message *v1.Proto) (*v1.Proto, error) {
-	return message, nil
-}
-
-func (h *connectionLifecycleHandler) Close(context.Context, network.Connection) { h.closed.Add(1) }
-
-type panicOpenHandler struct {
-	opened chan struct{}
-}
-
-func (h panicOpenHandler) Open(context.Context, network.Connection) error {
-	close(h.opened)
-	panic("open panic")
-}
-
-func (panicOpenHandler) Handle(_ context.Context, _ network.Connection, message *v1.Proto) (*v1.Proto, error) {
-	return message, nil
-}
-
-func (panicOpenHandler) Close(context.Context, network.Connection) {}
 
 func TestOpenPanicDoesNotLeakConnection(t *testing.T) {
 	h := panicOpenHandler{opened: make(chan struct{})}
@@ -455,3 +284,255 @@ func TestOpenFailureDoesNotCallClose(t *testing.T) {
 		t.Fatalf("closed callbacks = %d, want 0", h.closed.Load())
 	}
 }
+
+func TestServerMessageContextAndReplacementReply(t *testing.T) {
+	observed := make(chan error, 1)
+	handler := &messageContextHandler{observed: observed}
+	codec := encoding.GetCodec(protojson.Name)
+	endpoint := startTCPTestServer(t, handler, Codec(codec), Timeout(time.Second), Middleware(
+		func(next middleware.Handler) middleware.Handler {
+			return func(ctx context.Context, request any) (any, error) {
+				return next(context.WithValue(ctx, messageContextKey{}, true), request)
+			}
+		},
+	))
+	handler.endpoint = "tcp://" + endpoint
+	client, err := NewClient(
+		context.Background(),
+		WithAddress(endpoint),
+		WithServiceName("game"),
+		WithToken("synthetic-token"),
+		WithCodec(codec),
+	)
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	t.Cleanup(client.Close)
+
+	body, code, err := client.Request(context.Background(), 7, new(v1.ClientAuthReq))
+	if err != nil {
+		t.Fatalf("Client.Request() error = %v", err)
+	}
+	if string(body) != "replacement" || code != 23 {
+		t.Errorf("Client.Request() = (%q, %d), want (%q, %d)", body, code, "replacement", 23)
+	}
+	if err := waitTCPValue(t, observed); err != nil {
+		t.Errorf("handler message context error = %v", err)
+	}
+}
+
+type blockingOpenHandler struct {
+	started  chan<- struct{}
+	release  <-chan struct{}
+	finished chan<- error
+}
+
+func (h blockingOpenHandler) Open(ctx context.Context, _ network.Connection) error {
+	h.started <- struct{}{}
+	select {
+	case <-h.release:
+		return nil
+	case <-ctx.Done():
+		if h.finished != nil {
+			h.finished <- ctx.Err()
+		}
+		return ctx.Err()
+	}
+}
+
+func (blockingOpenHandler) Handle(context.Context, network.Connection, *v1.Proto) (*v1.Proto, error) {
+	return nil, nil
+}
+
+func (blockingOpenHandler) Close(context.Context, network.Connection) {}
+
+type handshakeDeadlineHandler struct {
+	deadline chan<- time.Time
+	release  <-chan struct{}
+}
+
+func (h handshakeDeadlineHandler) Open(ctx context.Context, _ network.Connection) error {
+	deadline, _ := ctx.Deadline()
+	h.deadline <- deadline
+	<-h.release
+	return nil
+}
+
+func (handshakeDeadlineHandler) Handle(context.Context, network.Connection, *v1.Proto) (*v1.Proto, error) {
+	return nil, nil
+}
+
+func (handshakeDeadlineHandler) Close(context.Context, network.Connection) {}
+
+type lateOpenHandler struct {
+	started chan struct{}
+	release chan struct{}
+	closed  chan error
+}
+
+func (h lateOpenHandler) Open(context.Context, network.Connection) error {
+	close(h.started)
+	<-h.release
+	return nil
+}
+
+func (lateOpenHandler) Handle(context.Context, network.Connection, *v1.Proto) (*v1.Proto, error) {
+	return nil, nil
+}
+
+func (h lateOpenHandler) Close(ctx context.Context, _ network.Connection) {
+	h.closed <- ctx.Err()
+}
+
+type readDeadlineConn struct {
+	net.Conn
+	deadline chan<- time.Time
+}
+
+func (c *readDeadlineConn) SetReadDeadline(deadline time.Time) error {
+	c.deadline <- deadline
+	return c.Conn.SetReadDeadline(deadline)
+}
+
+func roundTripTCPProto(t *testing.T, reader *bufio.Reader, writer *bufio.Writer, message *v1.Proto) *v1.Proto {
+	t.Helper()
+	if err := writeFrame(writer, defaultCodec(), message); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	reply := new(v1.Proto)
+	if err := readFrame(reader, defaultCodec(), reply); err != nil {
+		t.Fatal(err)
+	}
+	return reply
+}
+
+type messageTimeoutHandler struct {
+	timedOut chan<- error
+}
+
+func (*messageTimeoutHandler) Open(context.Context, network.Connection) error { return nil }
+
+func (h *messageTimeoutHandler) Handle(ctx context.Context, _ network.Connection, message *v1.Proto) (*v1.Proto, error) {
+	if message.Op == v1.OpAuth {
+		return &v1.Proto{Op: v1.OpAuthReply, Seq: message.Seq}, nil
+	}
+	<-ctx.Done()
+	h.timedOut <- ctx.Err()
+	return nil, ctx.Err()
+}
+
+func (*messageTimeoutHandler) Close(context.Context, network.Connection) {}
+
+type acceptedConnectionHandler struct {
+	opened chan struct{}
+}
+
+func (h *acceptedConnectionHandler) Open(context.Context, network.Connection) error {
+	h.opened <- struct{}{}
+	return nil
+}
+
+func (*acceptedConnectionHandler) Handle(_ context.Context, _ network.Connection, message *v1.Proto) (*v1.Proto, error) {
+	return message, nil
+}
+
+func (*acceptedConnectionHandler) Close(context.Context, network.Connection) {}
+
+type delayedTCPListener struct {
+	net.Listener
+	accepting chan struct{}
+	release   <-chan struct{}
+	accepted  atomic.Bool
+	closes    atomic.Int32
+}
+
+func (l *delayedTCPListener) Accept() (net.Conn, error) {
+	conn, err := l.Listener.Accept()
+	if err != nil {
+		return nil, err
+	}
+	if l.accepted.CompareAndSwap(false, true) {
+		close(l.accepting)
+		<-l.release
+	}
+	return conn, nil
+}
+
+func (l *delayedTCPListener) Close() error {
+	l.closes.Add(1)
+	return l.Listener.Close()
+}
+
+type connectionLifecycleHandler struct {
+	openErr error
+	opened  chan struct{}
+	closed  atomic.Int32
+}
+
+func (h *connectionLifecycleHandler) Open(context.Context, network.Connection) error {
+	h.opened <- struct{}{}
+	return h.openErr
+}
+
+func (*connectionLifecycleHandler) Handle(_ context.Context, _ network.Connection, message *v1.Proto) (*v1.Proto, error) {
+	return message, nil
+}
+
+func (h *connectionLifecycleHandler) Close(context.Context, network.Connection) { h.closed.Add(1) }
+
+type panicOpenHandler struct {
+	opened chan struct{}
+}
+
+func (h panicOpenHandler) Open(context.Context, network.Connection) error {
+	close(h.opened)
+	panic("open panic")
+}
+
+func (panicOpenHandler) Handle(_ context.Context, _ network.Connection, message *v1.Proto) (*v1.Proto, error) {
+	return message, nil
+}
+
+func (panicOpenHandler) Close(context.Context, network.Connection) {}
+
+type messageContextKey struct{}
+
+type messageContextHandler struct {
+	observed chan<- error
+	endpoint string
+}
+
+func (*messageContextHandler) Open(context.Context, network.Connection) error { return nil }
+
+func (h *messageContextHandler) Handle(ctx context.Context, _ network.Connection, message *v1.Proto) (*v1.Proto, error) {
+	if message.Op == v1.OpAuth {
+		return &v1.Proto{Op: v1.OpAuthReply, Seq: message.Seq}, nil
+	}
+	tr, ok := transport.FromServerContext(ctx)
+	if !ok {
+		h.observed <- errors.New("transport context is unavailable")
+	} else {
+		_, hasDeadline := ctx.Deadline()
+		if tr.Operation() != network.ConnectionHandlerOperation || tr.Endpoint() != h.endpoint ||
+			tr.RequestHeader().Get("remote_ip") != "127.0.0.1" ||
+			tr.RequestHeader().Get("conn_id") == "" || !hasDeadline ||
+			ctx.Value(messageContextKey{}) != true {
+			h.observed <- fmt.Errorf("unexpected message context: transport=%+v deadline=%t middleware=%v",
+				tr, hasDeadline, ctx.Value(messageContextKey{}))
+		} else {
+			h.observed <- nil
+		}
+	}
+	return &v1.Proto{
+		Op:   v1.OpResponse,
+		Seq:  message.Seq,
+		Cmd:  message.Cmd,
+		Code: 23,
+		Body: []byte("replacement"),
+	}, nil
+}
+
+func (*messageContextHandler) Close(context.Context, network.Connection) {}

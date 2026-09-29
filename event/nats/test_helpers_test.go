@@ -31,10 +31,12 @@ func waitSignal(t *testing.T, signal <-chan struct{}, message string) {
 }
 
 func startTestServer(t testing.TB) string {
+	t.Helper()
 	return startTestServerInstance(t).ClientURL()
 }
 
 func startTestServerInstance(t testing.TB) *server.Server {
+	t.Helper()
 	return startTestServerWithOptions(t, testServerOptions())
 }
 
@@ -46,12 +48,12 @@ func startTestServerWithOptions(t testing.TB, options *server.Options) *server.S
 	t.Helper()
 	natsServer, err := server.NewServer(options)
 	require.NoError(t, err)
-	go natsServer.Start()
-	require.True(t, natsServer.ReadyForConnections(5*time.Second), "NATS server did not become ready")
 	t.Cleanup(func() {
 		natsServer.Shutdown()
 		natsServer.WaitForShutdown()
 	})
+	go natsServer.Start()
+	require.True(t, natsServer.ReadyForConnections(5*time.Second), "NATS server did not become ready")
 	return natsServer
 }
 

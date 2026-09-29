@@ -70,30 +70,26 @@ func (s *Server) forward(ctx context.Context, binding locate.GateBinding, comman
 	return s.forwardTo(ctx, stickyClaim{}, binding, command, body)
 }
 
-type memoryNodeLocator struct {
+// memoryLocator 模拟 Node 绑定、epoch 和 Push 所需的 Gate 查询，不模拟 TTL 流逝。
+// Gate 续租、解绑不属于 Node 职责，意外调用会使测试立即失败。
+type memoryLocator struct {
 	mu        sync.Mutex
 	bindings  map[string]string
 	nodeEpoch map[string]string
-}
-
-type memoryLocator struct {
-	memoryNodeLocator
-	gateways map[string]locate.GateLease
+	gateways  map[string]locate.GateLease
 }
 
 func newMemoryLocator() *memoryLocator {
 	return &memoryLocator{
-		memoryNodeLocator: memoryNodeLocator{
-			bindings:  make(map[string]string),
-			nodeEpoch: make(map[string]string),
-		},
-		gateways: make(map[string]locate.GateLease),
+		bindings:  make(map[string]string),
+		nodeEpoch: make(map[string]string),
+		gateways:  make(map[string]locate.GateLease),
 	}
 }
 
-func (*memoryNodeLocator) Ping(context.Context) error { return nil }
+func (*memoryLocator) Ping(context.Context) error { return nil }
 
-func (l *memoryNodeLocator) BindNode(_ context.Context, serviceName, uid, nodeID, epoch string) error {
+func (l *memoryLocator) BindNode(_ context.Context, serviceName, uid, nodeID, epoch string) error {
 	if !locate.ValidNodeLocation(serviceName, uid, nodeID) {
 		return locate.ErrInvalidNodeBinding
 	}
@@ -109,7 +105,7 @@ func (l *memoryNodeLocator) BindNode(_ context.Context, serviceName, uid, nodeID
 	return nil
 }
 
-func (l *memoryNodeLocator) LocateNode(_ context.Context, serviceName, uid string) (string, error) {
+func (l *memoryLocator) LocateNode(_ context.Context, serviceName, uid string) (string, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	nodeID, ok := l.bindings[serviceName+"\x00"+uid]
@@ -119,7 +115,7 @@ func (l *memoryNodeLocator) LocateNode(_ context.Context, serviceName, uid strin
 	return nodeID, nil
 }
 
-func (l *memoryNodeLocator) RenewNode(_ context.Context, serviceName, uid, nodeID, epoch string) error {
+func (l *memoryLocator) RenewNode(_ context.Context, serviceName, uid, nodeID, epoch string) error {
 	if !locate.ValidNodeLocation(serviceName, uid, nodeID) {
 		return locate.ErrInvalidNodeBinding
 	}
@@ -141,7 +137,7 @@ func (l *memoryNodeLocator) RenewNode(_ context.Context, serviceName, uid, nodeI
 	return nil
 }
 
-func (l *memoryNodeLocator) UnbindNode(_ context.Context, serviceName, uid, nodeID, epoch string) error {
+func (l *memoryLocator) UnbindNode(_ context.Context, serviceName, uid, nodeID, epoch string) error {
 	if !locate.ValidNodeLocation(serviceName, uid, nodeID) {
 		return locate.ErrInvalidNodeBinding
 	}
@@ -160,7 +156,7 @@ func (l *memoryNodeLocator) UnbindNode(_ context.Context, serviceName, uid, node
 	return nil
 }
 
-func (l *memoryNodeLocator) RegisterNodeEpoch(_ context.Context, serviceName, nodeID, epoch string, ttl time.Duration) error {
+func (l *memoryLocator) RegisterNodeEpoch(_ context.Context, serviceName, nodeID, epoch string, ttl time.Duration) error {
 	if !locate.ValidServiceName(serviceName) || nodeID == "" || epoch == "" || ttl < time.Millisecond {
 		return locate.ErrInvalidNodeEpoch
 	}
@@ -174,7 +170,7 @@ func (l *memoryNodeLocator) RegisterNodeEpoch(_ context.Context, serviceName, no
 	return nil
 }
 
-func (l *memoryNodeLocator) RenewNodeEpoch(_ context.Context, serviceName, nodeID, epoch string, ttl time.Duration) error {
+func (l *memoryLocator) RenewNodeEpoch(_ context.Context, serviceName, nodeID, epoch string, ttl time.Duration) error {
 	if !locate.ValidServiceName(serviceName) || nodeID == "" || epoch == "" || ttl < time.Millisecond {
 		return locate.ErrInvalidNodeEpoch
 	}
@@ -183,7 +179,7 @@ func (l *memoryNodeLocator) RenewNodeEpoch(_ context.Context, serviceName, nodeI
 	return l.checkEpochLocked(serviceName, nodeID, epoch)
 }
 
-func (l *memoryNodeLocator) checkEpochLocked(serviceName, nodeID, epoch string) error {
+func (l *memoryLocator) checkEpochLocked(serviceName, nodeID, epoch string) error {
 	current, ok := l.nodeEpoch[serviceName+"\x00"+nodeID]
 	if !ok {
 		return locate.ErrNodeEpochNotFound
@@ -194,7 +190,7 @@ func (l *memoryNodeLocator) checkEpochLocked(serviceName, nodeID, epoch string) 
 	return nil
 }
 
-func (l *memoryNodeLocator) LocateNodeEpoch(_ context.Context, serviceName, nodeID string) (string, error) {
+func (l *memoryLocator) LocateNodeEpoch(_ context.Context, serviceName, nodeID string) (string, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	epoch, ok := l.nodeEpoch[serviceName+"\x00"+nodeID]
@@ -204,7 +200,7 @@ func (l *memoryNodeLocator) LocateNodeEpoch(_ context.Context, serviceName, node
 	return epoch, nil
 }
 
-func (l *memoryNodeLocator) UnregisterNodeEpoch(_ context.Context, serviceName, nodeID, epoch string) error {
+func (l *memoryLocator) UnregisterNodeEpoch(_ context.Context, serviceName, nodeID, epoch string) error {
 	if !locate.ValidServiceName(serviceName) || nodeID == "" || epoch == "" {
 		return locate.ErrInvalidNodeEpoch
 	}
@@ -218,8 +214,11 @@ func (l *memoryNodeLocator) UnregisterNodeEpoch(_ context.Context, serviceName, 
 }
 
 func (l *memoryLocator) BindGate(_ context.Context, candidate locate.GateBinding, ttl time.Duration) (locate.GateLease, *locate.GateBinding, error) {
-	if !locate.ValidGateBinding(candidate) || ttl <= 0 {
+	if !locate.ValidGateBinding(candidate) {
 		return locate.GateLease{}, nil, locate.ErrInvalidGateBinding
+	}
+	if ttl < time.Millisecond {
+		return locate.GateLease{}, nil, locate.ErrInvalidGateTTL
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -229,12 +228,15 @@ func (l *memoryLocator) BindGate(_ context.Context, candidate locate.GateBinding
 		prev := current.Binding
 		previous = &prev
 	}
-	lease := locate.GateLease{Binding: candidate, TTL: ttl}
+	lease := locate.GateLease{Binding: candidate, TTL: ttl.Truncate(time.Millisecond)}
 	l.gateways[key] = lease
 	return lease, previous, nil
 }
 
 func (l *memoryLocator) LocateGate(_ context.Context, serviceName, uid string) (locate.GateLease, error) {
+	if !locate.ValidServiceName(serviceName) || !locate.ValidUID(uid) {
+		return locate.GateLease{}, locate.ErrInvalidGateBinding
+	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	lease, ok := l.gateways[serviceName+"\x00"+uid]
@@ -244,29 +246,12 @@ func (l *memoryLocator) LocateGate(_ context.Context, serviceName, uid string) (
 	return lease, nil
 }
 
-func (l *memoryLocator) RenewGateLease(_ context.Context, expected locate.GateBinding, ttl time.Duration) (locate.GateLease, error) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	key := expected.ServiceName + "\x00" + expected.UID
-	current, ok := l.gateways[key]
-	if !ok || current.Binding != expected {
-		return locate.GateLease{}, locate.ErrGateNotFound
-	}
-	current.TTL = ttl
-	l.gateways[key] = current
-	return current, nil
+func (*memoryLocator) RenewGateLease(context.Context, locate.GateBinding, time.Duration) (locate.GateLease, error) {
+	panic("node test: unexpected RenewGateLease call")
 }
 
-func (l *memoryLocator) UnbindGate(_ context.Context, expected locate.GateBinding) error {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	key := expected.ServiceName + "\x00" + expected.UID
-	current, ok := l.gateways[key]
-	if !ok || current.Binding != expected {
-		return locate.ErrGateNotFound
-	}
-	delete(l.gateways, key)
-	return nil
+func (*memoryLocator) UnbindGate(context.Context, locate.GateBinding) error {
+	panic("node test: unexpected UnbindGate call")
 }
 
 var _ locate.Locator = (*memoryLocator)(nil)
@@ -300,11 +285,15 @@ type nodeTestAppInfo struct {
 	metadata map[string]string
 }
 
-func (nodeTestAppInfo) ID() string                    { return "node-a" }
-func (nodeTestAppInfo) Name() string                  { return "game" }
-func (nodeTestAppInfo) Version() string               { return "" }
+func (nodeTestAppInfo) ID() string { return "node-a" }
+
+func (nodeTestAppInfo) Name() string { return "game" }
+
+func (nodeTestAppInfo) Version() string { return "" }
+
 func (a nodeTestAppInfo) Metadata() map[string]string { return a.metadata }
-func (nodeTestAppInfo) Endpoint() []string            { return nil }
+
+func (nodeTestAppInfo) Endpoint() []string { return nil }
 
 func savedBindingSession(t *testing.T, locator locate.Locator, opts ...Option) (*Server, Session) {
 	t.Helper()
@@ -331,5 +320,14 @@ func callSessionBinding(ctx context.Context, session Session, method string) err
 		return session.RenewNode(ctx)
 	default:
 		return session.UnbindNode(ctx)
+	}
+}
+
+func waitNodeSignal(t testing.TB, signal <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-signal:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for Node lifecycle signal")
 	}
 }

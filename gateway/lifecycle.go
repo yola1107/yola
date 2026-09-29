@@ -19,6 +19,8 @@ import (
 	"google.golang.org/grpc"
 )
 
+const shutdownWorkerCount = 64
+
 // Endpoint returns the internal gRPC endpoint published through the Kratos registry.
 func (s *Server) Endpoint() (*url.URL, error) {
 	s.lifecycle.mu.Lock()

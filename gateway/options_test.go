@@ -196,3 +196,26 @@ func TestGatewayConstructionReportsConfigurationCause(t *testing.T) {
 		})
 	}
 }
+
+func TestClientTLSRejectsNilConfig(t *testing.T) {
+	var nilOptions options
+	require.EqualError(t, ClientTLS(nil)(&nilOptions), "gateway: gRPC TLS config is required")
+}
+
+func TestTimeoutOptionsRejectNonPositive(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		option func(time.Duration) Option
+	}{
+		{name: "connect", option: ConnectTimeout},
+		{name: "lease", option: LeaseTimeout},
+		{name: "cleanup", option: CleanupTimeout},
+	} {
+		for _, timeout := range []time.Duration{0, -time.Second} {
+			t.Run(test.name+"/"+timeout.String(), func(t *testing.T) {
+				_, err := resolveOptions(Auth(testAuthenticator{}), Locator(pingLocator{}), Discovery(staticDiscovery{}), test.option(timeout))
+				require.Error(t, err)
+			})
+		}
+	}
+}

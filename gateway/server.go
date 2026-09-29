@@ -1,7 +1,6 @@
 package gateway
 
 import (
-	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -16,17 +15,6 @@ import (
 	"github.com/go-kratos/kratos/v3/middleware/recovery"
 	"github.com/go-kratos/kratos/v3/transport"
 	"github.com/go-kratos/kratos/v3/transport/grpc"
-)
-
-const shutdownWorkerCount = 64
-
-var (
-	errInvalidPush       = errors.New("invalid push")
-	errInvalidKick       = errors.New("invalid kick")
-	errConnectionMissing = errors.New("connection not found")
-	errBindingChanged    = errors.New("gate binding changed")
-	errConnectionBusy    = errors.New("connection queue is full")
-	errConnectionClosed  = errors.New("connection is unavailable")
 )
 
 var (

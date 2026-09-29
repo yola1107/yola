@@ -87,7 +87,6 @@ func TestGatewayNodeIntegration(t *testing.T) {
 	}, 3*time.Second, 20*time.Millisecond)
 
 	gate := newTestServer(t,
-		Auth(testAuthenticator{}),
 		Locator(store),
 		Discovery(discovery),
 		LeaseTTL(time.Minute),

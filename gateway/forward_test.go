@@ -16,6 +16,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/emptypb"
 )
 
 type epochCountingLocator struct {
@@ -32,7 +33,6 @@ func TestStickyRoutesUseEpochOnlyForForward(t *testing.T) {
 	store := &epochCountingLocator{Locator: testLocator(t)}
 	nodeA := startNamedBackendNode(t, "node-a")
 	gate := newTestServer(t,
-		Auth(testAuthenticator{}),
 		Locator(store),
 		Discovery(staticDiscovery{"game": {serviceInstance("game", "node-a", nodeA)}}),
 	)
@@ -254,7 +254,6 @@ func TestGatewayRoutesBoundPlayerToExactNode(t *testing.T) {
 	nodeA := startNamedBackendNode(t, "node-a")
 	nodeB := startNamedBackendNode(t, "node-b")
 	gate := newTestServer(t,
-		Auth(testAuthenticator{}),
 		Locator(store),
 		Discovery(staticDiscovery{"game": {
 			serviceInstance("game", "node-a", nodeA),
@@ -289,7 +288,6 @@ func TestGatewayStatelessServiceSkipsNodeLookup(t *testing.T) {
 	registered := serviceInstance("game", "node-a", endpoint)
 	registered.Metadata = nil
 	gate := newTestServer(t,
-		Auth(testAuthenticator{}),
 		Locator(store),
 		Discovery(staticDiscovery{"game": {registered}}),
 	)
@@ -315,4 +313,66 @@ type nodeLookupCountingLocator struct {
 func (l *nodeLookupCountingLocator) LocateNode(ctx context.Context, serviceName, uid string) (string, error) {
 	l.nodeLookups.Add(1)
 	return l.Locator.LocateNode(ctx, serviceName, uid)
+}
+
+func newDisconnectTrackingServer(t *testing.T) (*Server, locate.Locator, *testConnection, locate.GateBinding, <-chan *clusterv1.DisconnectRequest) {
+	t.Helper()
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	server := grpc.NewServer()
+	disconnects := make(chan *clusterv1.DisconnectRequest, 1)
+	service := &forwardServer{disconnects: disconnects}
+	clusterv1.RegisterNodeServer(server, service)
+	go func() { _ = server.Serve(lis) }()
+	t.Cleanup(server.Stop)
+
+	store := testLocator(t)
+	backendPool := newBackends(staticDiscovery{"game": {
+		serviceInstance("game", "node-a", "grpc://"+lis.Addr().String()),
+	}}, nil, time.Second)
+	t.Cleanup(backendPool.close)
+	binding := testBinding()
+	gateway := &Server{
+		identity:       identity{id: binding.GateID, endpoint: binding.GateEndpoint},
+		locator:        store,
+		backends:       backendPool,
+		rpcTimeout:     time.Second,
+		cleanupTimeout: time.Second,
+		sessions:       &sessionRegistry{byConnID: make(map[string]*session)},
+	}
+	conn := newTestConnection("conn-a")
+	_, _, err = store.BindGate(context.Background(), binding, time.Minute)
+	require.NoError(t, err)
+	require.True(t, gateway.sessions.add(conn, time.Minute))
+	sess := gateway.sessions.get(conn.ConnID())
+	require.NotNil(t, sess)
+	require.True(t, sess.finishAuthentication(locate.GateLease{Binding: binding, TTL: time.Minute}, time.Now()))
+	return gateway, store, conn, binding, disconnects
+}
+
+type forwardServer struct {
+	clusterv1.UnimplementedNodeServer
+	request     *clusterv1.ForwardRequest
+	body        []byte
+	err         error
+	disconnects chan *clusterv1.DisconnectRequest
+}
+
+func (s *forwardServer) Forward(_ context.Context, in *clusterv1.ForwardRequest) (*clusterv1.ForwardReply, error) {
+	s.request = in
+	if s.err != nil {
+		return nil, s.err
+	}
+	body := s.body
+	if body == nil {
+		body = []byte("reply")
+	}
+	return &clusterv1.ForwardReply{Body: body}, nil
+}
+
+func (s *forwardServer) Disconnect(_ context.Context, in *clusterv1.DisconnectRequest) (*emptypb.Empty, error) {
+	if s.disconnects != nil {
+		s.disconnects <- in
+	}
+	return &emptypb.Empty{}, nil
 }

@@ -4,8 +4,12 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"sync"
 	"testing"
 	"time"
@@ -16,34 +20,6 @@ import (
 
 	"github.com/go-kratos/kratos/v3/encoding"
 )
-
-type clientAuthHandler struct {
-	code            int32
-	delay           time.Duration
-	pushBeforeReply bool
-	pushCount       int
-	closed          chan<- struct{}
-}
-
-func (clientAuthHandler) Open(context.Context, network.Connection) error { return nil }
-
-func (h clientAuthHandler) Handle(_ context.Context, conn network.Connection, message *v1.Proto) (*v1.Proto, error) {
-	if h.delay > 0 {
-		time.Sleep(h.delay)
-	}
-	pushCount := h.pushCount
-	if h.pushBeforeReply {
-		pushCount = 1
-	}
-	for range pushCount {
-		if err := conn.SendProto(&v1.Proto{Op: v1.OpPush, Cmd: 1, Body: []byte("before-auth-reply")}); err != nil {
-			return nil, err
-		}
-	}
-	message.Op = v1.OpAuthReply
-	message.Code = h.code
-	return message, nil
-}
 
 func TestNewClientCountsConnectAndAuthPushAgainstCallbackCapacity(t *testing.T) {
 	endpoint := startTCPTestServer(t, clientAuthHandler{pushCount: 1})
@@ -71,30 +47,6 @@ func TestNewClientCountsConnectAndAuthPushAgainstCallbackCapacity(t *testing.T) 
 		t.Fatal("push callback ran after initialization failure")
 	default:
 	}
-}
-
-func (h clientAuthHandler) Close(context.Context, network.Connection) {
-	if h.closed != nil {
-		select {
-		case h.closed <- struct{}{}:
-		default:
-		}
-	}
-}
-
-type cancelOnAuthReplyCodec struct {
-	encoding.Codec
-	cancel context.CancelFunc
-}
-
-func (c cancelOnAuthReplyCodec) Unmarshal(data []byte, value any) error {
-	if err := c.Codec.Unmarshal(data, value); err != nil {
-		return err
-	}
-	if message, ok := value.(*v1.Proto); ok && message.Op == v1.OpAuthReply {
-		c.cancel()
-	}
-	return nil
 }
 
 func TestNewClientReportsAuthenticationFailure(t *testing.T) {
@@ -253,28 +205,6 @@ func TestReadAuthenticationReplyRejectsInvalidResponses(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			testInvalidAuthenticationReply(t, test.write, test.want, test.is)
 		})
-	}
-}
-
-func testInvalidAuthenticationReply(t *testing.T, write func(*bufio.Writer) error, want string, wantErr error) {
-	t.Helper()
-	var wire bytes.Buffer
-	wr := bufio.NewWriter(&wire)
-	if err := write(wr); err != nil {
-		t.Fatal(err)
-	}
-	if err := wr.Flush(); err != nil {
-		t.Fatal(err)
-	}
-
-	o := &clientOptions{codec: defaultCodec(), callbackQueueSize: 1}
-	_, err := o.readAuthenticationReply(context.Background(), bufio.NewReader(&wire))
-	if wantErr != nil {
-		if !errors.Is(err, wantErr) {
-			t.Fatalf("readAuthenticationReply() error = %v, want %v", err, wantErr)
-		}
-	} else if err == nil || err.Error() != want {
-		t.Fatalf("readAuthenticationReply() error = %v, want %q", err, want)
 	}
 }
 
@@ -539,26 +469,6 @@ func TestClientKickRunsAfterPushAndBeforeDisconnect(t *testing.T) {
 	}
 }
 
-type blockingRequestHandler struct {
-	started chan struct{}
-	release chan struct{}
-}
-
-func (blockingRequestHandler) Open(context.Context, network.Connection) error { return nil }
-
-func (h blockingRequestHandler) Handle(_ context.Context, _ network.Connection, message *v1.Proto) (*v1.Proto, error) {
-	if message.Op == v1.OpAuth {
-		message.Op = v1.OpAuthReply
-		return message, nil
-	}
-	h.started <- struct{}{}
-	<-h.release
-	message.Op = v1.OpResponse
-	return message, nil
-}
-
-func (blockingRequestHandler) Close(context.Context, network.Connection) {}
-
 func TestClientRequestReportsTimeout(t *testing.T) {
 	h := blockingRequestHandler{started: make(chan struct{}, 1), release: make(chan struct{})}
 	s := newTCPServer(t, h, Address("127.0.0.1:0"))
@@ -643,3 +553,154 @@ func TestClientDisconnectCallbackCanCloseClient(t *testing.T) {
 		t.Fatal("disconnect callback deadlocked Close")
 	}
 }
+
+func TestClientReceivesFinalKick(t *testing.T) {
+	kicked := make(chan *v1.Proto, 1)
+	endpoint := startTCPTestServer(t, kickHandler{})
+	client, err := NewClient(context.Background(), WithAddress(endpoint), WithServiceName("game"),
+		WithToken("synthetic-token"), WithKickHandler(func(code int32) {
+			kicked <- &v1.Proto{Code: code}
+		}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(client.Close)
+	_, _, err = client.Request(context.Background(), 1, new(v1.ClientAuthReq))
+	if err == nil {
+		t.Fatal("Client.Request() succeeded after the final kick")
+	}
+	got := waitTCPValue(t, kicked)
+	if got.Code != 7 {
+		t.Fatalf("Kick() code = %d, want 7", got.Code)
+	}
+}
+
+func TestClientConnectsWithTLS(t *testing.T) {
+	certificateServer := httptest.NewTLSServer(http.NotFoundHandler())
+	serverTLS := certificateServer.TLS.Clone()
+	roots := x509.NewCertPool()
+	roots.AddCert(certificateServer.Certificate())
+	certificateServer.Close()
+	endpoint := startTCPTestServer(t, tcpTestHandler{}, TLSConfig(serverTLS))
+	connected := make(chan struct{})
+	client, err := NewClient(context.Background(), WithAddress(endpoint), WithServiceName("game"), WithToken("synthetic-token"),
+		WithTLSConfig(&tls.Config{MinVersion: tls.VersionTLS12, RootCAs: roots}), WithConnectFunc(func() { close(connected) }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(client.Close)
+	waitTCPValue(t, connected)
+	reply, code, err := client.Request(context.Background(), 1, &v1.Proto{Op: v1.OpPush})
+	if err != nil || code != 0 || len(reply) == 0 {
+		t.Fatalf("Request() = %x, %d, %v", reply, code, err)
+	}
+}
+
+type clientAuthHandler struct {
+	code            int32
+	delay           time.Duration
+	pushBeforeReply bool
+	pushCount       int
+	closed          chan<- struct{}
+}
+
+func (clientAuthHandler) Open(context.Context, network.Connection) error { return nil }
+
+func (h clientAuthHandler) Handle(_ context.Context, conn network.Connection, message *v1.Proto) (*v1.Proto, error) {
+	if h.delay > 0 {
+		time.Sleep(h.delay)
+	}
+	pushCount := h.pushCount
+	if h.pushBeforeReply {
+		pushCount = 1
+	}
+	for range pushCount {
+		if err := conn.SendProto(&v1.Proto{Op: v1.OpPush, Cmd: 1, Body: []byte("before-auth-reply")}); err != nil {
+			return nil, err
+		}
+	}
+	message.Op = v1.OpAuthReply
+	message.Code = h.code
+	return message, nil
+}
+
+func (h clientAuthHandler) Close(context.Context, network.Connection) {
+	if h.closed != nil {
+		select {
+		case h.closed <- struct{}{}:
+		default:
+		}
+	}
+}
+
+type cancelOnAuthReplyCodec struct {
+	encoding.Codec
+	cancel context.CancelFunc
+}
+
+func (c cancelOnAuthReplyCodec) Unmarshal(data []byte, value any) error {
+	if err := c.Codec.Unmarshal(data, value); err != nil {
+		return err
+	}
+	if message, ok := value.(*v1.Proto); ok && message.Op == v1.OpAuthReply {
+		c.cancel()
+	}
+	return nil
+}
+
+func testInvalidAuthenticationReply(t *testing.T, write func(*bufio.Writer) error, want string, wantErr error) {
+	t.Helper()
+	var wire bytes.Buffer
+	wr := bufio.NewWriter(&wire)
+	if err := write(wr); err != nil {
+		t.Fatal(err)
+	}
+	if err := wr.Flush(); err != nil {
+		t.Fatal(err)
+	}
+
+	o := &clientOptions{codec: defaultCodec(), callbackQueueSize: 1}
+	_, err := o.readAuthenticationReply(context.Background(), bufio.NewReader(&wire))
+	if wantErr != nil {
+		if !errors.Is(err, wantErr) {
+			t.Fatalf("readAuthenticationReply() error = %v, want %v", err, wantErr)
+		}
+	} else if err == nil || err.Error() != want {
+		t.Fatalf("readAuthenticationReply() error = %v, want %q", err, want)
+	}
+}
+
+type blockingRequestHandler struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (blockingRequestHandler) Open(context.Context, network.Connection) error { return nil }
+
+func (h blockingRequestHandler) Handle(_ context.Context, _ network.Connection, message *v1.Proto) (*v1.Proto, error) {
+	if message.Op == v1.OpAuth {
+		message.Op = v1.OpAuthReply
+		return message, nil
+	}
+	h.started <- struct{}{}
+	<-h.release
+	message.Op = v1.OpResponse
+	return message, nil
+}
+
+func (blockingRequestHandler) Close(context.Context, network.Connection) {}
+
+type kickHandler struct{}
+
+func (kickHandler) Open(context.Context, network.Connection) error { return nil }
+
+func (kickHandler) Handle(ctx context.Context, conn network.Connection, message *v1.Proto) (*v1.Proto, error) {
+	if message.Op == v1.OpAuth {
+		message.Op = v1.OpAuthReply
+		return message, nil
+	}
+	_ = conn.CloseWithProto(ctx, &v1.Proto{Op: v1.OpKick, Code: 7})
+	return message, nil
+}
+
+func (kickHandler) Close(context.Context, network.Connection) {}

@@ -213,13 +213,20 @@ node.Register(server, message.WhotEnterCommand,
 
 ## 源码导航
 
-Gateway/Node 分别为11/9个生产文件，按职责阅读：
+Gateway/Node 按职责阅读：
 
 | 链路 | 源码入口 |
 | --- | --- |
 | 认证与请求 | [Gateway 入站与认证](../gateway/inbound.go) → [转发](../gateway/forward.go) → [Node RPC 与分发](../node/dispatch.go) → [command 注册](../node/register.go) |
-| 绑定、续租与推送 | [Session](../node/session.go)、[按 UID 推送](../node/push.go) |
+| 绑定、续租与推送 | [Session 绑定与上下文](../node/session.go)、[请求连接与 UID 推送](../node/push.go) |
 | 启动、就绪与停止 | [Gateway 生命周期](../gateway/lifecycle.go)、[Node 生命周期与 Registrar](../node/lifecycle.go) |
+| socket 接入与请求处理 | [TCP 连接](../network/tcp/server_connection.go)、[WebSocket 连接](../network/websocket/server_connection.go) |
+
+同一职责的生产代码与行为测试就近放置，不要求一文件一测试文件：Gateway 认证、心跳属于 `inbound`，Node 请求 metadata 属于 `dispatch`；跨职责的 pipeline、request lifecycle 和集成场景按各自契约组织。选项声明与校验放在 `options.go` 或 `*_options.go`，连接接纳和读循环放在 `server_connection.go`，不按行数拆分或合并。
+
+测试用例放在文件前部，仅本文件使用的 helper 放在后部；跨文件复用的启动器、fake 和断言按共享职责聚合，`test_helpers_test.go` 用于包内共用夹具。fake 只模拟测试所需契约，明确省略的行为，未支持的意外调用应显式失败；TTL、Redis 原子修改及 etcd 租约由对应 adapter 测试验证，示例测试验证装配参数。
+
+同一存储契约可在 miniredis、standalone、cluster 子测试中复用断言；真实依赖显式门控，逐后端报告通过或跳过。表驱动或并行测试仅在场景独立、断言更清楚时使用。资源创建成功后立即注册清理，再做就绪断言；阻塞的测试 worker 必须有失败时也能触发的释放路径，并有界等待退出。
 
 ## 开发与验证
 

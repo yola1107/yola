@@ -2,6 +2,8 @@ package websocket
 
 import (
 	"crypto/tls"
+	"errors"
+	"fmt"
 	"net"
 	"net/url"
 	"time"
@@ -11,6 +13,24 @@ import (
 	"github.com/go-kratos/kratos/v3/encoding"
 	"github.com/go-kratos/kratos/v3/middleware"
 )
+
+type serverConfig struct {
+	network          string
+	address          string
+	advertiseHost    string
+	path             string
+	tls              *tls.Config
+	codec            encoding.Codec
+	middlewares      []middleware.Middleware
+	timeout          time.Duration
+	allowedOrigins   map[string]struct{}
+	handshakeTimeout time.Duration
+	maxHeaderBytes   int
+	channel          *ChannelConfig
+	maxConnLimit     int32
+	maxConnPerIP     int32
+	requestQueueSize int
+}
 
 // ServerOption configures a WebSocket server.
 type ServerOption func(*Server)
@@ -112,4 +132,60 @@ func HandshakeTimeout(timeout time.Duration) ServerOption {
 // MaxHeaderBytes configures the maximum WebSocket handshake header size.
 func MaxHeaderBytes(size int) ServerOption {
 	return func(s *Server) { s.config.maxHeaderBytes = size }
+}
+
+func (s *Server) validateConfig() error {
+	if !validPath(s.config.path) {
+		return errors.New("websocket: invalid path")
+	}
+	if s.config.codec == nil {
+		return errors.New("websocket: codec is required")
+	}
+	if err := s.config.channel.validate(); err != nil {
+		return err
+	}
+	if s.config.maxConnLimit <= 0 {
+		return errors.New("websocket: connection limit must be positive")
+	}
+	if s.config.maxConnPerIP <= 0 {
+		return errors.New("websocket: per-IP connection limit must be positive")
+	}
+	if s.config.handshakeTimeout <= 0 {
+		return errors.New("websocket: handshake timeout must be positive")
+	}
+	if s.config.maxHeaderBytes <= 0 {
+		return errors.New("websocket: max header bytes must be positive")
+	}
+	if s.config.timeout < 0 {
+		return errors.New("websocket: handler timeout cannot be negative")
+	}
+	if s.config.requestQueueSize <= 0 {
+		return errors.New("websocket: request queue size must be positive")
+	}
+	if err := tlsconfig.ValidateServer(s.config.tls); err != nil {
+		return fmt.Errorf("websocket: %w", err)
+	}
+	if s.endpoint == nil {
+		return nil
+	}
+	scheme := s.config.endpointScheme()
+	if s.endpoint.Scheme != scheme || s.endpoint.Host == "" {
+		return fmt.Errorf("websocket: endpoint must use %s:// with a host", scheme)
+	}
+	if s.endpoint.Path != s.config.path {
+		return errors.New("websocket: endpoint path must match server path")
+	}
+	return nil
+}
+
+func (c serverConfig) endpointScheme() string {
+	if c.tls != nil {
+		return "wss"
+	}
+	return "ws"
+}
+
+func validPath(path string) bool {
+	parsed, err := url.ParseRequestURI(path)
+	return err == nil && parsed.Path == path
 }

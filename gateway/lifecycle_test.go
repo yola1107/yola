@@ -463,8 +463,10 @@ type failingListener struct {
 }
 
 func (l *failingListener) Accept() (net.Conn, error) { return nil, l.acceptErr }
-func (*failingListener) Close() error                { return nil }
-func (*failingListener) Addr() net.Addr              { return &net.TCPAddr{IP: net.ParseIP("127.0.0.1")} }
+
+func (*failingListener) Close() error { return nil }
+
+func (*failingListener) Addr() net.Addr { return &net.TCPAddr{IP: net.ParseIP("127.0.0.1")} }
 
 func (s *initializationLocator) Ping(ctx context.Context) error {
 	s.pinged <- ctx

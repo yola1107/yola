@@ -3,6 +3,7 @@ package websocket
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/http/httptest"
 	"sync"
@@ -13,26 +14,13 @@ import (
 	"yola/api/protocol/v1"
 	"yola/network"
 
+	"github.com/go-kratos/kratos/v3/encoding"
+	"github.com/go-kratos/kratos/v3/encoding/protojson"
+	"github.com/go-kratos/kratos/v3/middleware"
+	"github.com/go-kratos/kratos/v3/transport"
 	"github.com/gorilla/websocket"
 	"google.golang.org/protobuf/proto"
 )
-
-type messageTimeoutHandler struct {
-	timedOut chan<- error
-}
-
-func (*messageTimeoutHandler) Open(context.Context, network.Connection) error { return nil }
-
-func (h *messageTimeoutHandler) Handle(ctx context.Context, _ network.Connection, message *v1.Proto) (*v1.Proto, error) {
-	if message.Op == v1.OpAuth {
-		return &v1.Proto{Op: v1.OpAuthReply, Seq: message.Seq}, nil
-	}
-	<-ctx.Done()
-	h.timedOut <- ctx.Err()
-	return nil, ctx.Err()
-}
-
-func (*messageTimeoutHandler) Close(context.Context, network.Connection) {}
 
 func TestServerMessageTimeoutCancelsHandlerContext(t *testing.T) {
 	timedOut := make(chan error, 1)
@@ -165,69 +153,6 @@ func TestServerLateSuccessfulOpenCallsClose(t *testing.T) {
 	}
 }
 
-type lateSuccessfulOpenHandler struct {
-	started chan struct{}
-	release <-chan struct{}
-	closed  chan<- error
-}
-
-func (h lateSuccessfulOpenHandler) Open(context.Context, network.Connection) error {
-	close(h.started)
-	<-h.release
-	return nil
-}
-
-func (lateSuccessfulOpenHandler) Handle(context.Context, network.Connection, *v1.Proto) (*v1.Proto, error) {
-	return nil, nil
-}
-
-func (h lateSuccessfulOpenHandler) Close(ctx context.Context, _ network.Connection) {
-	h.closed <- ctx.Err()
-}
-
-type blockingOpenHandler struct {
-	started  chan struct{}
-	release  chan struct{}
-	finished chan error
-}
-
-func (h blockingOpenHandler) Open(ctx context.Context, _ network.Connection) error {
-	h.started <- struct{}{}
-	select {
-	case <-h.release:
-		return nil
-	case <-ctx.Done():
-		h.finished <- ctx.Err()
-		return ctx.Err()
-	}
-}
-
-func (blockingOpenHandler) Handle(context.Context, network.Connection, *v1.Proto) (*v1.Proto, error) {
-	return nil, nil
-}
-
-func (blockingOpenHandler) Close(context.Context, network.Connection) {}
-
-type countingHandler struct{ handled atomic.Int32 }
-
-func (*countingHandler) Open(context.Context, network.Connection) error { return nil }
-func (h *countingHandler) Handle(_ context.Context, _ network.Connection, message *v1.Proto) (*v1.Proto, error) {
-	h.handled.Add(1)
-	return message, nil
-}
-func (*countingHandler) Close(context.Context, network.Connection) {}
-
-type rejectingHandler struct{ closed atomic.Int32 }
-
-func (*rejectingHandler) Open(context.Context, network.Connection) error {
-	return errors.New("connection rejected")
-}
-
-func (*rejectingHandler) Handle(_ context.Context, _ network.Connection, message *v1.Proto) (*v1.Proto, error) {
-	return message, nil
-}
-func (h *rejectingHandler) Close(context.Context, network.Connection) { h.closed.Add(1) }
-
 func TestServerOpenFailureSkipsClose(t *testing.T) {
 	h := new(rejectingHandler)
 	s := newWebSocketServer(t, h, Address("127.0.0.1:0"))
@@ -253,24 +178,6 @@ func TestServerOpenFailureSkipsClose(t *testing.T) {
 	if h.closed.Load() != 0 {
 		t.Fatalf("Close called after Open failure: %d", h.closed.Load())
 	}
-}
-
-type closeContextHandler struct {
-	opened chan struct{}
-	closed chan error
-}
-
-func (h *closeContextHandler) Open(context.Context, network.Connection) error {
-	close(h.opened)
-	return nil
-}
-
-func (*closeContextHandler) Handle(_ context.Context, _ network.Connection, message *v1.Proto) (*v1.Proto, error) {
-	return message, nil
-}
-
-func (h *closeContextHandler) Close(ctx context.Context, _ network.Connection) {
-	h.closed <- ctx.Err()
 }
 
 func TestServerCloseContextOnClientDisconnect(t *testing.T) {
@@ -318,54 +225,6 @@ func TestServerCloseContextOnStop(t *testing.T) {
 	if got := waitWebSocketValue(t, h.closed); !errors.Is(got, context.Canceled) {
 		t.Errorf("ConnectionHandler.Close() context error = %v, want %v", got, context.Canceled)
 	}
-}
-
-type upgradeLifecycleHandler struct {
-	opened chan network.Connection
-}
-
-func (h *upgradeLifecycleHandler) Open(_ context.Context, conn network.Connection) error {
-	h.opened <- conn
-	return nil
-}
-
-func (*upgradeLifecycleHandler) Handle(_ context.Context, _ network.Connection, message *v1.Proto) (*v1.Proto, error) {
-	return message, nil
-}
-func (*upgradeLifecycleHandler) Close(context.Context, network.Connection) {}
-
-type handshakeWriteListener struct {
-	net.Listener
-	started chan struct{}
-	release <-chan struct{}
-	once    sync.Once
-}
-
-func (l *handshakeWriteListener) Accept() (net.Conn, error) {
-	conn, err := l.Listener.Accept()
-	if err != nil {
-		return nil, err
-	}
-	return &handshakeWriteConn{Conn: conn, gate: l}, nil
-}
-
-type handshakeWriteConn struct {
-	net.Conn
-	gate *handshakeWriteListener
-}
-
-func (c *handshakeWriteConn) Write(body []byte) (int, error) {
-	c.gate.once.Do(func() {
-		close(c.gate.started)
-		<-c.gate.release
-	})
-	return c.Conn.Write(body)
-}
-
-func serverChannelCount(server *Server) int {
-	server.lifecycleMu.Lock()
-	defer server.lifecycleMu.Unlock()
-	return len(server.channels)
 }
 
 func TestServerRejectsUpgradeCommittedAfterStop(t *testing.T) {
@@ -548,3 +407,228 @@ func TestServerAcceptsFragmentedProto(t *testing.T) {
 		t.Fatalf("response = %v, want %v", got, want)
 	}
 }
+
+func TestServerMessageContextAndReplacementReply(t *testing.T) {
+	observed := make(chan error, 1)
+	handler := &messageContextHandler{observed: observed}
+	codec := encoding.GetCodec(protojson.Name)
+	endpoint := startWebSocketTestServer(t, handler, Codec(codec), Timeout(time.Second), Middleware(
+		func(next middleware.Handler) middleware.Handler {
+			return func(ctx context.Context, request any) (any, error) {
+				return next(context.WithValue(ctx, messageContextKey{}, true), request)
+			}
+		},
+	))
+	handler.endpoint = endpoint
+	client, err := NewClient(
+		context.Background(),
+		WithEndpoint(endpoint),
+		WithServiceName("game"),
+		WithToken("synthetic-token"),
+		WithCodec(codec),
+	)
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	t.Cleanup(func() { client.Close() })
+
+	body, code, err := client.Request(context.Background(), 7, new(v1.ClientAuthReq))
+	if err != nil {
+		t.Fatalf("Client.Request() error = %v", err)
+	}
+	if string(body) != "replacement" || code != 23 {
+		t.Errorf("Client.Request() = (%q, %d), want (%q, %d)", body, code, "replacement", 23)
+	}
+	if err := waitWebSocketValue(t, observed); err != nil {
+		t.Errorf("handler message context error = %v", err)
+	}
+}
+
+type messageTimeoutHandler struct {
+	timedOut chan<- error
+}
+
+func (*messageTimeoutHandler) Open(context.Context, network.Connection) error { return nil }
+
+func (h *messageTimeoutHandler) Handle(ctx context.Context, _ network.Connection, message *v1.Proto) (*v1.Proto, error) {
+	if message.Op == v1.OpAuth {
+		return &v1.Proto{Op: v1.OpAuthReply, Seq: message.Seq}, nil
+	}
+	<-ctx.Done()
+	h.timedOut <- ctx.Err()
+	return nil, ctx.Err()
+}
+
+func (*messageTimeoutHandler) Close(context.Context, network.Connection) {}
+
+type lateSuccessfulOpenHandler struct {
+	started chan struct{}
+	release <-chan struct{}
+	closed  chan<- error
+}
+
+func (h lateSuccessfulOpenHandler) Open(context.Context, network.Connection) error {
+	close(h.started)
+	<-h.release
+	return nil
+}
+
+func (lateSuccessfulOpenHandler) Handle(context.Context, network.Connection, *v1.Proto) (*v1.Proto, error) {
+	return nil, nil
+}
+
+func (h lateSuccessfulOpenHandler) Close(ctx context.Context, _ network.Connection) {
+	h.closed <- ctx.Err()
+}
+
+type blockingOpenHandler struct {
+	started  chan struct{}
+	release  chan struct{}
+	finished chan error
+}
+
+func (h blockingOpenHandler) Open(ctx context.Context, _ network.Connection) error {
+	h.started <- struct{}{}
+	select {
+	case <-h.release:
+		return nil
+	case <-ctx.Done():
+		h.finished <- ctx.Err()
+		return ctx.Err()
+	}
+}
+
+func (blockingOpenHandler) Handle(context.Context, network.Connection, *v1.Proto) (*v1.Proto, error) {
+	return nil, nil
+}
+
+func (blockingOpenHandler) Close(context.Context, network.Connection) {}
+
+type countingHandler struct{ handled atomic.Int32 }
+
+func (*countingHandler) Open(context.Context, network.Connection) error { return nil }
+
+func (h *countingHandler) Handle(_ context.Context, _ network.Connection, message *v1.Proto) (*v1.Proto, error) {
+	h.handled.Add(1)
+	return message, nil
+}
+
+func (*countingHandler) Close(context.Context, network.Connection) {}
+
+type rejectingHandler struct{ closed atomic.Int32 }
+
+func (*rejectingHandler) Open(context.Context, network.Connection) error {
+	return errors.New("connection rejected")
+}
+
+func (*rejectingHandler) Handle(_ context.Context, _ network.Connection, message *v1.Proto) (*v1.Proto, error) {
+	return message, nil
+}
+
+func (h *rejectingHandler) Close(context.Context, network.Connection) { h.closed.Add(1) }
+
+type closeContextHandler struct {
+	opened chan struct{}
+	closed chan error
+}
+
+func (h *closeContextHandler) Open(context.Context, network.Connection) error {
+	close(h.opened)
+	return nil
+}
+
+func (*closeContextHandler) Handle(_ context.Context, _ network.Connection, message *v1.Proto) (*v1.Proto, error) {
+	return message, nil
+}
+
+func (h *closeContextHandler) Close(ctx context.Context, _ network.Connection) {
+	h.closed <- ctx.Err()
+}
+
+type upgradeLifecycleHandler struct {
+	opened chan network.Connection
+}
+
+func (h *upgradeLifecycleHandler) Open(_ context.Context, conn network.Connection) error {
+	h.opened <- conn
+	return nil
+}
+
+func (*upgradeLifecycleHandler) Handle(_ context.Context, _ network.Connection, message *v1.Proto) (*v1.Proto, error) {
+	return message, nil
+}
+
+func (*upgradeLifecycleHandler) Close(context.Context, network.Connection) {}
+
+type handshakeWriteListener struct {
+	net.Listener
+	started chan struct{}
+	release <-chan struct{}
+	once    sync.Once
+}
+
+func (l *handshakeWriteListener) Accept() (net.Conn, error) {
+	conn, err := l.Listener.Accept()
+	if err != nil {
+		return nil, err
+	}
+	return &handshakeWriteConn{Conn: conn, gate: l}, nil
+}
+
+type handshakeWriteConn struct {
+	net.Conn
+	gate *handshakeWriteListener
+}
+
+func (c *handshakeWriteConn) Write(body []byte) (int, error) {
+	c.gate.once.Do(func() {
+		close(c.gate.started)
+		<-c.gate.release
+	})
+	return c.Conn.Write(body)
+}
+
+func serverChannelCount(server *Server) int {
+	server.lifecycleMu.Lock()
+	defer server.lifecycleMu.Unlock()
+	return len(server.channels)
+}
+
+type messageContextKey struct{}
+
+type messageContextHandler struct {
+	observed chan<- error
+	endpoint string
+}
+
+func (*messageContextHandler) Open(context.Context, network.Connection) error { return nil }
+
+func (h *messageContextHandler) Handle(ctx context.Context, _ network.Connection, message *v1.Proto) (*v1.Proto, error) {
+	if message.Op == v1.OpAuth {
+		return &v1.Proto{Op: v1.OpAuthReply, Seq: message.Seq}, nil
+	}
+	tr, ok := transport.FromServerContext(ctx)
+	if !ok {
+		h.observed <- errors.New("transport context is unavailable")
+	} else {
+		_, hasDeadline := ctx.Deadline()
+		if tr.Operation() != network.ConnectionHandlerOperation || tr.Endpoint() != h.endpoint ||
+			tr.RequestHeader().Get("remote_ip") != "127.0.0.1" ||
+			tr.RequestHeader().Get("conn_id") == "" || !hasDeadline ||
+			ctx.Value(messageContextKey{}) != true {
+			h.observed <- fmt.Errorf("unexpected message context: transport=%+v deadline=%t middleware=%v",
+				tr, hasDeadline, ctx.Value(messageContextKey{}))
+		} else {
+			h.observed <- nil
+		}
+	}
+	return &v1.Proto{
+		Op:   v1.OpResponse,
+		Seq:  message.Seq,
+		Cmd:  message.Cmd,
+		Code: 23,
+		Body: []byte("replacement"),
+	}, nil
+}
+
+func (*messageContextHandler) Close(context.Context, network.Connection) {}

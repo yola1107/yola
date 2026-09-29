@@ -144,33 +144,13 @@ func TestAcceptedSessionPushCompletesWhileStopDrains(t *testing.T) {
 	gateAddress := startGatewayStub(t, stub)
 
 	server := newDispatchTestServer(t, PushTimeout(time.Second))
-	entered := make(chan struct{})
-	release := make(chan struct{})
-	releaseHandler := sync.OnceFunc(func() { close(release) })
-	t.Cleanup(releaseHandler)
-	server.RegisterRawHandler(1, func(ctx context.Context, _ []byte) ([]byte, error) {
-		close(entered)
-		<-release
-		sess, _ := FromContext(ctx)
-		return nil, sess.Push(ctx, 2, wrapperspb.String("push"))
-	})
 	binding := testBinding("player-a", "conn-a")
 	binding.GateEndpoint = "grpc://" + gateAddress
 
-	forwardDone := make(chan error, 1)
-	go func() {
-		_, err := server.forward(context.Background(), binding, 1, nil)
-		forwardDone <- err
-	}()
-	waitNodeSignal(t, entered)
-	stopDone := make(chan error, 1)
-	go func() { stopDone <- server.Stop(context.Background()) }()
-	require.Eventually(t, server.requests.isClosed, time.Second, time.Millisecond)
-	releaseHandler()
-
-	require.NoError(t, receiveNodeValue(t, forwardDone))
-	require.NotNil(t, receiveNodeValue(t, stub.pushes))
-	require.NoError(t, receiveNodeValue(t, stopDone))
+	checkAcceptedPushDuringStop(t, server, binding, stub.pushes, func(ctx context.Context) error {
+		sess, _ := FromContext(ctx)
+		return sess.Push(ctx, 2, wrapperspb.String("push"))
+	})
 }
 
 func TestAcceptedHandlerPushToUIDCompletesWhileStopDrains(t *testing.T) {
@@ -182,6 +162,13 @@ func TestAcceptedHandlerPushToUIDCompletesWhileStopDrains(t *testing.T) {
 	require.NoError(t, err)
 	server := newDispatchTestServer(t, Locator(store), PushTimeout(time.Second))
 	t.Cleanup(func() { require.NoError(t, server.Stop(context.Background())) })
+	checkAcceptedPushDuringStop(t, server, binding, stub.pushes, func(ctx context.Context) error {
+		return server.PushToUID(ctx, binding.UID, 2, wrapperspb.String("push"))
+	})
+}
+
+func checkAcceptedPushDuringStop(t *testing.T, server *Server, binding locate.GateBinding, pushes <-chan *v1.PushRequest, push func(context.Context) error) {
+	t.Helper()
 	entered := make(chan struct{})
 	release := make(chan struct{})
 	releaseHandler := sync.OnceFunc(func() { close(release) })
@@ -189,7 +176,7 @@ func TestAcceptedHandlerPushToUIDCompletesWhileStopDrains(t *testing.T) {
 	server.RegisterRawHandler(1, func(ctx context.Context, _ []byte) ([]byte, error) {
 		close(entered)
 		<-release
-		return nil, server.PushToUID(ctx, binding.UID, 2, wrapperspb.String("push"))
+		return nil, push(ctx)
 	})
 	forwardDone := make(chan error, 1)
 	go func() {
@@ -203,7 +190,7 @@ func TestAcceptedHandlerPushToUIDCompletesWhileStopDrains(t *testing.T) {
 	releaseHandler()
 
 	require.NoError(t, receiveNodeValue(t, forwardDone))
-	require.NotNil(t, receiveNodeValue(t, stub.pushes))
+	require.NotNil(t, receiveNodeValue(t, pushes))
 	require.NoError(t, receiveNodeValue(t, stopDone))
 }
 

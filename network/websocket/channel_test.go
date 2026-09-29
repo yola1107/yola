@@ -179,15 +179,6 @@ func TestReadBoundedFrame(t *testing.T) {
 	}
 }
 
-type limitedChunkReader struct {
-	*bytes.Reader
-	size int
-}
-
-func (r *limitedChunkReader) Read(body []byte) (int, error) {
-	return r.Reader.Read(body[:min(len(body), r.size)])
-}
-
 func TestOnlyDefaultCodecOptimizesFrames(t *testing.T) {
 	if !canOptimizeFrames(defaultCodec()) {
 		t.Fatal("default protobuf codec did not enable bounded buffer reuse")
@@ -306,4 +297,48 @@ func TestFormatCloseFrameLimitsReason(t *testing.T) {
 	if !utf8.Valid(frame[2:]) {
 		t.Fatal("close reason is not valid UTF-8")
 	}
+}
+
+func TestChannelSendConcurrentClose(t *testing.T) {
+	endpoint := startWebSocketTestServer(t, websocketTestHandler{})
+	client, err := NewClient(context.Background(), WithEndpoint(endpoint), WithServiceName("game"), WithToken("synthetic-token"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(client.Close)
+	ch := client.Channel()
+	start := make(chan struct{})
+	errs := make(chan error, 32)
+	var wg sync.WaitGroup
+	for range 32 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			errs <- ch.SendProto(&v1.Proto{Op: v1.OpHeartbeat})
+		}()
+	}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		<-start
+		_ = ch.Close()
+	}()
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil && !errors.Is(err, network.ErrConnectionClosed) && !errors.Is(err, network.ErrSendQueueFull) {
+			t.Fatalf("SendProto() error = %v", err)
+		}
+	}
+}
+
+type limitedChunkReader struct {
+	*bytes.Reader
+	size int
+}
+
+func (r *limitedChunkReader) Read(body []byte) (int, error) {
+	return r.Reader.Read(body[:min(len(body), r.size)])
 }

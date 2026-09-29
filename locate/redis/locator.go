@@ -39,11 +39,6 @@ func (l *locator) Ping(ctx context.Context) error {
 	return locatorError(ctx, l.client.Ping(ctx).Err())
 }
 
-func (l *locator) run(ctx context.Context, script *redis.Script, key string, args ...any) ([]any, error) {
-	values, err := script.Run(ctx, l.client, []string{key}, args...).Slice()
-	return values, locatorError(ctx, err)
-}
-
 // locatorError 仅为网络超时补充已生效的 caller 取消原因，保留原始错误及成功结果。
 func locatorError(ctx context.Context, err error) error {
 	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
