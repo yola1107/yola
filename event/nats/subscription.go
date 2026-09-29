@@ -23,7 +23,7 @@ type subscription struct {
 	statsMu         sync.Mutex
 	stats           event.SubscriptionStats
 	messages        <-chan *natsgo.Msg
-	dropped         atomic.Uint64
+	payloadDropped  atomic.Uint64
 	stopOnce        sync.Once
 	// deactivated 发布原生清理结果；stopDone 还等待消费协程退出。
 	deactivated chan struct{}
@@ -59,7 +59,7 @@ func (s *subscription) SubscriptionStats() event.SubscriptionStats {
 	s.sampleDropped()
 	stats := s.stats
 	stats.QueueDepth = len(s.messages)
-	stats.PayloadDropped = s.dropped.Load()
+	stats.PayloadDropped = s.payloadDropped.Load()
 	return stats
 }
 
@@ -103,7 +103,7 @@ func (s *subscription) consume(ctx context.Context, messages <-chan *natsgo.Msg)
 
 func (s *subscription) handle(ctx context.Context, message *natsgo.Msg) {
 	if len(message.Data) > s.maxPayloadBytes {
-		s.recordDrop("payload_too_large")
+		s.recordPayloadDrop()
 		return
 	}
 	received := event.Event{
@@ -200,10 +200,10 @@ func (s *subscription) wait(ctx context.Context) error {
 	return s.stopErr
 }
 
-func (s *subscription) recordDrop(reason string) {
-	dropped := s.dropped.Add(1)
+func (s *subscription) recordPayloadDrop() {
+	dropped := s.payloadDropped.Add(1)
 	if dropped&(dropped-1) == 0 {
-		slog.Warn("event dropped", "topic", s.topic, "reason", reason, "dropped", dropped)
+		slog.Warn("event dropped", "topic", s.topic, "reason", "payload_too_large", "dropped", dropped)
 	}
 }
 
