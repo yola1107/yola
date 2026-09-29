@@ -3,6 +3,7 @@ run:
   modules-download-mode: readonly
 linters:
   default: none
+  # Uber Go Style Guide 的行长为软限制，不使用 lll 硬性报错。
   enable:
     - bodyclose
     - dogsled
@@ -13,7 +14,6 @@ linters:
     - gocyclo
     - govet
     - ineffassign
-    - lll
     - loggercheck
     - misspell
     - mnd
@@ -33,8 +33,6 @@ linters:
     govet:
       enable:
         - shadow
-    lll:
-      line-length: 160
     misspell:
       locale: US
     mnd:
