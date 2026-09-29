@@ -22,7 +22,7 @@ var (
 	_ transport.Endpointer = (*Server)(nil)
 )
 
-// Server is a Gorilla WebSocket transport server.
+// Server 是 Gorilla WebSocket transport server。
 type Server struct {
 	config      serverConfig
 	httpServer  http.Server
@@ -44,7 +44,7 @@ type Server struct {
 	handler network.ConnectionHandler
 }
 
-// NewServer creates a WebSocket transport server.
+// NewServer 创建 WebSocket transport server。
 func NewServer(opts ...ServerOption) *Server {
 	s := &Server{
 		config: serverConfig{
@@ -88,7 +88,7 @@ func NewServer(opts ...ServerOption) *Server {
 	return s
 }
 
-// SetHandler injects the connection handler before Start.
+// SetHandler 在 Start 前注入连接处理器。
 func (s *Server) SetHandler(handler network.ConnectionHandler) error {
 	s.lifecycleMu.Lock()
 	defer s.lifecycleMu.Unlock()
@@ -105,7 +105,7 @@ func (s *Server) SetHandler(handler network.ConnectionHandler) error {
 	return nil
 }
 
-// BeforeStart validates the server and binds its listener before service registration.
+// BeforeStart 在服务注册前校验配置并绑定 listener。
 func (s *Server) BeforeStart(_ context.Context) error {
 	s.lifecycleMu.Lock()
 	defer s.lifecycleMu.Unlock()
@@ -125,7 +125,7 @@ func (s *Server) prepare() error {
 	return s.listenAndEndpoint()
 }
 
-// Endpoint returns the server endpoint.
+// Endpoint 返回服务 endpoint。
 func (s *Server) Endpoint() (*url.URL, error) {
 	s.lifecycleMu.Lock()
 	defer s.lifecycleMu.Unlock()
@@ -166,7 +166,7 @@ func (s *Server) listenAndEndpoint() error {
 	return nil
 }
 
-// Start starts the WebSocket server.
+// Start 启动 WebSocket 服务。
 func (s *Server) Start(ctx context.Context) error {
 	s.lifecycleMu.Lock()
 	if s.cancel != nil || s.stopped {
@@ -206,7 +206,7 @@ func (s *Server) finishServing() {
 	_ = s.stopConnections(context.Background())
 }
 
-// Stop gracefully stops the WebSocket server.
+// Stop 停止 HTTP 服务、关闭 WebSocket 连接，并在 ctx 预算内等待连接任务退出。
 func (s *Server) Stop(ctx context.Context) error {
 	slog.Info("[websocket] server stopping")
 	s.lifecycleMu.Lock()

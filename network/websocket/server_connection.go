@@ -102,7 +102,7 @@ func (s *Server) readWebSocketMessages(connectionCtx context.Context, ch *Channe
 		defer dispatcher.Stop()
 	}
 	for {
-		message := new(v1.Proto)
+		message := &v1.Proto{}
 		if err := ch.readFrame(message); err != nil {
 			warnUnexpectedNetworkError("[websocket] read failed", ch.ConnID(), err)
 			return
@@ -149,7 +149,7 @@ func (s *Server) connectionContext(ctx context.Context, ch *Channel) context.Con
 }
 
 func (s *Server) reserveConnection(remoteIP string) bool {
-	// The lifecycle lock orders the last Add before stopConnections begins Wait.
+	// lifecycle 锁保证最后一次 Add 先于 stopConnections 的 Wait。
 	s.lifecycleMu.Lock()
 	defer s.lifecycleMu.Unlock()
 	if s.stopped || s.connCount >= s.config.maxConnLimit ||
@@ -163,7 +163,7 @@ func (s *Server) reserveConnection(remoteIP string) bool {
 }
 
 func (s *Server) commitConnection(ctx context.Context, conn *websocket.Conn) *Channel {
-	// Stop either snapshots this channel or wins first and rejects the commit.
+	// Stop 要么将此 channel 纳入快照，要么先关闭准入并拒绝提交。
 	s.lifecycleMu.Lock()
 	defer s.lifecycleMu.Unlock()
 	if s.stopped {

@@ -15,107 +15,107 @@ import (
 )
 
 const (
-	defaultCallbackQueueSize = 64
-	webSocketScheme          = "ws"
-	secureWebSocketScheme    = "wss"
+	_defaultCallbackQueueSize = 64
+	_webSocketScheme          = "ws"
+	_secureWebSocketScheme    = "wss"
 )
 
-// ClientOption configures a WebSocket client.
+// ClientOption 配置 WebSocket client。
 type ClientOption func(*clientOptions)
 
-// WithEndpoint configures the client endpoint.
+// WithEndpoint 配置客户端 endpoint。
 func WithEndpoint(endpoint string) ClientOption {
 	return func(o *clientOptions) {
 		o.endpoint = endpoint
 	}
 }
 
-// WithTimeout configures the connection and initial authentication timeout.
+// WithTimeout 配置建连和首次认证的超时。
 func WithTimeout(timeout time.Duration) ClientOption {
 	return func(o *clientOptions) {
 		o.timeout = timeout
 	}
 }
 
-// WithToken configures the authentication token.
+// WithToken 配置认证 token。
 func WithToken(token string) ClientOption {
 	return func(o *clientOptions) {
 		o.token = []byte(token)
 	}
 }
 
-// WithServiceName configures the Node service used for authentication.
+// WithServiceName 配置认证使用的 Node 服务。
 func WithServiceName(service string) ClientOption {
 	return func(o *clientOptions) {
 		o.serviceName = service
 	}
 }
 
-// WithTLSConfig configures TLS.
+// WithTLSConfig 配置 TLS。
 func WithTLSConfig(c *tls.Config) ClientOption {
 	return func(o *clientOptions) {
 		o.tlsConf = c
 	}
 }
 
-// WithCodec configures protocol frame encoding. Peers must use the same codec.
-// The package-owned protobuf default is not replaced by global codec registration.
+// WithCodec 配置协议帧编码；通信双方必须使用相同 codec。
+// 包内持有的默认 protobuf codec 不会被全局 codec 注册替换。
 func WithCodec(codec encoding.Codec) ClientOption {
 	return func(o *clientOptions) {
 		o.codec = codec
 	}
 }
 
-// WithChannelConfig configures the client channel.
+// WithChannelConfig 配置客户端 channel。
 func WithChannelConfig(c *ChannelConfig) ClientOption {
 	return func(o *clientOptions) {
 		o.channel = c
 	}
 }
 
-// WithPingInterval configures the client heartbeat interval.
+// WithPingInterval 配置客户端心跳间隔。
 func WithPingInterval(interval time.Duration) ClientOption {
 	return func(o *clientOptions) {
 		o.pingInterval = interval
 	}
 }
 
-// WithRequestTimeout configures how long a request remains pending.
+// WithRequestTimeout 配置请求等待结果的最长时间。
 func WithRequestTimeout(timeout time.Duration) ClientOption {
 	return func(o *clientOptions) {
 		o.requestTimeout = timeout
 	}
 }
 
-// WithCallbackQueueSize configures the number of pending connect and push callbacks.
+// WithCallbackQueueSize 配置等待执行的 connect/push 回调队列容量。
 func WithCallbackQueueSize(size int) ClientOption {
 	return func(o *clientOptions) {
 		o.callbackQueueSize = size
 	}
 }
 
-// WithConnectFunc configures the authenticated connection callback.
+// WithConnectFunc 配置认证成功后的连接回调。
 func WithConnectFunc(fn func(*Channel)) ClientOption {
 	return func(o *clientOptions) {
 		o.connectFunc = fn
 	}
 }
 
-// WithDisconnectFunc configures the disconnection callback.
+// WithDisconnectFunc 配置断线回调。
 func WithDisconnectFunc(fn func(*Channel)) ClientOption {
 	return func(o *clientOptions) {
 		o.disconnectFunc = fn
 	}
 }
 
-// WithPushHandler configures push handlers.
+// WithPushHandler 配置推送处理器。
 func WithPushHandler(handler map[int32]PushHandler) ClientOption {
 	return func(o *clientOptions) {
 		o.pushHandler = handler
 	}
 }
 
-// WithKickHandler configures the intentional disconnect callback.
+// WithKickHandler 配置主动断开连接的回调。
 func WithKickHandler(handler KickHandler) ClientOption {
 	return func(o *clientOptions) {
 		o.kickHandler = handler
@@ -148,7 +148,7 @@ func resolveClientOptions(opts ...ClientOption) (*clientOptions, error) {
 		channel:           defaultChannelConfig(),
 		pingInterval:      DefaultPingInterval,
 		requestTimeout:    DefaultRequestTimeout,
-		callbackQueueSize: defaultCallbackQueueSize,
+		callbackQueueSize: _defaultCallbackQueueSize,
 	}
 	for _, opt := range opts {
 		opt(o)
@@ -191,7 +191,7 @@ func resolveClientOptions(opts ...ClientOption) (*clientOptions, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrInvalidURL, err)
 	}
-	if o.tlsConf != nil && u.Scheme != secureWebSocketScheme {
+	if o.tlsConf != nil && u.Scheme != _secureWebSocketScheme {
 		return nil, errors.New("websocket: TLS config requires a wss endpoint")
 	}
 	o.endpoint = u.String()
@@ -201,13 +201,13 @@ func resolveClientOptions(opts ...ClientOption) (*clientOptions, error) {
 func parseURL(endpoint string, insecure bool) (*url.URL, error) {
 	if !strings.Contains(endpoint, "://") {
 		if insecure {
-			endpoint = webSocketScheme + "://" + endpoint
+			endpoint = _webSocketScheme + "://" + endpoint
 		} else {
-			endpoint = secureWebSocketScheme + "://" + endpoint
+			endpoint = _secureWebSocketScheme + "://" + endpoint
 		}
 	}
 	u, err := url.Parse(endpoint)
-	if err != nil || u.Host == "" || u.Scheme != webSocketScheme && u.Scheme != secureWebSocketScheme {
+	if err != nil || u.Host == "" || u.Scheme != _webSocketScheme && u.Scheme != _secureWebSocketScheme {
 		return nil, errors.New("WebSocket endpoint must use ws or wss with a host")
 	}
 	return u, nil

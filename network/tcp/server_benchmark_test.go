@@ -67,7 +67,7 @@ func (c *tcpBenchmarkClient) readPush(send func() error) error {
 }
 
 func (c *tcpBenchmarkClient) readFrame() error {
-	var prefix [framePrefixSize]byte
+	var prefix [_framePrefixSize]byte
 	if _, err := io.ReadFull(c.reader, prefix[:]); err != nil {
 		return err
 	}
@@ -121,8 +121,8 @@ func BenchmarkTCPSlowConsumerBackpressure(b *testing.B) {
 	p := benchmarkProto(v1.OpPush, 4000)
 	b.ReportAllocs()
 	for b.Loop() {
-		ch := newChannel(defaultSendQueueSize, defaultCodec())
-		for range defaultSendQueueSize {
+		ch := newChannel(_defaultSendQueueSize, defaultCodec())
+		for range _defaultSendQueueSize {
 			if err := ch.push(p); err != nil {
 				b.Fatal(err)
 			}
@@ -160,7 +160,7 @@ func newTCPBenchmarkServer(b *testing.B, count int) *tcpBenchmarkServer {
 		if dialErr != nil {
 			b.Fatal(dialErr)
 		}
-		env.clients = append(env.clients, &tcpBenchmarkClient{conn: conn, reader: bufio.NewReaderSize(conn, defaultIOBufferSize)})
+		env.clients = append(env.clients, &tcpBenchmarkClient{conn: conn, reader: bufio.NewReaderSize(conn, _defaultIOBufferSize)})
 		select {
 		case serverConn := <-handler.opened:
 			env.connections = append(env.connections, serverConn)
@@ -210,7 +210,7 @@ func runTCPBenchmark(b *testing.B, connections int, operation func(int) error) {
 		local := 0
 		for pb.Next() && !failed.Load() {
 			index := int((cursor.Add(1) - 1) % uint64(connections))
-			started := time.Time{}
+			var started time.Time
 			if local%128 == 0 {
 				started = time.Now()
 			}
@@ -277,9 +277,9 @@ func marshalBenchmarkFrame(b *testing.B, p *v1.Proto) []byte {
 	if err != nil {
 		b.Fatal(err)
 	}
-	frame := make([]byte, framePrefixSize+len(body))
+	frame := make([]byte, _framePrefixSize+len(body))
 	binary.LittleEndian.PutUint32(frame, uint32(len(body)))
-	copy(frame[framePrefixSize:], body)
+	copy(frame[_framePrefixSize:], body)
 	return frame
 }
 

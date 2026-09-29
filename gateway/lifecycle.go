@@ -11,7 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	protocolv1 "yola/api/protocol/v1"
+	"yola/api/protocol/v1"
 	"yola/internal/contextwait"
 	"yola/locate"
 
@@ -19,13 +19,13 @@ import (
 	"google.golang.org/grpc"
 )
 
-const shutdownWorkerCount = 64
+const _shutdownWorkerCount = 64
 
-// Endpoint returns the internal gRPC endpoint published through the Kratos registry.
+// Endpoint 返回通过 Kratos registry 发布的内部 gRPC endpoint。
 func (s *Server) Endpoint() (*url.URL, error) {
 	s.lifecycle.mu.Lock()
 	defer s.lifecycle.mu.Unlock()
-	if s.lifecycle.state == stStopping {
+	if s.lifecycle.state == _stStopping {
 		return nil, errors.New("gateway: server is stopping or stopped")
 	}
 	return s.resolveGRPCEndpoint(context.Background())
@@ -52,23 +52,23 @@ func (s *Server) closeGRPCListener() error {
 	return nil
 }
 
-// BeforeStart validates the Kratos identity and prepares external resources before registration.
+// BeforeStart 校验 Kratos identity，并在注册前准备外部资源。
 func (s *Server) BeforeStart(ctx context.Context) (err error) {
 	s.lifecycle.mu.Lock()
 	switch s.lifecycle.state {
-	case stStopping:
+	case _stStopping:
 		s.lifecycle.mu.Unlock()
 		return errors.New("gateway: server is stopping or stopped")
-	case stPreparing:
+	case _stPreparing:
 		s.lifecycle.mu.Unlock()
 		return errors.New("gateway: server is already preparing or prepared")
-	case stPrepared, stStarted:
-		s.lifecycle.state = stStopping
+	case _stPrepared, _stStarted:
+		s.lifecycle.state = _stStopping
 		s.lifecycle.mu.Unlock()
 		return errors.New("gateway: server is already preparing or prepared")
 	}
 	preparationDone := make(chan struct{})
-	s.lifecycle.state = stPreparing
+	s.lifecycle.state = _stPreparing
 	s.lifecycle.preparationDone = preparationDone
 	s.lifecycle.mu.Unlock()
 	committed := false
@@ -84,7 +84,7 @@ func (s *Server) BeforeStart(ctx context.Context) (err error) {
 		return validationErr
 	}
 
-	// App endpoints aggregate every transport; GateBinding must identify this Gateway's gRPC server.
+	// App endpoints 汇集了所有 transport；GateBinding 必须指向本 Gateway 的 gRPC 服务。
 	resolved, err := s.resolveGRPCEndpoint(ctx)
 	if err != nil {
 		return err
@@ -111,12 +111,12 @@ func (s *Server) BeforeStart(ctx context.Context) (err error) {
 		}
 	}
 	s.lifecycle.mu.Lock()
-	if s.lifecycle.state != stPreparing {
+	if s.lifecycle.state != _stPreparing {
 		s.lifecycle.mu.Unlock()
 		return errors.New("gateway: server is stopping or stopped")
 	}
 	s.identity = preparedIdentity
-	s.lifecycle.state = stPrepared
+	s.lifecycle.state = _stPrepared
 	committed = true
 	s.lifecycle.mu.Unlock()
 	slog.InfoContext(ctx, "gateway prepared",
@@ -154,7 +154,7 @@ func (s *Server) rollbackPreparation(cause error, transportAttempts int) error {
 	cause = errors.Join(cause, stop(s.broadcaster.stop))
 	cause = errors.Join(cause, s.closeGRPCListener())
 	s.lifecycle.mu.Lock()
-	s.lifecycle.state = stStopping
+	s.lifecycle.state = _stStopping
 	s.identity = identity{}
 	s.lifecycle.mu.Unlock()
 	return cause
@@ -162,8 +162,8 @@ func (s *Server) rollbackPreparation(cause error, transportAttempts int) error {
 
 func (s *Server) quiesce(ctx context.Context) error {
 	s.lifecycle.mu.Lock()
-	firstStop := s.lifecycle.state != stStopping
-	s.lifecycle.state = stStopping
+	firstStop := s.lifecycle.state != _stStopping
+	s.lifecycle.state = _stStopping
 	s.lifecycle.mu.Unlock()
 
 	s.admission.mu.Lock()
@@ -186,9 +186,9 @@ func (s *Server) quiesce(ctx context.Context) error {
 func (s *Server) waitForPreparation(ctx context.Context) error {
 	s.lifecycle.mu.Lock()
 	preparationDone := s.lifecycle.preparationDone
-	stoppingPreparation := s.lifecycle.state == stPreparing
+	stoppingPreparation := s.lifecycle.state == _stPreparing
 	if stoppingPreparation {
-		s.lifecycle.state = stStopping
+		s.lifecycle.state = _stStopping
 	}
 	s.lifecycle.mu.Unlock()
 	if preparationDone == nil {
@@ -224,22 +224,22 @@ func validateApplication(app kratos.AppInfo, ok bool) error {
 	}
 }
 
-// Start activates runtime work and serves resources prepared by BeforeStart.
+// Start 启动运行期工作，使用 BeforeStart 准备的资源提供服务。
 func (s *Server) Start(ctx context.Context) error {
 	s.lifecycle.mu.Lock()
 	switch s.lifecycle.state {
-	case stStopping:
+	case _stStopping:
 		s.lifecycle.mu.Unlock()
 		return errors.New("gateway: server is stopping or stopped")
-	case stStarted:
+	case _stStarted:
 		s.lifecycle.mu.Unlock()
 		return errors.New("gateway: server is already started")
-	case stPrepared:
+	case _stPrepared:
 	default:
 		s.lifecycle.mu.Unlock()
 		return errors.New("gateway: server is not prepared")
 	}
-	s.lifecycle.state = stStarted
+	s.lifecycle.state = _stStarted
 	s.admission.accepting.Store(true)
 	s.lifecycle.mu.Unlock()
 
@@ -312,11 +312,11 @@ func (s *Server) shutdown(ctx context.Context) error {
 }
 
 func stopCompleted(err error) bool {
-	// Stop implementations return context errors when their background work may still be running.
+	// Stop 返回 context 错误时，其后台工作可能仍未结束。
 	return !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded)
 }
 
-// drainSessions sends OpKick before closing so clients see a shutdown reason.
+// drainSessions 先发送 OpKick 再关闭连接，让客户端获知停止原因。
 func (s *Server) drainSessions(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
@@ -325,7 +325,7 @@ func (s *Server) drainSessions(ctx context.Context) error {
 	if len(sessions) == 0 {
 		return nil
 	}
-	workerCount := min(shutdownWorkerCount, len(sessions))
+	workerCount := min(_shutdownWorkerCount, len(sessions))
 	var next atomic.Uint64
 	var workers sync.WaitGroup
 	workers.Add(workerCount)
@@ -352,8 +352,8 @@ func (s *Server) drainSession(ctx context.Context, sess *session) {
 	defer cancel()
 	connID := sess.conn.ConnID()
 	binding := sess.detachForClose()
-	err := sess.conn.CloseWithProto(ctx, &protocolv1.Proto{
-		Op: protocolv1.OpKick, Code: protocolv1.KickCodeServerShutdown,
+	err := sess.conn.CloseWithProto(ctx, &v1.Proto{
+		Op: v1.OpKick, Code: v1.KickCodeServerShutdown,
 	})
 	err = errors.Join(err, sess.conn.Close())
 	if locate.ValidGateBinding(binding) && ctx.Err() == nil {

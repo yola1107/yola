@@ -32,30 +32,30 @@ type serverConfig struct {
 	requestQueueSize int
 }
 
-// ServerOption configures a WebSocket server.
+// ServerOption 配置 WebSocket server。
 type ServerOption func(*Server)
 
-// Network configures the listener network.
+// Network 配置监听网络。
 func Network(network string) ServerOption {
 	return func(s *Server) { s.config.network = network }
 }
 
-// Address configures the listener address.
+// Address 配置监听地址。
 func Address(addr string) ServerOption {
 	return func(s *Server) { s.config.address = addr }
 }
 
-// AdvertiseHost configures the host published in the server endpoint.
+// AdvertiseHost 配置服务 endpoint 对外发布的 host。
 func AdvertiseHost(advertiseHost string) ServerOption {
 	return func(s *Server) { s.config.advertiseHost = advertiseHost }
 }
 
-// Path configures the WebSocket route.
+// Path 配置 WebSocket 路由。
 func Path(path string) ServerOption {
 	return func(s *Server) { s.config.path = path }
 }
 
-// AllowedOrigins allows WebSocket requests from the listed origins.
+// AllowedOrigins 允许列表中来源的 WebSocket 请求。
 func AllowedOrigins(origins ...string) ServerOption {
 	return func(s *Server) {
 		s.config.allowedOrigins = make(map[string]struct{}, len(origins))
@@ -65,7 +65,7 @@ func AllowedOrigins(origins ...string) ServerOption {
 	}
 }
 
-// Endpoint configures the registry endpoint.
+// Endpoint 配置注册到服务发现的 endpoint。
 func Endpoint(endpoint *url.URL) ServerOption {
 	return func(s *Server) {
 		if endpoint == nil {
@@ -77,12 +77,12 @@ func Endpoint(endpoint *url.URL) ServerOption {
 	}
 }
 
-// Listener uses lis for the server.
+// Listener 指定服务使用的 lis。
 func Listener(lis net.Listener) ServerOption {
 	return func(s *Server) { s.lis = lis }
 }
 
-// TLSConfig enables TLS.
+// TLSConfig 配置 TLS。
 func TLSConfig(c *tls.Config) ServerOption {
 	return func(s *Server) { s.config.tls = tlsconfig.Clone(c) }
 }
@@ -93,12 +93,12 @@ func Codec(codec encoding.Codec) ServerOption {
 	return func(s *Server) { s.config.codec = codec }
 }
 
-// Middleware configures message middleware.
+// Middleware 配置消息 middleware。
 func Middleware(m ...middleware.Middleware) ServerOption {
 	return func(s *Server) { s.config.middlewares = append(s.config.middlewares, m...) }
 }
 
-// Timeout configures the maximum duration of one message handler call.
+// Timeout 配置单次消息 handler 调用的最长时间。
 func Timeout(timeout time.Duration) ServerOption {
 	return func(s *Server) { s.config.timeout = timeout }
 }
@@ -109,27 +109,27 @@ func RequestQueueSize(size int) ServerOption {
 	return func(s *Server) { s.config.requestQueueSize = size }
 }
 
-// MaxConnLimit configures the maximum concurrent channels.
+// MaxConnLimit 配置并发 channel 数上限。
 func MaxConnLimit(limit int32) ServerOption {
 	return func(s *Server) { s.config.maxConnLimit = limit }
 }
 
-// MaxConnPerIP configures the maximum concurrent connections from one peer IP.
+// MaxConnPerIP 配置每个对端 IP 的并发连接数上限。
 func MaxConnPerIP(limit int32) ServerOption {
 	return func(s *Server) { s.config.maxConnPerIP = limit }
 }
 
-// ServerChannelConfig configures server-side WebSocket channels.
+// ServerChannelConfig 配置服务端 WebSocket channel。
 func ServerChannelConfig(c *ChannelConfig) ServerOption {
 	return func(s *Server) { s.config.channel = c }
 }
 
-// HandshakeTimeout configures the WebSocket and HTTP header handshake timeout.
+// HandshakeTimeout 配置 WebSocket 和 HTTP header 握手超时。
 func HandshakeTimeout(timeout time.Duration) ServerOption {
 	return func(s *Server) { s.config.handshakeTimeout = timeout }
 }
 
-// MaxHeaderBytes configures the maximum WebSocket handshake header size.
+// MaxHeaderBytes 配置 WebSocket 握手 header 大小上限。
 func MaxHeaderBytes(size int) ServerOption {
 	return func(s *Server) { s.config.maxHeaderBytes = size }
 }

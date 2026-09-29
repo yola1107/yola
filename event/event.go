@@ -14,40 +14,39 @@ var (
 	ErrInvalidHandler = errors.New("event: handler is nil")
 )
 
-// Event carries routing metadata and encoded business data.
+// Event 携带路由信息和已编码的业务数据。
 type Event struct {
 	Topic   string
 	Payload []byte
 }
 
-// Handler processes an online event. It has no retry or acknowledgement result.
+// Handler 处理在线事件，不返回重试或确认结果。
 type Handler func(context.Context, Event)
 
-// Publisher sends encoded business events without owning Bus lifecycle.
+// Publisher 发布已编码的业务事件，不拥有 Bus 的生命周期。
 type Publisher interface {
 	Publish(context.Context, Event) error
 }
 
-// Subscriber registers online event handlers.
+// Subscriber 注册在线事件处理器。
 type Subscriber interface {
 	Subscribe(context.Context, string, Handler) (Subscription, error)
 }
 
-// Subscription owns one handler registration.
+// Subscription 持有一次 handler 注册。
 type Subscription interface {
 	Unsubscribe(context.Context) error
 }
 
-// Bus is ready for online, best-effort event delivery when constructed.
-// Close cancels all subscriptions, waits for running handlers, and releases
-// resources owned by the Bus.
+// Bus 构造成功后即可提供尽力投递的在线事件服务。
+// Close 取消全部订阅，等待在途 handler，并释放 Bus 自有资源。
 type Bus interface {
 	Publisher
 	Subscriber
 	Close() error
 }
 
-// ValidTopic reports whether topic identifies one exact event stream.
+// ValidTopic 判断 topic 是否表示一个精确事件流。
 func ValidTopic(topic string) bool {
 	if topic == "" || strings.HasPrefix(topic, ".") || strings.HasSuffix(topic, ".") ||
 		strings.Contains(topic, "..") || strings.ContainsAny(topic, "*>") {

@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	protocolv1 "yola/api/protocol/v1"
+	"yola/api/protocol/v1"
 	"yola/locate"
 	"yola/network/tcp"
 
@@ -67,7 +67,7 @@ func TestBeforeStartUsesCallerContext(t *testing.T) {
 	preparationCtx := receiveWithin(t, pinged)
 	require.EqualError(t, gate.BeforeStart(ctx), "gateway: server is already preparing or prepared")
 	gate.lifecycle.mu.Lock()
-	require.Equal(t, stPreparing, gate.lifecycle.state)
+	require.Equal(t, _stPreparing, gate.lifecycle.state)
 	gate.lifecycle.mu.Unlock()
 	cancel()
 	require.ErrorIs(t, preparationCtx.Err(), context.Canceled)
@@ -86,11 +86,11 @@ func TestBeforeStartReentryMakesPreparedServerTerminal(t *testing.T) {
 
 	require.NoError(t, gate.BeforeStart(ctx))
 	gate.lifecycle.mu.Lock()
-	require.Equal(t, stPrepared, gate.lifecycle.state)
+	require.Equal(t, _stPrepared, gate.lifecycle.state)
 	gate.lifecycle.mu.Unlock()
 	require.EqualError(t, gate.BeforeStart(ctx), "gateway: server is already preparing or prepared")
 	gate.lifecycle.mu.Lock()
-	require.Equal(t, stStopping, gate.lifecycle.state)
+	require.Equal(t, _stStopping, gate.lifecycle.state)
 	gate.lifecycle.mu.Unlock()
 	require.Zero(t, stopCalls.Load())
 	require.EqualError(t, gate.Start(ctx), "gateway: server is stopping or stopped")
@@ -138,7 +138,7 @@ func TestStopWaitsForPreparationRollback(t *testing.T) {
 	require.Eventually(t, func() bool {
 		gate.lifecycle.mu.Lock()
 		defer gate.lifecycle.mu.Unlock()
-		return gate.lifecycle.state == stStopping
+		return gate.lifecycle.state == _stStopping
 	}, time.Second, time.Millisecond)
 	select {
 	case err := <-stopped:
@@ -158,7 +158,7 @@ func TestStopWaitsForPreparationRollback(t *testing.T) {
 	require.NoError(t, receiveWithin(t, stopped))
 	require.GreaterOrEqual(t, stopCalls.Load(), int32(1))
 	gate.lifecycle.mu.Lock()
-	require.Equal(t, stStopping, gate.lifecycle.state)
+	require.Equal(t, _stStopping, gate.lifecycle.state)
 	require.Equal(t, identity{}, gate.identity)
 	gate.lifecycle.mu.Unlock()
 }
@@ -197,7 +197,7 @@ func TestStopTimeoutLeavesPreparationOwnerToRollback(t *testing.T) {
 	require.EqualError(t, receiveWithin(t, prepared), "gateway: server is stopping or stopped")
 	receiveWithin(t, rolledBack)
 	gate.lifecycle.mu.Lock()
-	require.Equal(t, stStopping, gate.lifecycle.state)
+	require.Equal(t, _stStopping, gate.lifecycle.state)
 	require.Equal(t, identity{}, gate.identity)
 	gate.lifecycle.mu.Unlock()
 }
@@ -283,8 +283,8 @@ func TestDrainSessionsSendsShutdownKick(t *testing.T) {
 	require.False(t, gate.sessions.add(newTestConnection("conn-late"), time.Second))
 	select {
 	case msg := <-conn.pushes:
-		require.Equal(t, protocolv1.OpKick, msg.Op)
-		require.Equal(t, protocolv1.KickCodeServerShutdown, msg.Code)
+		require.Equal(t, v1.OpKick, msg.Op)
+		require.Equal(t, v1.KickCodeServerShutdown, msg.Code)
 	case <-time.After(time.Second):
 		t.Fatal("expected shutdown OpKick")
 	}
@@ -325,7 +325,7 @@ func TestStopWaitsWhenCallerHasNoDeadline(t *testing.T) {
 }
 
 func TestDrainSessionsRedistributesWorkFromBlockedWorker(t *testing.T) {
-	const sessionCount = shutdownWorkerCount * 2
+	const sessionCount = _shutdownWorkerCount * 2
 	blocked := make(chan struct{})
 	release := make(chan struct{})
 	releaseConnections := sync.OnceFunc(func() { close(release) })
@@ -335,7 +335,7 @@ func TestDrainSessionsRedistributesWorkFromBlockedWorker(t *testing.T) {
 	for index := range sessionCount {
 		connID := "conn-" + strconv.Itoa(index)
 		conn := newTestConnection(connID)
-		conn.closeWithProto = func(context.Context, *protocolv1.Proto) error {
+		conn.closeWithProto = func(context.Context, *v1.Proto) error {
 			if claimedBlocker.CompareAndSwap(false, true) {
 				close(blocked)
 				<-release
@@ -392,7 +392,7 @@ func TestGatewayPreparationFailurePreventsRegistration(t *testing.T) {
 	store := &failingPingLocator{Locator: testLocator(t)}
 	gateway := newTestServer(t, Locator(store))
 	t.Cleanup(func() { require.NoError(t, gateway.Stop(context.Background())) })
-	registrar := new(countingRegistrar)
+	registrar := &countingRegistrar{}
 	app := kratos.New(
 		kratos.ID("gate-a"),
 		kratos.Name("gateway"),
@@ -426,7 +426,7 @@ func TestGatewayTransportPreparationFailurePreventsRegistration(t *testing.T) {
 	}
 	gate := newTestServer(t, CleanupTimeout(20*time.Millisecond), Transport(prepared, failing))
 	t.Cleanup(func() { require.NoError(t, gate.Stop(context.Background())) })
-	registrar := new(countingRegistrar)
+	registrar := &countingRegistrar{}
 	app := kratos.New(
 		kratos.ID("gate-a"),
 		kratos.Name("gateway"),

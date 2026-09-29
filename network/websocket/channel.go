@@ -25,13 +25,13 @@ var (
 	errInvalidHeartbeatState = errors.New("websocket: invalid heartbeat state")
 )
 
-const maxCloseReasonSize = 123
+const _maxCloseReasonSize = 123
 
-var readFrameBuffers = sync.Pool{
+var _readFrameBuffers = sync.Pool{
 	New: func() any { return new([v1.MaxProtoSize]byte) },
 }
 
-// Channel is one Gorilla WebSocket connection.
+// Channel 持有一条 Gorilla WebSocket 连接。
 type Channel struct {
 	connID     string
 	remoteAddr string
@@ -41,13 +41,13 @@ type Channel struct {
 	ctx        context.Context
 	cancel     context.CancelFunc
 	outbound   chan outboundFrame
-	// heartbeat is connection-scoped so stale replies cannot acknowledge a replacement Channel.
+	// heartbeat 归当前连接所有，旧回复不能确认替换后的 Channel 心跳。
 	heartbeat heartbeat.State
 	closed    atomic.Bool
 	sendMu    sync.Mutex
 	connOnce  sync.Once
 	connErr   error
-	// writerErr is published by closing writerDone and read only after that close.
+	// writerErr 通过关闭 writerDone 发布，仅在该 channel 关闭后读取。
 	writerErr           error
 	writerDone          chan struct{}
 	pendingPayloadBytes atomic.Int64
@@ -58,7 +58,7 @@ type outboundFrame struct {
 	body         []byte
 	payloadBytes int64
 	heartbeat    bool
-	// done is non-nil only for the final frame, so it also marks writer termination.
+	// done 仅在最后一帧非 nil，也标识 writer 终止。
 	done chan error
 }
 
@@ -81,13 +81,13 @@ func newChannel(ctx context.Context, conn *websocket.Conn, codec encoding.Codec,
 	return ch
 }
 
-// ConnID returns the physical connection identity.
+// ConnID 返回物理连接标识。
 func (ch *Channel) ConnID() string { return ch.connID }
 
-// RemoteAddr returns the remote network address.
+// RemoteAddr 返回远端网络地址。
 func (ch *Channel) RemoteAddr() string { return ch.remoteAddr }
 
-// Closed reports whether the channel is closed.
+// Closed 判断 channel 是否已关闭。
 func (ch *Channel) Closed() bool { return ch.closed.Load() }
 
 // SendStats 返回连接发送队列的只读快照。
@@ -106,8 +106,8 @@ func (ch *Channel) SendProto(p *v1.Proto) error {
 	return ch.enqueueProto(p, false)
 }
 
-// SendPrepared queues a shared default-protobuf encoding for Gateway fanout.
-// Custom codecs retain SendProto behavior because equal names do not prove equal wire bytes.
+// SendPrepared 为 Gateway fanout 排入共用的默认 protobuf 编码。
+// 自定义 codec 保持 SendProto 行为：同名 codec 不保证产生相同协议 bytes。
 func (ch *Channel) SendPrepared(message *network.PreparedProto) error {
 	if message == nil || message.Message() == nil {
 		return errNilPayload
@@ -124,8 +124,8 @@ func (ch *Channel) SendPrepared(message *network.PreparedProto) error {
 	})
 }
 
-// sendHeartbeat marks the frame so writeLoop, rather than the enqueue path,
-// advances its reply-timeout state.
+// sendHeartbeat 标记心跳帧，由 writeLoop 推进回复超时状态，
+// 入队路径不推进该状态。
 func (ch *Channel) sendHeartbeat() error {
 	return ch.enqueueProto(&v1.Proto{Op: v1.OpHeartbeat}, true)
 }
@@ -153,13 +153,13 @@ func (ch *Channel) enqueueFrame(payloadBytes int, heartbeat bool, encode func() 
 	if err != nil {
 		return err
 	}
-	// sendMu serializes producers, so the capacity check above remains valid.
+	// sendMu 串行化生产者，因此上面的容量检查仍然有效。
 	ch.pendingPayloadBytes.Add(int64(payloadBytes))
 	ch.outbound <- outboundFrame{body: body, payloadBytes: int64(payloadBytes), heartbeat: heartbeat}
 	return nil
 }
 
-// CloseWithProto writes one final Binary frame before closing the connection.
+// CloseWithProto 写入最后一个 Binary 帧后关闭连接。
 func (ch *Channel) CloseWithProto(ctx context.Context, p *v1.Proto) error {
 	body, err := marshalFrame(ch.codec, p)
 	if err != nil {
@@ -230,8 +230,8 @@ func (ch *Channel) readFrame(p *v1.Proto) error {
 		}
 		return unmarshalFrame(ch.codec, body, p)
 	}
-	buffer := readFrameBuffers.Get().(*[v1.MaxProtoSize]byte)
-	defer readFrameBuffers.Put(buffer)
+	buffer := _readFrameBuffers.Get().(*[v1.MaxProtoSize]byte)
+	defer _readFrameBuffers.Put(buffer)
 	body, err := readBoundedFrame(reader, buffer[:])
 	if err != nil {
 		return err
@@ -313,7 +313,7 @@ func (ch *Channel) writeMessage(body []byte) error {
 	return ch.conn.WriteMessage(websocket.BinaryMessage, body)
 }
 
-// Close closes the WebSocket channel.
+// Close 关闭 WebSocket channel。
 func (ch *Channel) Close() error { return ch.closeWithReason("channel closed") }
 
 func (ch *Channel) closeWithReason(reason string) error {
@@ -355,7 +355,7 @@ func (ch *Channel) writerError() error {
 	return network.ErrConnectionClosed
 }
 
-// closeOnContext hard-closes the socket after ctx cancel; cancel itself is already done.
+// closeOnContext 在 ctx 取消后强制关闭 socket；此时取消信号已发出。
 func (ch *Channel) closeOnContext() {
 	ch.markClosed()
 	_ = ch.conn.Close()
@@ -382,8 +382,8 @@ func warnUnexpectedNetworkError(message, connID string, err error) {
 
 func formatCloseFrame(reason string) []byte {
 	reason = strings.ToValidUTF8(reason, "")
-	if len(reason) > maxCloseReasonSize {
-		reason = strings.ToValidUTF8(reason[:maxCloseReasonSize], "")
+	if len(reason) > _maxCloseReasonSize {
+		reason = strings.ToValidUTF8(reason[:_maxCloseReasonSize], "")
 	}
 	return websocket.FormatCloseMessage(websocket.CloseNormalClosure, reason)
 }

@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -18,9 +19,9 @@ import (
 	"google.golang.org/grpc"
 )
 
-const backendServiceConfig = `{"loadBalancingConfig":[{"` + backendBalancerName + `":{}}]}`
+const _backendServiceConfig = `{"loadBalancingConfig":[{"` + _backendBalancerName + `":{}}]}`
 
-var errBackendsClosed = fmt.Errorf("gateway: backends are closed")
+var errBackendsClosed = errors.New("gateway: backends are closed")
 
 type backends struct {
 	discovery      registry.Discovery
@@ -174,7 +175,7 @@ func (b *backends) connectBackend(ctx context.Context, serviceName string) (*bac
 		opts = append(opts, kgrpc.WithTLSConfig(b.tlsConfig.Clone()))
 	}
 	dialOpts := []grpc.DialOption{
-		grpc.WithDefaultServiceConfig(backendServiceConfig),
+		grpc.WithDefaultServiceConfig(_backendServiceConfig),
 		grpc.WithResolvers(&backendResolverBuilder{
 			discovery: b.discovery,
 			state:     state,

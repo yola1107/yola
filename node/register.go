@@ -36,7 +36,7 @@ func (s *Server) RegisterRawHandler(command int32, handler Handler) {
 	}
 	s.lifecycleMu.Lock()
 	defer s.lifecycleMu.Unlock()
-	if s.state != stNew || s.requests.isClosed() {
+	if s.state != _stNew || s.requests.isClosed() {
 		panic("node: handlers must be registered before BeforeStart")
 	}
 	if _, exists := s.handlers[command]; exists {
@@ -50,7 +50,7 @@ func (s *Server) RegisterRawHandler(command int32, handler Handler) {
 func (s *Server) OnDisconnect(handler DisconnectHandler) {
 	s.lifecycleMu.Lock()
 	defer s.lifecycleMu.Unlock()
-	if s.state != stNew || s.requests.isClosed() {
+	if s.state != _stNew || s.requests.isClosed() {
 		panic("node: handlers must be registered before BeforeStart")
 	}
 	s.onDisconnect = handler

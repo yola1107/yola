@@ -15,8 +15,8 @@ import (
 )
 
 const (
-	framePrefixSize     = 4
-	defaultIOBufferSize = v1.MaxProtoSize + framePrefixSize
+	_framePrefixSize     = 4
+	_defaultIOBufferSize = v1.MaxProtoSize + _framePrefixSize
 )
 
 var (
@@ -24,14 +24,14 @@ var (
 	errInvalidFrame = errors.New("tcp: invalid frame")
 )
 
-var defaultProtoCodec = encoding.GetCodec(encodingproto.Name)
+var _defaultProtoCodec = encoding.GetCodec(encodingproto.Name)
 
 func defaultCodec() encoding.Codec {
-	return protoFrameCodec{Codec: defaultProtoCodec}
+	return protoFrameCodec{Codec: _defaultProtoCodec}
 }
 
 func readFrame(rr *bufio.Reader, codec encoding.Codec, p *v1.Proto) error {
-	prefix, err := rr.Peek(framePrefixSize)
+	prefix, err := rr.Peek(_framePrefixSize)
 	if err != nil {
 		return err
 	}
@@ -39,7 +39,7 @@ func readFrame(rr *bufio.Reader, codec encoding.Codec, p *v1.Proto) error {
 	if sizeErr := validateFrameSize(int(length)); sizeErr != nil {
 		return sizeErr
 	}
-	if _, err = rr.Discard(framePrefixSize); err != nil {
+	if _, err = rr.Discard(_framePrefixSize); err != nil {
 		return err
 	}
 	body, err := rr.Peek(int(length))
@@ -66,7 +66,7 @@ func writeFrame(wr *bufio.Writer, codec encoding.Codec, p *v1.Proto) error {
 	if err = validateFrameSize(length); err != nil {
 		return err
 	}
-	var prefix [framePrefixSize]byte
+	var prefix [_framePrefixSize]byte
 	binary.LittleEndian.PutUint32(prefix[:], uint32(length))
 	if _, err = wr.Write(prefix[:]); err != nil {
 		return err
@@ -80,7 +80,7 @@ func writeFrameAppend(wr *bufio.Writer, p *v1.Proto) error {
 	if err := validateFrameSize(length); err != nil {
 		return err
 	}
-	if wr.Available() < framePrefixSize+length {
+	if wr.Available() < _framePrefixSize+length {
 		if err := wr.Flush(); err != nil {
 			return err
 		}

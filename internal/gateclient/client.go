@@ -21,8 +21,8 @@ import (
 )
 
 const (
-	serviceConfig = `{"loadBalancingConfig":[{"pick_first":{}}]}`
-	idleTimeout   = 5 * time.Minute
+	_serviceConfig = `{"loadBalancingConfig":[{"pick_first":{}}]}`
+	_idleTimeout   = 5 * time.Minute
 )
 
 var (
@@ -53,11 +53,11 @@ type rpc struct {
 	inflight  int
 }
 
-// New creates a connection pool; callers own every Push/Kick deadline.
+// New 创建连接池；每次 Push/Kick 的 deadline 由 caller 控制。
 func New(tlsConfig *tls.Config, middlewares ...middleware.Middleware) *Client {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Client{
-		idle:        idleTimeout,
+		idle:        _idleTimeout,
 		tlsConfig:   tlsconfig.Clone(tlsConfig),
 		middlewares: append([]middleware.Middleware(nil), middlewares...),
 		ctx:         ctx,
@@ -144,13 +144,13 @@ func (c *Client) cached(host string) (*rpc, error) {
 func (c *Client) connect(host string) error {
 	opts := []kgrpc.ClientOption{
 		kgrpc.WithEndpoint("direct:///" + host),
-		kgrpc.WithTimeout(0), // Disable Kratos' implicit 2s deadline; caller context owns it.
+		kgrpc.WithTimeout(0), // 禁用 Kratos 隐式的 2s deadline，由 caller context 控制预算。
 		kgrpc.WithMiddleware(c.middlewares...),
 	}
 	if c.tlsConfig != nil {
 		opts = append(opts, kgrpc.WithTLSConfig(c.tlsConfig.Clone()))
 	}
-	opts = append(opts, kgrpc.WithOptions(grpc.WithDefaultServiceConfig(serviceConfig)))
+	opts = append(opts, kgrpc.WithOptions(grpc.WithDefaultServiceConfig(_serviceConfig)))
 	conn, err := kgrpc.NewClient(c.ctx, opts...)
 	if err != nil {
 		return err

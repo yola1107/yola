@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	protocolv1 "yola/api/protocol/v1"
+	"yola/api/protocol/v1"
 	"yola/locate"
 	"yola/network"
 
@@ -69,7 +69,7 @@ func TestServerPushMapsConnectionErrors(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			gateway, _, conn, current := newAuthenticatedServer(t)
 			conn.sendErr = test.err
-			err := gateway.push(current, &protocolv1.Proto{Op: protocolv1.OpPush})
+			err := gateway.push(current, &v1.Proto{Op: v1.OpPush})
 			require.ErrorIs(t, err, test.want)
 		})
 	}
@@ -78,8 +78,8 @@ func TestServerPushMapsConnectionErrors(t *testing.T) {
 func TestServerPushRejectsOversizedFrameBeforeSend(t *testing.T) {
 	gateway, _, conn, binding := newAuthenticatedServer(t)
 
-	err := gateway.push(binding, &protocolv1.Proto{
-		Op: protocolv1.OpPush, Body: make([]byte, protocolv1.MaxProtoSize),
+	err := gateway.push(binding, &v1.Proto{
+		Op: v1.OpPush, Body: make([]byte, v1.MaxProtoSize),
 	})
 
 	require.ErrorIs(t, err, network.ErrFrameTooLarge)
@@ -100,7 +100,7 @@ func TestServerPushRejectsExpiredBinding(t *testing.T) {
 		sessions: &sessionRegistry{byConnID: map[string]*session{binding.ConnID: sess}},
 	}
 
-	err := gateway.push(binding, &protocolv1.Proto{Op: protocolv1.OpPush})
+	err := gateway.push(binding, &v1.Proto{Op: v1.OpPush})
 
 	require.ErrorIs(t, err, errBindingChanged)
 	select {
@@ -125,7 +125,7 @@ func TestServerKickRequiresCurrentBinding(t *testing.T) {
 	require.NoError(t, gateway.kick(context.Background(), binding, 7))
 	require.True(t, isClosed(conn.closed)())
 	kick := <-conn.pushes
-	require.Equal(t, protocolv1.OpKick, kick.Op)
+	require.Equal(t, v1.OpKick, kick.Op)
 	require.Equal(t, int32(7), kick.Code)
 }
 
@@ -133,7 +133,7 @@ func TestServerKickUnbindsGateWhenFinalCloseFails(t *testing.T) {
 	gateway, store, conn, binding := newAuthenticatedServer(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	conn.closeWithProto = func(context.Context, *protocolv1.Proto) error {
+	conn.closeWithProto = func(context.Context, *v1.Proto) error {
 		return errors.New("close failed")
 	}
 
@@ -159,7 +159,7 @@ func TestServerKickUsesSingleCleanupTimeout(t *testing.T) {
 	lease, err := store.LocateGate(context.Background(), "game", "player-a")
 	require.NoError(t, err)
 	closeContexts := make(chan context.Context, 1)
-	conn.closeWithProto = func(ctx context.Context, _ *protocolv1.Proto) error {
+	conn.closeWithProto = func(ctx context.Context, _ *v1.Proto) error {
 		closeContexts <- ctx
 		return nil
 	}
@@ -184,7 +184,7 @@ func TestServerKickCleanupDoesNotUnbindThirdBinding(t *testing.T) {
 	var closeOnce sync.Once
 	var finishCloseOnce sync.Once
 	t.Cleanup(func() { finishCloseOnce.Do(func() { close(finishClose) }) })
-	conn.closeWithProto = func(_ context.Context, _ *protocolv1.Proto) error {
+	conn.closeWithProto = func(_ context.Context, _ *v1.Proto) error {
 		closeOnce.Do(func() { close(closeStarted) })
 		<-finishClose
 		return nil

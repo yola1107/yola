@@ -16,7 +16,7 @@ import (
 func TestGateBindingStorage(t *testing.T) {
 	locator, server := newLocator(t)
 	binding := newBinding("gate-a", "conn-a")
-	_, _, err := locator.BindGate(context.Background(), binding, testTTL)
+	_, _, err := locator.BindGate(context.Background(), binding, _testTTL)
 	require.NoError(t, err)
 	require.Len(t, server.Keys(), 1)
 	require.True(t, strings.HasPrefix(server.Keys()[0], "locate:gate:"))
@@ -34,16 +34,16 @@ func TestBindGateFencesPreviousBinding(t *testing.T) {
 	locator, _ := newLocator(t)
 	ctx := context.Background()
 
-	oldLease, previous, err := locator.BindGate(ctx, newBinding("gate-a", "conn-a"), testTTL)
+	oldLease, previous, err := locator.BindGate(ctx, newBinding("gate-a", "conn-a"), _testTTL)
 	require.NoError(t, err)
 	require.Nil(t, previous)
 
-	current, previous, err := locator.BindGate(ctx, newBinding("gate-b", "conn-b"), testTTL)
+	current, previous, err := locator.BindGate(ctx, newBinding("gate-b", "conn-b"), _testTTL)
 	require.NoError(t, err)
 	require.Equal(t, oldLease.Binding, *previous)
 	require.NotEqual(t, oldLease.Binding.BindingToken, current.Binding.BindingToken)
 
-	_, err = locator.RenewGateLease(ctx, oldLease.Binding, testTTL)
+	_, err = locator.RenewGateLease(ctx, oldLease.Binding, _testTTL)
 	require.ErrorIs(t, err, locate.ErrGateConflict)
 	require.NoError(t, locator.UnbindGate(ctx, oldLease.Binding))
 
@@ -51,10 +51,10 @@ func TestBindGateFencesPreviousBinding(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, current, located)
 
-	renewed, err := locator.RenewGateLease(ctx, current.Binding, 2*testTTL)
+	renewed, err := locator.RenewGateLease(ctx, current.Binding, 2*_testTTL)
 	require.NoError(t, err)
 	require.Equal(t, current.Binding, renewed.Binding)
-	require.Equal(t, 2*testTTL, renewed.TTL)
+	require.Equal(t, 2*_testTTL, renewed.TTL)
 
 	require.NoError(t, locator.UnbindGate(ctx, current.Binding))
 	require.NoError(t, locator.UnbindGate(ctx, current.Binding))
@@ -81,7 +81,7 @@ func TestConcurrentBindGateLeavesOneCurrentBinding(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			lease, previous, err := locator.BindGate(context.Background(), candidate, testTTL)
+			lease, previous, err := locator.BindGate(context.Background(), candidate, _testTTL)
 			results <- result{lease: lease, previous: previous, err: err}
 		}()
 	}
@@ -104,7 +104,7 @@ func TestConcurrentBindGateLeavesOneCurrentBinding(t *testing.T) {
 	require.NoError(t, err)
 	require.Contains(t, bound, current.Binding)
 	for _, binding := range bound {
-		_, err = locator.RenewGateLease(context.Background(), binding, testTTL)
+		_, err = locator.RenewGateLease(context.Background(), binding, _testTTL)
 		if binding == current.Binding {
 			require.NoError(t, err)
 		} else {
@@ -115,16 +115,16 @@ func TestConcurrentBindGateLeavesOneCurrentBinding(t *testing.T) {
 
 func TestBindGateDoesNotOverwriteInvalidCurrentBinding(t *testing.T) {
 	locator, server := newLocator(t)
-	_, _, err := locator.BindGate(context.Background(), newBinding("gate-a", "conn-a"), testTTL)
+	_, _, err := locator.BindGate(context.Background(), newBinding("gate-a", "conn-a"), _testTTL)
 	require.NoError(t, err)
 	require.Len(t, server.Keys(), 1)
 
 	key := server.Keys()[0]
 	const invalid = `{"service_name":"game","uid":"synthetic-player"}`
 	require.NoError(t, server.Set(key, invalid))
-	server.SetTTL(key, testTTL)
+	server.SetTTL(key, _testTTL)
 
-	_, _, err = locator.BindGate(context.Background(), newBinding("gate-b", "conn-b"), testTTL)
+	_, _, err = locator.BindGate(context.Background(), newBinding("gate-b", "conn-b"), _testTTL)
 	require.ErrorIs(t, err, locate.ErrInvalidGateBinding)
 	stored, err := server.Get(key)
 	require.NoError(t, err)
@@ -138,9 +138,9 @@ func TestLeaseExpiryAndServiceScope(t *testing.T) {
 	room := newBinding("gate-room", "conn-room")
 	room.ServiceName = "room"
 
-	_, _, err := locator.BindGate(ctx, game, testTTL)
+	_, _, err := locator.BindGate(ctx, game, _testTTL)
 	require.NoError(t, err)
-	_, _, err = locator.BindGate(ctx, room, testTTL)
+	_, _, err = locator.BindGate(ctx, room, _testTTL)
 	require.NoError(t, err)
 	require.Len(t, server.Keys(), 2)
 
@@ -151,7 +151,7 @@ func TestLeaseExpiryAndServiceScope(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, room, roomLease.Binding)
 
-	server.FastForward(testTTL + time.Millisecond)
+	server.FastForward(_testTTL + time.Millisecond)
 	_, err = locator.LocateGate(ctx, game.ServiceName, game.UID)
 	require.ErrorIs(t, err, locate.ErrGateNotFound)
 	_, err = locator.LocateGate(ctx, room.ServiceName, room.UID)

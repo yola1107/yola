@@ -67,7 +67,7 @@ func (r *backendResolver) watchOnce() error {
 		err = errors.New("nil discovery watcher")
 	}
 	if err != nil {
-		// Watch creation failures are reported even when discovery returns cancellation.
+		// 即使 discovery 返回取消错误，也要报告 Watch 创建失败。
 		r.client.ReportError(err)
 		return err
 	}
@@ -128,7 +128,7 @@ func (r *backendResolver) update(instances []*registry.ServiceInstance) {
 		_ = r.client.UpdateState(resolver.State{})
 		return
 	}
-	// Keep the previous complete snapshot until grpc-go accepts the replacement.
+	// grpc-go 接受新快照前，保留上一次完整快照。
 	if err := r.client.UpdateState(resolver.State{Addresses: addresses}); err != nil {
 		r.reject(err)
 		return
@@ -170,11 +170,11 @@ func resolveBackendInstances(serviceName string, instances []*registry.ServiceIn
 			continue
 		}
 		seen[host] = struct{}{}
-		// Address ServerName outranks TLS credentials; leaving it empty preserves
-		// an explicit TLS ServerName and otherwise uses the discovery authority.
+		// Address.ServerName 优先于 TLS credentials；留空可保留显式 TLS ServerName，
+		// 未显式设置时则使用 discovery authority。
 		addresses = append(addresses, resolver.Address{
 			Addr:       host,
-			Attributes: attributes.New(rawServiceInstanceKey, service),
+			Attributes: attributes.New(_rawServiceInstanceKey, service),
 		})
 	}
 	return backendSnapshot{

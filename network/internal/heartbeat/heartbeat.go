@@ -1,81 +1,78 @@
-// Package heartbeat owns the concurrent state of one client heartbeat.
+// Package heartbeat 持有单个客户端心跳的并发状态。
 package heartbeat
 
 import "sync/atomic"
 
-// TickResult tells a transport what to do when its heartbeat ticker fires.
+// TickResult 表示心跳定时器触发时 transport 应执行的动作。
 type TickResult uint8
 
 const (
-	// TickQueue asks the transport to enqueue a heartbeat frame.
-	TickQueue TickResult = iota
-	// TickPending reports that the previous heartbeat has not been written yet.
-	TickPending
-	// TickTimeout reports that a written heartbeat was not acknowledged.
-	TickTimeout
+	TickQueue   TickResult = iota // 要求 transport 将心跳帧入队
+	TickPending                   // 上次心跳尚未写出
+	TickTimeout                   // 已写出的心跳未获确认
 )
 
 const (
-	idle uint32 = iota
-	queued
-	writing
-	outstanding
+	_idle uint32 = iota
+	_queued
+	_writing
+	_outstanding
 )
 
-// State owns the atomic transitions for one queued or outstanding heartbeat.
-// Its zero value is ready for use.
+// State 持有一代排队中或等待回复的心跳，并原子切换状态。
+// 零值可直接使用。
 type State struct {
 	value atomic.Uint32
 }
 
-// Tick advances an idle heartbeat to queued, keeps an unwritten heartbeat
-// pending, or consumes an outstanding heartbeat as timed out.
+// Tick 将空闲心跳转为排队，保持尚未写出的心跳为 pending，
+// 或将等待回复的心跳判为超时并消费其状态。
 func (s *State) Tick() TickResult {
 	for {
 		switch state := s.value.Load(); state {
-		case idle:
-			if s.value.CompareAndSwap(idle, queued) {
+		case _idle:
+			if s.value.CompareAndSwap(_idle, _queued) {
 				return TickQueue
 			}
-		case queued, writing:
+		case _queued, _writing:
 			return TickPending
-		case outstanding:
-			if s.value.CompareAndSwap(outstanding, idle) {
+		case _outstanding:
+			if s.value.CompareAndSwap(_outstanding, _idle) {
 				return TickTimeout
 			}
 		}
 	}
 }
 
-// CancelQueue returns a heartbeat that could not be enqueued to idle.
+// CancelQueue 将无法入队的心跳恢复为空闲。
 func (s *State) CancelQueue() bool {
-	return s.value.CompareAndSwap(queued, idle)
+	return s.value.CompareAndSwap(_queued, _idle)
 }
 
-// BeginWrite marks a queued heartbeat as being written.
+// BeginWrite 将排队心跳标为正在写入。
 func (s *State) BeginWrite() bool {
-	return s.value.CompareAndSwap(queued, writing)
+	return s.value.CompareAndSwap(_queued, _writing)
 }
 
-// FinishWrite marks a completed heartbeat write as awaiting its reply. A reply
-// may have already moved writing to idle, and a ticker may have queued the next
-// generation, before the old write call returned.
+// FinishWrite 将写完的心跳标为等待回复。
+// 旧写调用返回前，回复可能已将 writing 转为空闲，
+// 定时器也可能已排入下一代心跳。
 func (s *State) FinishWrite() bool {
-	if s.value.CompareAndSwap(writing, outstanding) {
+	if s.value.CompareAndSwap(_writing, _outstanding) {
 		return true
 	}
 	state := s.value.Load()
-	return state == idle || state == queued
+	return state == _idle || state == _queued
 }
 
-// Reply acknowledges a heartbeat whose write is in progress or complete.
+// Reply 确认正在写入或已写完的心跳。
 func (s *State) Reply() bool {
 	for {
 		state := s.value.Load()
-		if state != writing && state != outstanding {
+		if state != _writing && state != _outstanding {
 			return false
 		}
-		if s.value.CompareAndSwap(state, idle) {
+		if s.value.CompareAndSwap(state, _idle) {
 			return true
 		}
 	}

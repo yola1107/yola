@@ -22,7 +22,7 @@ import (
 )
 
 const (
-	testTTL = time.Minute
+	_testTTL = time.Minute
 )
 
 func TestNewNilClientReturnsNilLocator(t *testing.T) {
@@ -41,13 +41,13 @@ func TestRejectsInvalidInput(t *testing.T) {
 	ctx := context.Background()
 	valid := newBinding("gate-a", "conn-a")
 
-	_, _, err := locator.BindGate(ctx, locate.GateBinding{}, testTTL)
+	_, _, err := locator.BindGate(ctx, locate.GateBinding{}, _testTTL)
 	require.ErrorIs(t, err, locate.ErrInvalidGateBinding)
 	_, _, err = locator.BindGate(ctx, valid, time.Nanosecond)
 	require.ErrorIs(t, err, locate.ErrInvalidGateTTL)
 	_, err = locator.LocateGate(ctx, "", valid.UID)
 	require.ErrorIs(t, err, locate.ErrInvalidGateBinding)
-	_, err = locator.RenewGateLease(ctx, locate.GateBinding{}, testTTL)
+	_, err = locator.RenewGateLease(ctx, locate.GateBinding{}, _testTTL)
 	require.ErrorIs(t, err, locate.ErrInvalidGateBinding)
 	require.ErrorIs(t, locator.UnbindGate(ctx, locate.GateBinding{}), locate.ErrInvalidGateBinding)
 	require.ErrorIs(t, locator.BindNode(ctx, "", "", "", "epoch-a"), locate.ErrInvalidNodeBinding)
@@ -186,9 +186,9 @@ func TestLocatorRedisRequestBudget(t *testing.T) {
 func TestLocateKeyUsesCanonicalEncoding(t *testing.T) {
 	locator, server := newLocator(t)
 	binding := newBinding("gate-a", "conn-a")
-	_, _, err := locator.BindGate(context.Background(), binding, testTTL)
+	_, _, err := locator.BindGate(context.Background(), binding, _testTTL)
 	require.NoError(t, err)
-	require.NoError(t, locator.RegisterNodeEpoch(context.Background(), binding.ServiceName, "node-a", "epoch-a", testTTL))
+	require.NoError(t, locator.RegisterNodeEpoch(context.Background(), binding.ServiceName, "node-a", "epoch-a", _testTTL))
 	require.NoError(t, locator.BindNode(context.Background(), binding.ServiceName, binding.UID, "node-a", "epoch-a"))
 	require.ElementsMatch(t, []string{
 		"locate:gate:{Z2FtZQBzeW50aGV0aWMtcGxheWVy}",

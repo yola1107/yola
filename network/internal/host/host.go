@@ -1,5 +1,5 @@
-// Package host extracts a publishable host:port from a listen address or listener.
-// It is internal to network protocol packages (tcp/websocket).
+// Package host 从监听地址或 listener 提取可对外发布的 host:port。
+// 仅供 network 下的 TCP/WebSocket 协议包使用。
 package host
 
 import (
@@ -12,8 +12,8 @@ import (
 	"unicode"
 )
 
-// Extract returns an address suitable for publishing from a listen address or
-// listener. advertiseHost overrides every inferred host and must not include a port.
+// Extract 从监听地址或 listener 提取可对外发布的地址；
+// advertiseHost 覆盖推导出的 host，且不得包含端口。
 func Extract(hostPort, advertiseHost string, lis net.Listener) (string, error) {
 	listenHost, port, err := net.SplitHostPort(hostPort)
 	if err != nil && lis == nil {

@@ -10,9 +10,9 @@ import (
 
 	"github.com/go-kratos/kratos/v3"
 	"github.com/stretchr/testify/require"
-	grpcgo "google.golang.org/grpc"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
-	healthpb "google.golang.org/grpc/health/grpc_health_v1"
+	"google.golang.org/grpc/health/grpc_health_v1"
 )
 
 func TestMetadataFollowsNodeLocator(t *testing.T) {
@@ -39,14 +39,14 @@ func TestServerAcceptsTLSConnection(t *testing.T) {
 		require.NoError(t, <-done)
 	})
 
-	conn, err := grpcgo.NewClient(lis.Addr().String(), grpcgo.WithTransportCredentials(credentials.NewTLS(clientTLS)))
+	conn, err := grpc.NewClient(lis.Addr().String(), grpc.WithTransportCredentials(credentials.NewTLS(clientTLS)))
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, conn.Close()) })
 	requestCtx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	reply, err := healthpb.NewHealthClient(conn).Check(
-		requestCtx, &healthpb.HealthCheckRequest{}, grpcgo.WaitForReady(true),
+	reply, err := grpc_health_v1.NewHealthClient(conn).Check(
+		requestCtx, &grpc_health_v1.HealthCheckRequest{}, grpc.WaitForReady(true),
 	)
 	require.NoError(t, err)
-	require.Equal(t, healthpb.HealthCheckResponse_SERVING, reply.Status)
+	require.Equal(t, grpc_health_v1.HealthCheckResponse_SERVING, reply.Status)
 }

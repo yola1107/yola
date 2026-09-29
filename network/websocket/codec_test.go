@@ -18,7 +18,7 @@ func TestUnmarshalFrameDiscardsUnknownFields(t *testing.T) {
 		t.Fatal(err)
 	}
 	body = append(body, 0x7a, 0x01, 'x')
-	got := new(v1.Proto)
+	got := &v1.Proto{}
 	if err := unmarshalFrame(defaultCodec(), body, got); err != nil {
 		t.Fatal(err)
 	}
@@ -28,23 +28,23 @@ func TestUnmarshalFrameDiscardsUnknownFields(t *testing.T) {
 }
 
 func TestUnmarshalFrameRejectsInvalidSize(t *testing.T) {
-	if err := unmarshalFrame(defaultCodec(), nil, new(v1.Proto)); !errors.Is(err, errFrameLength) {
+	if err := unmarshalFrame(defaultCodec(), nil, &v1.Proto{}); !errors.Is(err, errFrameLength) {
 		t.Fatalf("unmarshalFrame(empty) error = %v, want %v", err, errFrameLength)
 	}
-	if err := unmarshalFrame(defaultCodec(), make([]byte, v1.MaxProtoSize+1), new(v1.Proto)); !errors.Is(err, network.ErrFrameTooLarge) {
+	if err := unmarshalFrame(defaultCodec(), make([]byte, v1.MaxProtoSize+1), &v1.Proto{}); !errors.Is(err, network.ErrFrameTooLarge) {
 		t.Fatalf("unmarshalFrame(oversized) error = %v, want %v", err, network.ErrFrameTooLarge)
 	}
-	if err := unmarshalFrame(defaultCodec(), []byte{0xff}, new(v1.Proto)); !errors.Is(err, errInvalidFrame) {
+	if err := unmarshalFrame(defaultCodec(), []byte{0xff}, &v1.Proto{}); !errors.Is(err, errInvalidFrame) {
 		t.Fatalf("unmarshalFrame(invalid) error = %v, want %v", err, errInvalidFrame)
 	}
 }
 
 func TestDefaultCodecIgnoresGlobalProtoOverride(t *testing.T) {
-	previous := encoding.GetCodec(defaultCodecName)
+	previous := encoding.GetCodec(_defaultCodecName)
 	if previous == nil {
 		t.Fatal("Kratos protobuf codec is not registered")
 	}
-	override := new(countingCodec)
+	override := &countingCodec{}
 	encoding.RegisterCodec(override)
 	t.Cleanup(func() { encoding.RegisterCodec(previous) })
 
@@ -56,7 +56,7 @@ func TestDefaultCodecIgnoresGlobalProtoOverride(t *testing.T) {
 	if override.marshals.Load() != 0 {
 		t.Fatal("default codec used the global proto override")
 	}
-	got := new(v1.Proto)
+	got := &v1.Proto{}
 	if err := proto.Unmarshal(body, got); err != nil {
 		t.Fatal(err)
 	}
@@ -69,7 +69,7 @@ func TestDefaultCodecRejectsNonProtoValue(t *testing.T) {
 	if _, err := defaultCodec().Marshal(struct{}{}); err == nil {
 		t.Fatal("Marshal() accepted a non-protobuf value")
 	}
-	if err := defaultCodec().Unmarshal([]byte{1}, new(struct{})); err == nil {
+	if err := defaultCodec().Unmarshal([]byte{1}, &struct{}{}); err == nil {
 		t.Fatal("Unmarshal() accepted a non-protobuf value")
 	}
 }
@@ -94,7 +94,7 @@ func BenchmarkCodec(b *testing.B) {
 }
 
 func benchmarkDecode(b *testing.B, codec encoding.Codec, body []byte) {
-	p := new(v1.Proto)
+	p := &v1.Proto{}
 	b.SetBytes(int64(len(body)))
 	b.ReportAllocs()
 	for b.Loop() {

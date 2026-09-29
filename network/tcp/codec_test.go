@@ -31,9 +31,9 @@ func TestCodecRoundTrip(t *testing.T) {
 	if err := wr.Flush(); err != nil {
 		t.Fatal(err)
 	}
-	rr := bufio.NewReaderSize(&wire, defaultIOBufferSize)
+	rr := bufio.NewReaderSize(&wire, _defaultIOBufferSize)
 	for _, want := range wants {
-		got := new(v1.Proto)
+		got := &v1.Proto{}
 		if err := readFrame(rr, codec, got); err != nil {
 			t.Fatal(err)
 		}
@@ -49,7 +49,7 @@ func TestWriteFrameRejectsInvalidSize(t *testing.T) {
 		message *v1.Proto
 		err     error
 	}{
-		{name: "empty", message: new(v1.Proto), err: errFrameLength},
+		{name: "empty", message: &v1.Proto{}, err: errFrameLength},
 		{name: "oversized", message: &v1.Proto{
 			Op:   v1.OpRequest,
 			Body: make([]byte, v1.MaxProtoSize),
@@ -79,7 +79,7 @@ func TestReadFrameRejectsInvalidFrame(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := readFrame(bufio.NewReader(bytes.NewReader(tt.wire)), defaultCodec(), new(v1.Proto))
+			err := readFrame(bufio.NewReader(bytes.NewReader(tt.wire)), defaultCodec(), &v1.Proto{})
 			if !errors.Is(err, tt.err) {
 				t.Fatalf("want %v, got %v", tt.err, err)
 			}
@@ -101,7 +101,7 @@ func TestReadFrameDiscardsUnknownFields(t *testing.T) {
 		t.Fatal(err)
 	}
 	body = append(body, 0x7a, 0x01, 'x')
-	got := new(v1.Proto)
+	got := &v1.Proto{}
 	if err := readFrame(bufio.NewReader(bytes.NewReader(frameWithLength(uint32(len(body)), body))), defaultCodec(), got); err != nil {
 		t.Fatal(err)
 	}
@@ -111,9 +111,9 @@ func TestReadFrameDiscardsUnknownFields(t *testing.T) {
 }
 
 func frameWithLength(length uint32, body []byte) []byte {
-	wire := make([]byte, framePrefixSize+len(body))
+	wire := make([]byte, _framePrefixSize+len(body))
 	binary.LittleEndian.PutUint32(wire, length)
-	copy(wire[framePrefixSize:], body)
+	copy(wire[_framePrefixSize:], body)
 	return wire
 }
 
@@ -134,8 +134,8 @@ func BenchmarkCodec(b *testing.B) {
 
 func benchmarkRead(b *testing.B, frame []byte) {
 	var source bytes.Reader
-	rr := bufio.NewReaderSize(&source, defaultIOBufferSize)
-	p := new(v1.Proto)
+	rr := bufio.NewReaderSize(&source, _defaultIOBufferSize)
+	p := &v1.Proto{}
 	codec := defaultCodec()
 	b.SetBytes(int64(len(frame)))
 	b.ReportAllocs()
@@ -150,9 +150,9 @@ func benchmarkRead(b *testing.B, frame []byte) {
 }
 
 func benchmarkWrite(b *testing.B, p *v1.Proto) {
-	wr := bufio.NewWriterSize(io.Discard, defaultIOBufferSize)
+	wr := bufio.NewWriterSize(io.Discard, _defaultIOBufferSize)
 	codec := defaultCodec()
-	b.SetBytes(int64(proto.Size(p) + framePrefixSize))
+	b.SetBytes(int64(proto.Size(p) + _framePrefixSize))
 	b.ReportAllocs()
 	for b.Loop() {
 		if err := writeFrame(wr, codec, p); err != nil {

@@ -38,7 +38,7 @@ func TestServerMessageTimeoutCancelsHandlerContext(t *testing.T) {
 
 	requestCtx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	if _, _, err := client.Request(requestCtx, 1, new(v1.ClientAuthReq)); err == nil {
+	if _, _, err := client.Request(requestCtx, 1, &v1.ClientAuthReq{}); err == nil {
 		t.Fatal("Client.Request() error = nil, want connection failure after handler timeout")
 	}
 	if err := waitWebSocketValue(t, timedOut); !errors.Is(err, context.DeadlineExceeded) {
@@ -154,7 +154,7 @@ func TestServerLateSuccessfulOpenCallsClose(t *testing.T) {
 }
 
 func TestServerOpenFailureSkipsClose(t *testing.T) {
-	h := new(rejectingHandler)
+	h := &rejectingHandler{}
 	s := newWebSocketServer(t, h, Address("127.0.0.1:0"))
 	endpoint, err := s.Endpoint()
 	if err != nil {
@@ -324,7 +324,7 @@ func TestServerServeFailureClosesActiveChannel(t *testing.T) {
 }
 
 func TestServerRejectsOversizedProto(t *testing.T) {
-	h := new(countingHandler)
+	h := &countingHandler{}
 	s := newWebSocketServer(t, h, Address("127.0.0.1:0"))
 	endpoint, err := s.Endpoint()
 	if err != nil {
@@ -398,7 +398,7 @@ func TestServerAcceptsFragmentedProto(t *testing.T) {
 	if messageType != websocket.BinaryMessage {
 		t.Fatalf("message type = %d, want %d", messageType, websocket.BinaryMessage)
 	}
-	got := new(v1.Proto)
+	got := &v1.Proto{}
 	if err = proto.Unmarshal(body, got); err != nil {
 		t.Fatal(err)
 	}
@@ -432,7 +432,7 @@ func TestServerMessageContextAndReplacementReply(t *testing.T) {
 	}
 	t.Cleanup(func() { client.Close() })
 
-	body, code, err := client.Request(context.Background(), 7, new(v1.ClientAuthReq))
+	body, code, err := client.Request(context.Background(), 7, &v1.ClientAuthReq{})
 	if err != nil {
 		t.Fatalf("Client.Request() error = %v", err)
 	}

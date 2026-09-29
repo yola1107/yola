@@ -7,7 +7,7 @@ import (
 )
 
 func TestCarrierNormalizesKeys(t *testing.T) {
-	c := headerCarrier{}
+	c := make(headerCarrier)
 	c.Add("Trace-ID", "first")
 	c.Add("trace-id", "second")
 	require.Equal(t, "first", c.Get("trace-id"))

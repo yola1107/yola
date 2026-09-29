@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	protocolv1 "yola/api/protocol/v1"
+	"yola/api/protocol/v1"
 	"yola/network/tcp"
 	"yola/network/websocket"
 
@@ -16,7 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
-	healthpb "google.golang.org/grpc/health/grpc_health_v1"
+	"google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 )
@@ -75,7 +75,7 @@ func TestNewServerWiresWebSocketTransport(t *testing.T) {
 		websocket.Middleware(func(next middleware.Handler) middleware.Handler {
 			return func(ctx context.Context, req any) (any, error) {
 				reply, handleErr := next(ctx, req)
-				if message, ok := reply.(*protocolv1.Proto); handleErr == nil && ok && message.Op == protocolv1.OpHeartbeatReply {
+				if message, ok := reply.(*v1.Proto); handleErr == nil && ok && message.Op == v1.OpHeartbeatReply {
 					select {
 					case heartbeats <- struct{}{}:
 					default:
@@ -137,9 +137,9 @@ func TestServerAcceptsTLSConnection(t *testing.T) {
 	t.Cleanup(func() { require.NoError(t, conn.Close()) })
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	reply, err := healthpb.NewHealthClient(conn).Check(ctx, &healthpb.HealthCheckRequest{}, grpc.WaitForReady(true))
+	reply, err := grpc_health_v1.NewHealthClient(conn).Check(ctx, &grpc_health_v1.HealthCheckRequest{}, grpc.WaitForReady(true))
 	require.NoError(t, err)
-	require.Equal(t, healthpb.HealthCheckResponse_SERVING, reply.Status)
+	require.Equal(t, grpc_health_v1.HealthCheckResponse_SERVING, reply.Status)
 }
 
 func TestGatewayConstructionReportsSetHandlerFailure(t *testing.T) {
@@ -172,7 +172,7 @@ func assertGatewayRequests(ctx context.Context, t *testing.T, client gatewayRequ
 		require.Zero(t, code)
 		require.Equal(t, append([]byte("node:"), body...), reply)
 	}
-	var push protocolv1.Proto
+	var push v1.Proto
 	select {
 	case pushBody := <-pushes:
 		require.NoError(t, proto.Unmarshal(pushBody, &push))

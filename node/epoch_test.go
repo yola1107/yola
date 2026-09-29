@@ -30,7 +30,7 @@ func TestEpochConflictPreventsRegistration(t *testing.T) {
 	))
 	server := newTestServer(t, Locator(locator))
 	t.Cleanup(func() { require.NoError(t, server.Stop(context.Background())) })
-	registrar := new(countingRegistrar)
+	registrar := &countingRegistrar{}
 	app := kratos.New(
 		kratos.ID("node-a"),
 		kratos.Name("game"),
@@ -57,7 +57,7 @@ func TestStickyStartLifecycle(t *testing.T) {
 	require.Eventually(t, func() bool {
 		server.lifecycleMu.Lock()
 		defer server.lifecycleMu.Unlock()
-		return server.state == stStarted
+		return server.state == _stStarted
 	}, time.Second, time.Millisecond)
 	require.EqualError(t, server.Start(ctx), "node: server is already started")
 	require.NoError(t, server.Stop(context.Background()))
@@ -102,7 +102,7 @@ func TestEpochRenewFencesNodeWhenNodeIDTakenOver(t *testing.T) {
 	require.NoError(t, locator.RegisterNodeEpoch(context.Background(), "game", "node-a", identity.epoch, DefaultNodeEpochTTL))
 	require.NoError(t, lease.renewOnce(context.Background()))
 
-	// A replacement process claimed the same NodeID.
+	// 替换进程已取得同一 NodeID 的所有权。
 	require.NoError(t, locator.UnregisterNodeEpoch(context.Background(), "game", "node-a", identity.epoch))
 	require.NoError(t, locator.RegisterNodeEpoch(context.Background(), "game", "node-a", "epoch-b", DefaultNodeEpochTTL))
 
@@ -128,7 +128,7 @@ func TestEpochLossStopsApplicationAndDrainsNode(t *testing.T) {
 		close(drained)
 		return nil
 	}))
-	registrar := new(countingRegistrar)
+	registrar := &countingRegistrar{}
 	app := kratos.New(
 		kratos.ID("node-a"),
 		kratos.Name("game"),
@@ -144,7 +144,7 @@ func TestEpochLossStopsApplicationAndDrainsNode(t *testing.T) {
 	require.Eventually(t, func() bool {
 		server.lifecycleMu.Lock()
 		defer server.lifecycleMu.Unlock()
-		return server.state == stStarted && registrar.registered.Load() == 1
+		return server.state == _stStarted && registrar.registered.Load() == 1
 	}, time.Second, time.Millisecond)
 	identity := server.currentIdentity()
 	require.NoError(t, locator.UnregisterNodeEpoch(
@@ -204,7 +204,7 @@ func TestReleasePendingEpochClassifiesCleanupOutcome(t *testing.T) {
 			} else {
 				require.ErrorIs(t, err, test.wantErr)
 			}
-			require.Equal(t, test.wantPending, server.lease.Load().releaseState != epochReleased)
+			require.Equal(t, test.wantPending, server.lease.Load().releaseState != _epochReleased)
 			require.Equal(t, nodeIdentity{}, server.currentIdentity())
 		})
 	}
@@ -241,13 +241,13 @@ func TestEpochLeaseRenewalLifetime(t *testing.T) {
 		var lost error
 		require.NoError(t, <-lease.start(func(err error) { lost = err }))
 		synctest.Wait()
-		time.Sleep(nodeEpochRenewInterval)
+		time.Sleep(_nodeEpochRenewInterval)
 		synctest.Wait()
 		require.EqualValues(t, 2, store.renewed.Load())
 		require.NoError(t, lost)
 		require.NoError(t, lease.stopRenewal(context.Background()))
 		synctest.Wait()
-		time.Sleep(2 * nodeEpochRenewInterval)
+		time.Sleep(2 * _nodeEpochRenewInterval)
 		require.EqualValues(t, 2, store.renewed.Load())
 		require.NoError(t, lease.release(context.Background()))
 	})
@@ -306,12 +306,12 @@ func TestEpochLeaseExpiresWhileRenewalIgnoresCancellation(t *testing.T) {
 			<-release
 			return nil
 		})
-		time.Sleep(nodeEpochRenewInterval)
+		time.Sleep(_nodeEpochRenewInterval)
 		ctx := <-blocked
 		deadline, ok := ctx.Deadline()
 		require.True(t, ok)
-		require.Equal(t, nodeEpochRPCTimeout, time.Until(deadline))
-		time.Sleep(DefaultNodeEpochTTL - nodeEpochRenewInterval)
+		require.Equal(t, _nodeEpochRPCTimeout, time.Until(deadline))
+		time.Sleep(DefaultNodeEpochTTL - _nodeEpochRenewInterval)
 		synctest.Wait()
 		require.ErrorIs(t, <-lost, errNodeEpochExpired)
 		require.ErrorIs(t, lease.valid(), errNodeEpochExpired)
@@ -355,7 +355,7 @@ func TestEpochLeaseUsesCallStartForDeadline(t *testing.T) {
 		lease, err := claimEpoch(context.Background(), store, nodeIdentity{serviceName: "game", nodeID: "node-a"})
 		require.NoError(t, err)
 		defer func() { require.NoError(t, lease.release(context.Background())) }()
-		time.Sleep(nodeEpochRenewInterval)
+		time.Sleep(_nodeEpochRenewInterval)
 		store.setRenew(func(context.Context) error {
 			time.Sleep(time.Second)
 			return nil
@@ -372,13 +372,13 @@ func TestEpochLeaseRejectsLateSuccessfulRenewal(t *testing.T) {
 		lease, err := claimEpoch(context.Background(), store, nodeIdentity{serviceName: "game", nodeID: "node-a"})
 		require.NoError(t, err)
 		defer func() { require.NoError(t, lease.release(context.Background())) }()
-		time.Sleep(nodeEpochRenewInterval)
+		time.Sleep(_nodeEpochRenewInterval)
 		store.setRenew(func(context.Context) error {
-			time.Sleep(nodeEpochRPCTimeout + time.Second)
+			time.Sleep(_nodeEpochRPCTimeout + time.Second)
 			return nil
 		})
 		require.ErrorIs(t, lease.renewOnce(context.Background()), context.DeadlineExceeded)
-		time.Sleep(DefaultNodeEpochTTL - nodeEpochRenewInterval - nodeEpochRPCTimeout - time.Second)
+		time.Sleep(DefaultNodeEpochTTL - _nodeEpochRenewInterval - _nodeEpochRPCTimeout - time.Second)
 		require.ErrorIs(t, lease.valid(), errNodeEpochExpired)
 	})
 }

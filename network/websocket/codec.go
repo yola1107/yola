@@ -8,7 +8,7 @@ import (
 	"yola/network"
 
 	"github.com/go-kratos/kratos/v3/encoding"
-	// Register the Kratos protobuf codec for callers that use the global encoding registry.
+	// 为使用全局 encoding registry 的 caller 注册 Kratos protobuf codec。
 	_ "github.com/go-kratos/kratos/v3/encoding/proto"
 	"google.golang.org/protobuf/proto"
 )
@@ -18,10 +18,10 @@ var (
 	errInvalidFrame = errors.New("websocket: invalid frame")
 )
 
-const defaultCodecName = "proto"
+const _defaultCodecName = "proto"
 
-// defaultFrameCodec is package-owned so global codec registration cannot
-// change its wire format or input-retention behavior.
+// defaultFrameCodec 由包内持有，防止全局 codec 注册
+// 改变其协议格式或输入持有行为。
 type defaultFrameCodec struct{}
 
 func (defaultFrameCodec) Marshal(value any) ([]byte, error) {
@@ -40,7 +40,7 @@ func (defaultFrameCodec) Unmarshal(data []byte, value any) error {
 	return proto.Unmarshal(data, message)
 }
 
-func (defaultFrameCodec) Name() string { return defaultCodecName }
+func (defaultFrameCodec) Name() string { return _defaultCodecName }
 
 func defaultCodec() encoding.Codec {
 	return defaultFrameCodec{}

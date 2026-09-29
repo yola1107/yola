@@ -18,7 +18,8 @@ func TestRegisterAppliesMiddlewareToTypedRequest(t *testing.T) {
 	server := newDispatchTestServer(t, Middleware(func(next middleware.Handler) middleware.Handler {
 		return func(ctx context.Context, request any) (any, error) {
 			calls = append(calls, "before")
-			req := request.(*wrapperspb.StringValue)
+			req, requestOK := request.(*wrapperspb.StringValue)
+			require.True(t, requestOK)
 			sess, ok := FromContext(ctx)
 			require.True(t, ok)
 			reply, err := next(ctx, wrapperspb.String(sess.UID()+":"+req.Value))
@@ -36,7 +37,7 @@ func TestRegisterAppliesMiddlewareToTypedRequest(t *testing.T) {
 	require.NoError(t, err)
 	body, err := server.forward(context.Background(), testBinding("player-a", "conn-a"), 1, request)
 	require.NoError(t, err)
-	reply := new(wrapperspb.StringValue)
+	reply := &wrapperspb.StringValue{}
 	require.NoError(t, proto.Unmarshal(body, reply))
 	require.Equal(t, "reply:player-a:request", reply.Value)
 	require.Equal(t, []string{"before", "handler", "after"}, calls)

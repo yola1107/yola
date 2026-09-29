@@ -8,7 +8,7 @@ import (
 	"unicode/utf8"
 )
 
-const maxUIDBytes = 128
+const _maxUIDBytes = 128
 
 var (
 	ErrGateNotFound       = errors.New("gate binding not found")
@@ -101,7 +101,7 @@ func ValidNodeLocation(serviceName, uid, nodeID string) bool {
 
 // ValidUID 检查 UID 是否能安全用作定位 key 和日志字段。
 func ValidUID(uid string) bool {
-	return len(uid) > 0 && len(uid) <= maxUIDBytes && utf8.ValidString(uid)
+	return len(uid) > 0 && len(uid) <= _maxUIDBytes && utf8.ValidString(uid)
 }
 
 // ValidServiceName 检查 service name 是否可用于 discovery key。

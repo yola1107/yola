@@ -8,7 +8,7 @@ import (
 	"testing/synctest"
 	"time"
 
-	protocolv1 "yola/api/protocol/v1"
+	"yola/api/protocol/v1"
 	"yola/network"
 
 	"github.com/stretchr/testify/require"
@@ -26,7 +26,7 @@ func TestBroadcastChecksLeaseAtEachSend(t *testing.T) {
 		secondSession := activeSession(second, secondBinding)
 		secondSession.leaseDeadline = time.Now().Add(time.Second)
 		var prepared network.PreparedProto
-		prepared.Reset(&protocolv1.Proto{Op: protocolv1.OpPush, Cmd: 42})
+		prepared.Reset(&v1.Proto{Op: v1.OpPush, Cmd: 42})
 		done := make(chan struct{})
 		go func() {
 			defer close(done)
@@ -72,8 +72,8 @@ func TestBroadcastSendsToEveryAuthenticatedSession(t *testing.T) {
 	for _, conn := range connections {
 		select {
 		case message := <-conn.pushes:
-			require.True(t, proto.Equal(&protocolv1.Proto{
-				Op: protocolv1.OpPush, Cmd: 42, Body: []byte("announcement"),
+			require.True(t, proto.Equal(&v1.Proto{
+				Op: v1.OpPush, Cmd: 42, Body: []byte("announcement"),
 			}, message))
 		case <-time.After(time.Second):
 			t.Fatalf("broadcast did not reach %s", conn.ConnID())
@@ -182,7 +182,7 @@ func TestBroadcastStopTimeoutCanBeWaitedAgain(t *testing.T) {
 		conn.unblock()
 		require.NoError(t, broadcaster.stop(context.Background()))
 	})
-	require.NoError(t, broadcaster.enqueue(&protocolv1.Proto{Op: protocolv1.OpPush, Cmd: 1}))
+	require.NoError(t, broadcaster.enqueue(&v1.Proto{Op: v1.OpPush, Cmd: 1}))
 	select {
 	case <-conn.started:
 	case <-time.After(time.Second):
@@ -193,7 +193,7 @@ func TestBroadcastStopTimeoutCanBeWaitedAgain(t *testing.T) {
 	require.ErrorIs(t, broadcaster.stop(ctx), context.DeadlineExceeded)
 	cancel()
 	require.ErrorIs(t,
-		broadcaster.enqueue(&protocolv1.Proto{Op: protocolv1.OpPush, Cmd: 2}),
+		broadcaster.enqueue(&v1.Proto{Op: v1.OpPush, Cmd: 2}),
 		ErrBroadcastUnavailable,
 	)
 
@@ -216,7 +216,7 @@ func TestBroadcastStopTimeoutCanBeWaitedAgain(t *testing.T) {
 func TestBroadcastRejectsUnavailableAndOversizedMessages(t *testing.T) {
 	server := &Server{broadcaster: newBroadcaster(&sessionRegistry{}, 1, 1)}
 	require.ErrorIs(t, server.Broadcast(1, nil), ErrBroadcastUnavailable)
-	require.ErrorIs(t, server.Broadcast(1, make([]byte, protocolv1.MaxProtoSize)), network.ErrFrameTooLarge)
+	require.ErrorIs(t, server.Broadcast(1, make([]byte, v1.MaxProtoSize)), network.ErrFrameTooLarge)
 }
 
 type blockingConnection struct {
@@ -238,7 +238,7 @@ func newBlockingConnection(connID string) *blockingConnection {
 func (c *blockingConnection) ConnID() string     { return c.connID }
 func (c *blockingConnection) RemoteAddr() string { return "127.0.0.1:5000" }
 
-func (c *blockingConnection) SendProto(message *protocolv1.Proto) error {
+func (c *blockingConnection) SendProto(message *v1.Proto) error {
 	c.start.Do(func() {
 		close(c.started)
 		<-c.release
@@ -249,7 +249,7 @@ func (c *blockingConnection) SendProto(message *protocolv1.Proto) error {
 	return nil
 }
 
-func (c *blockingConnection) CloseWithProto(context.Context, *protocolv1.Proto) error {
+func (c *blockingConnection) CloseWithProto(context.Context, *v1.Proto) error {
 	return nil
 }
 
@@ -296,4 +296,4 @@ func TestBroadcastStatsSeparateSendRejection(t *testing.T) {
 
 type queueFullConnection struct{ *testConnection }
 
-func (*queueFullConnection) SendProto(*protocolv1.Proto) error { return network.ErrSendQueueFull }
+func (*queueFullConnection) SendProto(*v1.Proto) error { return network.ErrSendQueueFull }

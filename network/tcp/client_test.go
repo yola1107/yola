@@ -236,7 +236,7 @@ func TestClientHeartbeatRequiresReplyDespiteOtherTraffic(t *testing.T) {
 		reader := bufio.NewReader(serverConn)
 		writer := bufio.NewWriter(serverConn)
 		for {
-			message := new(v1.Proto)
+			message := &v1.Proto{}
 			if err := readFrame(reader, defaultCodec(), message); err != nil {
 				return
 			}
@@ -370,7 +370,7 @@ func TestClientCallbacksAreOrderedAndDoNotBlockResponses(t *testing.T) {
 	}
 	requestCtx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	if _, _, err := client.Request(requestCtx, 1, new(v1.ClientAuthReq)); err != nil {
+	if _, _, err := client.Request(requestCtx, 1, &v1.ClientAuthReq{}); err != nil {
 		t.Fatalf("Request blocked behind callback: %v", err)
 	}
 	release()
@@ -408,7 +408,7 @@ func TestClientCallbackQueueFullClosesConnection(t *testing.T) {
 	}
 	requestCtx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	if _, _, err := client.Request(requestCtx, 1, new(v1.ClientAuthReq)); err != nil {
+	if _, _, err := client.Request(requestCtx, 1, &v1.ClientAuthReq{}); err != nil {
 		t.Fatalf("Request blocked while filling callback queue: %v", err)
 	}
 	if err := serverConn.SendProto(&v1.Proto{Op: v1.OpPush, Cmd: 1}); err != nil {
@@ -565,7 +565,7 @@ func TestClientReceivesFinalKick(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(client.Close)
-	_, _, err = client.Request(context.Background(), 1, new(v1.ClientAuthReq))
+	_, _, err = client.Request(context.Background(), 1, &v1.ClientAuthReq{})
 	if err == nil {
 		t.Fatal("Client.Request() succeeded after the final kick")
 	}

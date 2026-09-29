@@ -11,9 +11,9 @@ import (
 
 var errInvalidPreparedProto = errors.New("network: invalid prepared proto")
 
-// PreparedProto is a synchronous view of one immutable Proto during a bounded
-// send batch. It must not be retained after PreparedConnection.SendPrepared
-// returns, and Reset must not overlap calls for the previous message.
+// PreparedProto 是一批有界发送期间对不可变 Proto 的同步视图。
+// PreparedConnection.SendPrepared 返回后不得继续持有该视图；
+// Reset 不得与上一条消息的发送调用重叠。
 // 使用后不得复制。
 type PreparedProto struct {
 	message *v1.Proto
@@ -42,13 +42,13 @@ func (p *PreparedProto) Message() *v1.Proto {
 	return p.message
 }
 
-// Marshal returns one shared protobuf encoding. Callers must not modify it.
+// Marshal 返回共用的 protobuf 编码结果；caller 不得修改。
 func (p *PreparedProto) Marshal() ([]byte, error) {
 	if p == nil || p.message == nil {
 		return nil, errInvalidPreparedProto
 	}
 	p.once.Do(func() {
-		p.state = new(preparedState)
+		p.state = &preparedState{}
 		p.state.body, p.state.err = proto.Marshal(p.message)
 	})
 	return p.state.body, p.state.err

@@ -10,7 +10,7 @@ import (
 	"yola/api/cluster/v1"
 	"yola/instance"
 
-	kgrpc "github.com/go-kratos/kratos/v3/transport/grpc"
+	"github.com/go-kratos/kratos/v3/transport/grpc"
 	"github.com/stretchr/testify/require"
 )
 
@@ -153,7 +153,7 @@ func TestBackendsRejectStickyModeChange(t *testing.T) {
 
 func TestBackendsVerifiedTLSAuthority(t *testing.T) {
 	serverTLS, clientTLS := testTLSConfigs(t)
-	endpoint := startBackendNodeWithOptions(t, "grpcs", &tlsBackendNode{}, kgrpc.TLSConfig(serverTLS))
+	endpoint := startBackendNodeWithOptions(t, "grpcs", &tlsBackendNode{}, grpc.TLSConfig(serverTLS))
 	tests := []struct {
 		name       string
 		service    string

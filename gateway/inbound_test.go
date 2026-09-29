@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	protocolv1 "yola/api/protocol/v1"
+	"yola/api/protocol/v1"
 	"yola/locate"
 
 	"github.com/stretchr/testify/require"
@@ -38,7 +38,7 @@ func TestAuthenticationCommitsSuccessfulRoute(t *testing.T) {
 	require.Equal(t, int32(1), calls.Load())
 	require.True(t, <-deadlines)
 	require.Equal(t, "game", <-services)
-	require.Equal(t, protocolv1.OpAuthReply, auth.Op)
+	require.Equal(t, v1.OpAuthReply, auth.Op)
 	require.Equal(t, int32(codes.OK), auth.Code)
 	binding, valid := gateway.sessions.get(conn.ConnID()).route(time.Now())
 	require.True(t, valid)
@@ -65,7 +65,7 @@ func TestAuthenticationDoesNotDependOnNodeAvailability(t *testing.T) {
 	_, err = store.LocateGate(context.Background(), "game", "player-a")
 	require.NoError(t, err)
 
-	request := &protocolv1.Proto{Op: protocolv1.OpRequest, Cmd: 1}
+	request := &v1.Proto{Op: v1.OpRequest, Cmd: 1}
 	_, err = gateway.Handle(context.Background(), conn, request)
 	require.NoError(t, err)
 	require.Equal(t, int32(codes.Unavailable), request.Code)
@@ -289,7 +289,7 @@ func TestSessionReplacementKickDoesNotNotifyNodeDisconnect(t *testing.T) {
 	gateway, store, conn, binding, disconnects := newDisconnectTrackingServer(t)
 	bindTestPlayerNode(t, store, binding.ServiceName, binding.UID, "node-a")
 
-	require.NoError(t, gateway.kick(context.Background(), binding, protocolv1.KickCodeSessionReplaced))
+	require.NoError(t, gateway.kick(context.Background(), binding, v1.KickCodeSessionReplaced))
 	require.True(t, isClosed(conn.closed)())
 	select {
 	case disconnect := <-disconnects:
@@ -306,7 +306,7 @@ func TestSessionReplacementKickDoesNotNotifyNodeDisconnect(t *testing.T) {
 func TestTakeoverKickSurvivesCanceledAuthentication(t *testing.T) {
 	conn := newTestConnection("conn-old")
 	ctxErr := make(chan error, 1)
-	conn.closeWithProto = func(ctx context.Context, _ *protocolv1.Proto) error {
+	conn.closeWithProto = func(ctx context.Context, _ *v1.Proto) error {
 		ctxErr <- ctx.Err()
 		return conn.Close()
 	}

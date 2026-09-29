@@ -23,12 +23,12 @@ var (
 )
 
 const (
-	defaultSocketBufferSize = 4096
-	defaultSendQueueSize    = network.DefaultSendQueueSize
-	defaultHeartbeatTimeout = 15 * time.Second
+	_defaultSocketBufferSize = 4096
+	_defaultSendQueueSize    = network.DefaultSendQueueSize
+	_defaultHeartbeatTimeout = 15 * time.Second
 )
 
-// Server is a TCP server wrapper.
+// Server 持有 TCP listener 和接入连接。
 type Server struct {
 	config           serverConfig
 	cancel           context.CancelFunc
@@ -43,7 +43,7 @@ type Server struct {
 	handler          network.ConnectionHandler
 }
 
-// NewServer creates a TCP transport server.
+// NewServer 创建 TCP transport server。
 func NewServer(opts ...ServerOption) *Server {
 	s := &Server{
 		config: serverConfig{
@@ -54,7 +54,7 @@ func NewServer(opts ...ServerOption) *Server {
 			maxConnPerIP:     network.DefaultMaxConnPerIP,
 			timeout:          network.DefaultHandlerTimeout,
 			handshakeTimeout: network.DefaultHandshakeTimeout,
-			heartbeatTimeout: defaultHeartbeatTimeout,
+			heartbeatTimeout: _defaultHeartbeatTimeout,
 			writeTimeout:     network.DefaultWriteTimeout,
 			requestQueueSize: network.DefaultRequestQueueSize,
 		},
@@ -68,7 +68,7 @@ func NewServer(opts ...ServerOption) *Server {
 	return s
 }
 
-// SetHandler injects the connection handler before Start.
+// SetHandler 在 Start 前注入连接处理器。
 func (s *Server) SetHandler(handler network.ConnectionHandler) error {
 	s.lifecycleMu.Lock()
 	defer s.lifecycleMu.Unlock()
@@ -85,7 +85,7 @@ func (s *Server) SetHandler(handler network.ConnectionHandler) error {
 	return nil
 }
 
-// BeforeStart validates the server and binds its listener before service registration.
+// BeforeStart 在服务注册前校验配置并绑定 listener。
 func (s *Server) BeforeStart(_ context.Context) error {
 	s.lifecycleMu.Lock()
 	defer s.lifecycleMu.Unlock()
@@ -105,7 +105,7 @@ func (s *Server) prepare() error {
 	return s.listenAndEndpoint()
 }
 
-// Start starts the TCP server
+// Start 启动 TCP 服务。
 func (s *Server) Start(ctx context.Context) error {
 	s.lifecycleMu.Lock()
 	if s.cancel != nil || s.stopped {
@@ -131,7 +131,7 @@ func (s *Server) Start(ctx context.Context) error {
 	return nil
 }
 
-// Stop gracefully shuts down the server
+// Stop 停止接入、关闭连接，并在 ctx 预算内等待服务退出。
 func (s *Server) Stop(ctx context.Context) error {
 	slog.Info("[tcp] server stopping")
 	s.lifecycleMu.Lock()
@@ -190,7 +190,7 @@ func (s *Server) closeConnections() {
 	}
 }
 
-// Endpoint returns the server endpoint
+// Endpoint 返回服务 endpoint。
 func (s *Server) Endpoint() (*url.URL, error) {
 	s.lifecycleMu.Lock()
 	defer s.lifecycleMu.Unlock()
@@ -207,7 +207,7 @@ func (s *Server) Endpoint() (*url.URL, error) {
 	return &endpoint, nil
 }
 
-// listenAndEndpoint sets up the listener and endpoint
+// listenAndEndpoint 准备 listener 和 endpoint。
 func (s *Server) listenAndEndpoint() error {
 	created := false
 	if s.lis == nil {

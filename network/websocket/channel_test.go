@@ -28,7 +28,7 @@ func TestChannelSendProto(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got := new(v1.Proto)
+	got := &v1.Proto{}
 	if err := proto.Unmarshal((<-ch.outbound).body, got); err != nil {
 		t.Fatal(err)
 	}
@@ -38,7 +38,7 @@ func TestChannelSendProto(t *testing.T) {
 }
 
 func TestChannelSendProtoRejectsFullQueue(t *testing.T) {
-	codec := new(countingCodec)
+	codec := &countingCodec{}
 	ch := &Channel{
 		ctx:      context.Background(),
 		codec:    codec,
@@ -55,7 +55,7 @@ func TestChannelSendProtoRejectsFullQueue(t *testing.T) {
 }
 
 func TestChannelSendProtoRejectsClosedChannel(t *testing.T) {
-	codec := new(countingCodec)
+	codec := &countingCodec{}
 	ch := &Channel{
 		ctx:      context.Background(),
 		codec:    codec,
@@ -71,7 +71,7 @@ func TestChannelSendProtoRejectsClosedChannel(t *testing.T) {
 }
 
 func TestChannelSendPreparedSharesDefaultEncoding(t *testing.T) {
-	prepared := new(network.PreparedProto)
+	prepared := &network.PreparedProto{}
 	prepared.Reset(&v1.Proto{Op: v1.OpPush, Cmd: 1001, Body: []byte("shared")})
 	first := &Channel{ctx: context.Background(), codec: defaultCodec(), outbound: make(chan outboundFrame, 1)}
 	second := &Channel{ctx: context.Background(), codec: defaultCodec(), outbound: make(chan outboundFrame, 1)}
@@ -89,8 +89,8 @@ func TestChannelSendPreparedSharesDefaultEncoding(t *testing.T) {
 }
 
 func TestChannelSendPreparedPreservesCustomCodec(t *testing.T) {
-	codec := new(countingCodec)
-	prepared := new(network.PreparedProto)
+	codec := &countingCodec{}
+	prepared := &network.PreparedProto{}
 	prepared.Reset(&v1.Proto{Op: v1.OpPush})
 	first := &Channel{ctx: context.Background(), codec: codec, outbound: make(chan outboundFrame, 1)}
 	second := &Channel{ctx: context.Background(), codec: codec, outbound: make(chan outboundFrame, 1)}
@@ -183,7 +183,7 @@ func TestOnlyDefaultCodecOptimizesFrames(t *testing.T) {
 	if !canOptimizeFrames(defaultCodec()) {
 		t.Fatal("default protobuf codec did not enable bounded buffer reuse")
 	}
-	if canOptimizeFrames(new(countingCodec)) {
+	if canOptimizeFrames(&countingCodec{}) {
 		t.Fatal("configured codec unexpectedly enabled bounded buffer reuse")
 	}
 }
@@ -275,7 +275,7 @@ func TestMarshalFrameRejectsInvalidSize(t *testing.T) {
 	if _, err := marshalFrame(codec, nil); !errors.Is(err, errNilPayload) {
 		t.Fatalf("marshalFrame(nil) error = %v, want %v", err, errNilPayload)
 	}
-	if _, err := marshalFrame(codec, new(v1.Proto)); !errors.Is(err, errFrameLength) {
+	if _, err := marshalFrame(codec, &v1.Proto{}); !errors.Is(err, errFrameLength) {
 		t.Fatalf("marshalFrame(empty) error = %v, want %v", err, errFrameLength)
 	}
 	message := &v1.Proto{Op: v1.OpPush, Body: make([]byte, v1.MaxProtoSize)}

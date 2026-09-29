@@ -32,7 +32,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
-	healthpb "google.golang.org/grpc/health/grpc_health_v1"
+	"google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -118,7 +118,7 @@ func (c *testConnection) SendProto(msg *protocolv1.Proto) error {
 	if c.sendErr != nil {
 		return c.sendErr
 	}
-	c.pushes <- proto.Clone(msg).(*protocolv1.Proto)
+	c.pushes <- proto.CloneOf(msg)
 	return nil
 }
 
@@ -129,14 +129,14 @@ func (c *testConnection) CloseWithProto(ctx context.Context, msg *protocolv1.Pro
 	if c.sendErr != nil {
 		return c.sendErr
 	}
-	cloned := proto.Clone(msg).(*protocolv1.Proto)
+	cloned := proto.CloneOf(msg)
 	select {
 	case c.pushes <- cloned:
 	case <-ctx.Done():
 		_ = c.Close()
 		return ctx.Err()
 	default:
-		// Drop if the test already left an unread frame; shutdown must not block.
+		// 测试遗留未读帧时丢弃；停止过程不能因此阻塞。
 	}
 	return c.Close()
 }
@@ -298,7 +298,7 @@ func startTestNodeServer(t *testing.T, id string, serviceName string, opts ...no
 			t.Errorf("stop test Node: %v", stopErr)
 		}
 	})
-	serviceImpl := testGameService{}
+	var serviceImpl testGameService
 	ns.RegisterRawHandler(1, serviceImpl.enter)
 	ns.RegisterRawHandler(2, serviceImpl.enterAndPush)
 	ns.RegisterRawHandler(3, serviceImpl.enterAndBind)
@@ -324,12 +324,12 @@ func startTestNodeServer(t *testing.T, id string, serviceName string, opts ...no
 	probe, err := grpc.NewClient(lis.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
 	require.NoError(t, err)
 	defer func() { require.NoError(t, probe.Close()) }()
-	health := healthpb.NewHealthClient(probe)
+	health := grpc_health_v1.NewHealthClient(probe)
 	require.Eventually(t, func() bool {
 		probeCtx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 		defer cancel()
-		reply, err := health.Check(probeCtx, &healthpb.HealthCheckRequest{})
-		return err == nil && reply.Status == healthpb.HealthCheckResponse_SERVING
+		reply, err := health.Check(probeCtx, &grpc_health_v1.HealthCheckRequest{})
+		return err == nil && reply.Status == grpc_health_v1.HealthCheckResponse_SERVING
 	}, time.Second, time.Millisecond)
 	return "grpc://" + lis.Addr().String(), stop
 }

@@ -27,7 +27,7 @@ func (gameService) Enter(ctx context.Context, _ *emptypb.Empty) (*emptypb.Empty,
 		return nil, err
 	}
 	slog.DebugContext(ctx, "Enter && BindNode")
-	return new(emptypb.Empty), nil
+	return &emptypb.Empty{}, nil
 }
 
 func (gameService) Leave(ctx context.Context, _ *emptypb.Empty) (*emptypb.Empty, error) {
@@ -39,7 +39,7 @@ func (gameService) Leave(ctx context.Context, _ *emptypb.Empty) (*emptypb.Empty,
 		return nil, err
 	}
 	slog.DebugContext(ctx, "Leave && UnbindNode")
-	return new(emptypb.Empty), nil
+	return &emptypb.Empty{}, nil
 }
 
 func (s gameService) Echo(ctx context.Context, in *wrapperspb.StringValue) (*wrapperspb.StringValue, error) {

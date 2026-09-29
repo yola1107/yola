@@ -76,10 +76,10 @@ func configureTCPConnection(conn *net.TCPConn) error {
 	if err := conn.SetKeepAlive(false); err != nil {
 		return fmt.Errorf("disable keepalive: %w", err)
 	}
-	if err := conn.SetReadBuffer(defaultSocketBufferSize); err != nil {
+	if err := conn.SetReadBuffer(_defaultSocketBufferSize); err != nil {
 		return fmt.Errorf("set read buffer: %w", err)
 	}
-	if err := conn.SetWriteBuffer(defaultSocketBufferSize); err != nil {
+	if err := conn.SetWriteBuffer(_defaultSocketBufferSize); err != nil {
 		return fmt.Errorf("set write buffer: %w", err)
 	}
 	return nil
@@ -132,9 +132,9 @@ func (s *Server) serveTCP(baseCtx context.Context, conn net.Conn, connID string)
 		"local_addr", conn.LocalAddr().String(),
 		"remote_addr", rAddr,
 	)
-	ch := newChannel(defaultSendQueueSize, s.config.codec)
-	rr := bufio.NewReaderSize(conn, defaultIOBufferSize)
-	wr := bufio.NewWriterSize(conn, defaultIOBufferSize)
+	ch := newChannel(_defaultSendQueueSize, s.config.codec)
+	rr := bufio.NewReaderSize(conn, _defaultIOBufferSize)
+	wr := bufio.NewWriterSize(conn, _defaultIOBufferSize)
 	defer ch.close()
 	defer conn.Close()
 	clientConn := tcpConnection{
@@ -209,7 +209,7 @@ func (s *Server) readTCPMessages(ctx context.Context, clientConn tcpConnection, 
 		if err := clientConn.conn.SetReadDeadline(deadline); err != nil {
 			return err
 		}
-		message := new(v1.Proto)
+		message := &v1.Proto{}
 		if err := readFrame(reader, s.config.codec, message); err != nil {
 			return err
 		}

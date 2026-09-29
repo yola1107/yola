@@ -1,4 +1,4 @@
-// Package message owns wire values shared by the example applications.
+// Package message 定义示例应用共用的协议值。
 package message
 
 const (

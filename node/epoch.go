@@ -16,9 +16,9 @@ import (
 )
 
 const (
-	DefaultNodeEpochTTL    = 30 * time.Second
-	nodeEpochRenewInterval = 10 * time.Second
-	nodeEpochRPCTimeout    = 3 * time.Second
+	DefaultNodeEpochTTL     = 30 * time.Second
+	_nodeEpochRenewInterval = 10 * time.Second
+	_nodeEpochRPCTimeout    = 3 * time.Second
 )
 
 var errNodeEpochExpired = errors.New("node: epoch lease expired")
@@ -32,9 +32,9 @@ type epochStore interface {
 type epochReleaseState uint8
 
 const (
-	epochHeld epochReleaseState = iota
-	epochReleaseFailed
-	epochReleased
+	_epochHeld epochReleaseState = iota
+	_epochReleaseFailed
+	_epochReleased
 )
 
 // epochLease 拥有一次成功申请的固定凭据、续租取消和清理状态，不引用 Server。
@@ -54,7 +54,7 @@ type epochLease struct {
 func claimEpoch(ctx context.Context, store epochStore, identity nodeIdentity) (*epochLease, error) {
 	identity.epoch = uuid.NewString()
 	started := time.Now()
-	ctx, cancel := context.WithTimeout(ctx, nodeEpochRPCTimeout)
+	ctx, cancel := context.WithTimeout(ctx, _nodeEpochRPCTimeout)
 	defer cancel()
 	if err := store.RegisterNodeEpoch(ctx, identity.serviceName, identity.nodeID, identity.epoch, DefaultNodeEpochTTL); err != nil {
 		return nil, fmt.Errorf("node: register epoch: %w", err)
@@ -133,7 +133,7 @@ func (e *epochLease) monitor(ready chan<- error, results <-chan error) error {
 }
 
 func (e *epochLease) renewLoop(results chan<- error) {
-	ticker := time.NewTicker(nodeEpochRenewInterval)
+	ticker := time.NewTicker(_nodeEpochRenewInterval)
 	defer ticker.Stop()
 	for {
 		err := e.renewOnce(e.ctx)
@@ -203,7 +203,7 @@ func (e *epochLease) renewOnce(ctx context.Context) error {
 	}
 	started := time.Now()
 	renewalDeadline := *e.deadline.Load()
-	if rpcDeadline := started.Add(nodeEpochRPCTimeout); rpcDeadline.Before(renewalDeadline) {
+	if rpcDeadline := started.Add(_nodeEpochRPCTimeout); rpcDeadline.Before(renewalDeadline) {
 		renewalDeadline = rpcDeadline
 	}
 	ctx, cancel := context.WithDeadline(ctx, renewalDeadline)
@@ -242,7 +242,7 @@ func (e *epochLease) release(ctx context.Context) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if stopErr != nil {
-		e.releaseState = epochReleaseFailed
+		e.releaseState = _epochReleaseFailed
 		return stopErr
 	}
 	return e.releaseLocked(ctx)
@@ -254,7 +254,7 @@ func (e *epochLease) retryRelease(ctx context.Context) error {
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if e.releaseState != epochReleaseFailed {
+	if e.releaseState != _epochReleaseFailed {
 		return nil
 	}
 	// 上次可能因续租任务未退出而超时，重试仍须等待它结束。
@@ -267,15 +267,15 @@ func (e *epochLease) retryRelease(ctx context.Context) error {
 }
 
 func (e *epochLease) releaseLocked(ctx context.Context) error {
-	if e.releaseState == epochReleased {
+	if e.releaseState == _epochReleased {
 		return nil
 	}
 	identity := e.identity
 	err := e.store.UnregisterNodeEpoch(ctx, identity.serviceName, identity.nodeID, identity.epoch)
 	if err != nil && !errors.Is(err, locate.ErrNodeEpochNotFound) && !errors.Is(err, locate.ErrNodeEpochConflict) {
-		e.releaseState = epochReleaseFailed
+		e.releaseState = _epochReleaseFailed
 		return err
 	}
-	e.releaseState = epochReleased
+	e.releaseState = _epochReleased
 	return nil
 }

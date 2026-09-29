@@ -13,13 +13,13 @@ import (
 )
 
 const (
-	defaultAuthenticationTimeout = 3 * time.Second
-	defaultClientReadTimeout     = 15 * time.Second
-	defaultClientWriteTimeout    = 10 * time.Second
-	defaultCallbackQueueSize     = 64
+	_defaultAuthenticationTimeout = 3 * time.Second
+	_defaultClientReadTimeout     = 15 * time.Second
+	_defaultClientWriteTimeout    = 10 * time.Second
+	_defaultCallbackQueueSize     = 64
 )
 
-// ClientOption configures a TCP client.
+// ClientOption 配置 TCP client。
 type ClientOption func(*clientOptions)
 
 type clientOptions struct {
@@ -39,99 +39,99 @@ type clientOptions struct {
 	callbackQueueSize int
 }
 
-// WithAddress configures the Gateway TCP address.
+// WithAddress 配置 Gateway TCP 地址。
 func WithAddress(endpoint string) ClientOption {
 	return func(o *clientOptions) {
 		o.endpoint = endpoint
 	}
 }
 
-// WithServiceName configures the target Node service.
+// WithServiceName 配置目标 Node 服务。
 func WithServiceName(serviceName string) ClientOption {
 	return func(o *clientOptions) {
 		o.serviceName = serviceName
 	}
 }
 
-// WithToken configures the authentication token.
+// WithToken 配置认证 token。
 func WithToken(token string) ClientOption {
 	return func(o *clientOptions) {
 		o.token = []byte(token)
 	}
 }
 
-// WithTLSConfig configures TLS for the Gateway connection.
+// WithTLSConfig 配置 Gateway 连接的 TLS。
 func WithTLSConfig(c *tls.Config) ClientOption {
 	return func(o *clientOptions) {
 		o.tlsConf = c
 	}
 }
 
-// WithCodec configures protocol frame encoding. Peers must use the same codec.
+// WithCodec 配置协议帧编码；通信双方必须使用相同 codec。
 func WithCodec(codec encoding.Codec) ClientOption {
 	return func(o *clientOptions) {
 		o.codec = codec
 	}
 }
 
-// WithPushHandler configures server push handlers.
+// WithPushHandler 配置服务端推送处理器。
 func WithPushHandler(handlers map[int32]PushHandler) ClientOption {
 	return func(o *clientOptions) {
 		o.pushHandlers = handlers
 	}
 }
 
-// WithKickHandler configures the intentional disconnect callback.
+// WithKickHandler 配置主动断开连接的回调。
 func WithKickHandler(handler KickHandler) ClientOption {
 	return func(o *clientOptions) {
 		o.kickHandler = handler
 	}
 }
 
-// WithConnectFunc configures the authenticated connection callback.
+// WithConnectFunc 配置认证成功后的连接回调。
 func WithConnectFunc(fn func()) ClientOption {
 	return func(o *clientOptions) {
 		o.connectFunc = fn
 	}
 }
 
-// WithDisconnectFunc configures the disconnection callback.
+// WithDisconnectFunc 配置断线回调。
 func WithDisconnectFunc(fn func()) ClientOption {
 	return func(o *clientOptions) {
 		o.disconnectFunc = fn
 	}
 }
 
-// WithPingInterval configures the heartbeat interval.
+// WithPingInterval 配置心跳间隔。
 func WithPingInterval(interval time.Duration) ClientOption {
 	return func(o *clientOptions) {
 		o.pingInterval = interval
 	}
 }
 
-// WithReadTimeout configures how long the authenticated connection may wait for one inbound frame.
-// It must be longer than the heartbeat interval.
+// WithReadTimeout 配置认证后等待一帧入站消息的最长时间；
+// 必须大于心跳间隔。
 func WithReadTimeout(timeout time.Duration) ClientOption {
 	return func(o *clientOptions) {
 		o.readTimeout = timeout
 	}
 }
 
-// WithWriteTimeout configures the maximum duration of one authenticated frame write.
+// WithWriteTimeout 配置认证后单帧写入的最长时间。
 func WithWriteTimeout(timeout time.Duration) ClientOption {
 	return func(o *clientOptions) {
 		o.writeTimeout = timeout
 	}
 }
 
-// WithRequestTimeout configures how long a request remains pending.
+// WithRequestTimeout 配置请求等待结果的最长时间。
 func WithRequestTimeout(timeout time.Duration) ClientOption {
 	return func(o *clientOptions) {
 		o.requestTimeout = timeout
 	}
 }
 
-// WithCallbackQueueSize configures the number of pending connect and push callbacks.
+// WithCallbackQueueSize 配置等待执行的 connect/push 回调队列容量。
 func WithCallbackQueueSize(size int) ClientOption {
 	return func(o *clientOptions) {
 		o.callbackQueueSize = size
@@ -144,10 +144,10 @@ func resolveClientOptions(opts ...ClientOption) (*clientOptions, error) {
 		codec:             defaultCodec(),
 		pushHandlers:      make(map[int32]PushHandler),
 		pingInterval:      5 * time.Second,
-		readTimeout:       defaultClientReadTimeout,
-		writeTimeout:      defaultClientWriteTimeout,
+		readTimeout:       _defaultClientReadTimeout,
+		writeTimeout:      _defaultClientWriteTimeout,
 		requestTimeout:    30 * time.Second,
-		callbackQueueSize: defaultCallbackQueueSize,
+		callbackQueueSize: _defaultCallbackQueueSize,
 	}
 	for _, opt := range opts {
 		opt(o)

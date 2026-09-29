@@ -8,11 +8,11 @@ import (
 )
 
 const (
-	defaultNetwork = "tcp"
-	defaultAddress = ":0"
+	_defaultNetwork = "tcp"
+	_defaultAddress = ":0"
 )
 
-// Owner binds a listener lazily and closes it independently of the serving library.
+// Owner 按需绑定 listener，并独立于服务库负责关闭它。
 type Owner struct {
 	mu       sync.Mutex
 	network  string
@@ -23,15 +23,15 @@ type Owner struct {
 
 func New(network, address string, listener net.Listener) *Owner {
 	if network == "" {
-		network = defaultNetwork
+		network = _defaultNetwork
 	}
 	if address == "" {
-		address = defaultAddress
+		address = _defaultAddress
 	}
 	return &Owner{network: network, address: address, listener: listener}
 }
 
-// Prepare binds the configured address once. A supplied listener is already prepared.
+// Prepare 只绑定一次配置地址；外部传入的 listener 视为已准备。
 func (o *Owner) Prepare(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()

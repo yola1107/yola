@@ -6,7 +6,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	clusterv1 "yola/api/cluster/v1"
+	"yola/api/cluster/v1"
 	"yola/internal/gateclient"
 	"yola/internal/listener"
 	"yola/locate"
@@ -26,14 +26,14 @@ var (
 type lifecycleState uint8
 
 const (
-	stNew lifecycleState = iota
-	stPreparing
-	stPrepared
-	stStarted
-	stStopping
+	_stNew lifecycleState = iota
+	_stPreparing
+	_stPrepared
+	_stStarted
+	_stStopping
 )
 
-// Server owns Gateway connections, Node routing, and the internal gRPC transport.
+// Server 持有 Gateway 连接、Node 路由和内部 gRPC transport。
 type Server struct {
 	grpcServer   *grpc.Server
 	grpcListener *listener.Owner
@@ -58,7 +58,7 @@ type Server struct {
 	admission admission
 }
 
-// lifecycle owns process start/stop coordination (not per-connection hot paths).
+// lifecycle 协调进程启动和停止，不参与单连接热路径。
 type lifecycle struct {
 	mu              sync.Mutex
 	state           lifecycleState
@@ -67,7 +67,7 @@ type lifecycle struct {
 	stopErr         error
 }
 
-// admission owns whether new connections/auths are accepted.
+// admission 控制是否接纳新连接和认证。
 type admission struct {
 	mu        sync.Mutex
 	accepting atomic.Bool
@@ -79,7 +79,7 @@ type identity struct {
 	endpoint string
 }
 
-// NewServer creates a Gateway server and its internal gRPC transport.
+// NewServer 创建 Gateway 服务及其内部 gRPC transport。
 func NewServer(opts ...Option) (*Server, error) {
 	o, err := resolveOptions(opts...)
 	if err != nil {
@@ -112,7 +112,7 @@ func NewServer(opts ...Option) (*Server, error) {
 	)
 	grpcOptions = append(grpcOptions, o.grpcOptions...)
 	server.grpcServer = grpc.NewServer(grpcOptions...)
-	clusterv1.RegisterGatewayServer(server.grpcServer, &pushService{server: server})
+	v1.RegisterGatewayServer(server.grpcServer, &pushService{server: server})
 	for index, clientTransport := range server.transports {
 		if err := clientTransport.SetHandler(server); err != nil {
 			return nil, fmt.Errorf("gateway: configure client transport %d: %w", index, err)

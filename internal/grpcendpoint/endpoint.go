@@ -1,4 +1,4 @@
-// Package grpcendpoint validates advertised gRPC endpoints shared by Yola servers.
+// Package grpcendpoint 校验 Yola 服务共用的对外 gRPC endpoint。
 package grpcendpoint
 
 import (
@@ -43,7 +43,7 @@ func Advertise(listenAddress, advertiseHost string, secure bool) (*url.URL, erro
 	return endpoint, nil
 }
 
-// Resolve returns an explicit endpoint or derives one from the advertised host.
+// Resolve 返回显式 endpoint，或从对外 host 推导 endpoint。
 func Resolve(endpoint *url.URL, listenAddress, advertiseHost string, secure bool) (*url.URL, error) {
 	if endpoint != nil {
 		if err := Validate(endpoint, secure); err != nil {
@@ -74,7 +74,7 @@ func Validate(endpoint *url.URL, secure bool) error {
 	return validate(endpoint)
 }
 
-// Host parses an advertised endpoint and returns its validated host:port.
+// Host 解析对外 endpoint，返回已校验的 host:port。
 func Host(raw string, secure bool) (string, error) {
 	endpoint, err := url.Parse(raw)
 	if err != nil {

@@ -2,24 +2,24 @@ package network
 
 import "time"
 
-// DefaultSendQueueSize is the default outbound frame queue capacity for
-// TCP and WebSocket servers. Client outbound queues may use a larger default.
+// DefaultSendQueueSize 是 TCP/WebSocket 服务端的默认发送队列容量；
+// 客户端发送队列可使用更大的默认值。
 const DefaultSendQueueSize = 32
 
 // DefaultRequestQueueSize 限制认证后等待执行的业务帧数，不包含当前执行的请求。
 const DefaultRequestQueueSize = 8
 
-// DefaultMaxConnLimit is the maximum number of active connections.
+// DefaultMaxConnLimit 是活动连接数上限。
 const DefaultMaxConnLimit = 10000
 
-// DefaultMaxConnPerIP is the default per-peer-IP connection cap.
+// DefaultMaxConnPerIP 是每个对端 IP 的默认连接数上限。
 const DefaultMaxConnPerIP = 100
 
-// DefaultHandshakeTimeout bounds connection handshake and post-handshake Open.
+// DefaultHandshakeTimeout 限制握手及握手后 Open 的耗时。
 const DefaultHandshakeTimeout = 15 * time.Second
 
-// DefaultHandlerTimeout bounds one inbound handler call.
+// DefaultHandlerTimeout 限制一次入站 handler 调用的耗时。
 const DefaultHandlerTimeout = 3 * time.Second
 
-// DefaultWriteTimeout is the per-frame write timeout.
+// DefaultWriteTimeout 是单帧写入超时。
 const DefaultWriteTimeout = 10 * time.Second

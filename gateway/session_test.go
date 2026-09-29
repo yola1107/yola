@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	protocolv1 "yola/api/protocol/v1"
+	"yola/api/protocol/v1"
 	"yola/locate"
 
 	"github.com/stretchr/testify/require"
@@ -90,7 +90,7 @@ func TestSessionSendIfCurrent(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			conn := newTestConnection(binding.ConnID)
 			sess := &session{conn: conn, binding: binding, leaseDeadline: test.deadline}
-			message := &protocolv1.Proto{Op: protocolv1.OpPush}
+			message := &v1.Proto{Op: v1.OpPush}
 
 			matched, err := sess.sendIfCurrent(test.expected, message)
 

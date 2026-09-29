@@ -294,7 +294,7 @@ func TestBindingLossCannotBeUndoneByLateRenewal(t *testing.T) {
 		t.Cleanup(unblock)
 		lease := server.lease.Load()
 		require.NoError(t, <-lease.start(server.failLifecycle))
-		time.Sleep(nodeEpochRenewInterval)
+		time.Sleep(_nodeEpochRenewInterval)
 		<-store.entered
 		deadline := *lease.deadline.Load()
 		require.NoError(t, store.UnregisterNodeEpoch(t.Context(), "game", "node-a", "epoch-a"))

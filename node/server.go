@@ -27,10 +27,10 @@ var (
 type lifecycleState uint8
 
 const (
-	stNew lifecycleState = iota
-	stPreparing
-	stPrepared
-	stStarted
+	_stNew lifecycleState = iota
+	_stPreparing
+	_stPrepared
+	_stStarted
 )
 
 // Server 是供 Kratos 应用装配的 Yola Node transport。

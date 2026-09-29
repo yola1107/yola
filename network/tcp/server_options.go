@@ -30,25 +30,25 @@ type serverConfig struct {
 	requestQueueSize int
 }
 
-// ServerOption is TCP server option.
+// ServerOption 配置 TCP server。
 type ServerOption func(o *Server)
 
-// Network with server network.
+// Network 配置监听网络。
 func Network(network string) ServerOption {
 	return func(s *Server) { s.config.network = network }
 }
 
-// Address with server address.
+// Address 配置监听地址。
 func Address(addr string) ServerOption {
 	return func(s *Server) { s.config.address = addr }
 }
 
-// AdvertiseHost configures the host published in the server endpoint.
+// AdvertiseHost 配置服务 endpoint 对外发布的 host。
 func AdvertiseHost(advertiseHost string) ServerOption {
 	return func(s *Server) { s.config.advertiseHost = advertiseHost }
 }
 
-// Endpoint with server address.
+// Endpoint 配置对外发布的服务地址。
 func Endpoint(endpoint *url.URL) ServerOption {
 	return func(s *Server) {
 		if endpoint == nil {
@@ -60,12 +60,12 @@ func Endpoint(endpoint *url.URL) ServerOption {
 	}
 }
 
-// Listener uses lis for the server.
+// Listener 指定服务使用的 lis。
 func Listener(lis net.Listener) ServerOption {
 	return func(s *Server) { s.lis = lis }
 }
 
-// TLSConfig enables TLS with c.
+// TLSConfig 使用 c 配置 TLS。
 func TLSConfig(c *tls.Config) ServerOption {
 	return func(s *Server) { s.config.tls = tlsconfig.Clone(c) }
 }
@@ -75,12 +75,12 @@ func Codec(codec encoding.Codec) ServerOption {
 	return func(s *Server) { s.config.codec = codec }
 }
 
-// Middleware configures message middleware.
+// Middleware 配置消息 middleware。
 func Middleware(m ...middleware.Middleware) ServerOption {
 	return func(s *Server) { s.config.middlewares = append(s.config.middlewares, m...) }
 }
 
-// Timeout configures the maximum duration of one message handler call.
+// Timeout 配置单次消息 handler 调用的最长时间。
 func Timeout(timeout time.Duration) ServerOption {
 	return func(s *Server) { s.config.timeout = timeout }
 }
@@ -91,27 +91,27 @@ func RequestQueueSize(size int) ServerOption {
 	return func(s *Server) { s.config.requestQueueSize = size }
 }
 
-// MaxConnLimit configures the maximum concurrent connections.
+// MaxConnLimit 配置并发连接数上限。
 func MaxConnLimit(limit int32) ServerOption {
 	return func(s *Server) { s.config.maxConnLimit = limit }
 }
 
-// MaxConnPerIP configures the maximum concurrent connections from one peer IP.
+// MaxConnPerIP 配置每个对端 IP 的并发连接数上限。
 func MaxConnPerIP(limit int32) ServerOption {
 	return func(s *Server) { s.config.maxConnPerIP = limit }
 }
 
-// HandshakeTimeout configures how long a connection may wait for its first protocol heartbeat.
+// HandshakeTimeout 配置连接等待首次协议心跳的最长时间。
 func HandshakeTimeout(timeout time.Duration) ServerOption {
 	return func(s *Server) { s.config.handshakeTimeout = timeout }
 }
 
-// HeartbeatTimeout configures how long an active connection may remain silent.
+// HeartbeatTimeout 配置活动连接允许无消息的最长时间。
 func HeartbeatTimeout(timeout time.Duration) ServerOption {
 	return func(s *Server) { s.config.heartbeatTimeout = timeout }
 }
 
-// WriteTimeout configures the maximum duration of one frame write.
+// WriteTimeout 配置单帧写入的最长时间。
 func WriteTimeout(timeout time.Duration) ServerOption {
 	return func(s *Server) { s.config.writeTimeout = timeout }
 }

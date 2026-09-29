@@ -8,12 +8,9 @@ import (
 )
 
 var (
-	// ErrClosed 表示队列已停止接纳 callback。
-	ErrClosed = errors.New("callback queue is closed")
-	// ErrFull 表示等待队列已满。
-	ErrFull = errors.New("callback queue is full")
-	// ErrNilCallback 表示提交的 callback 为 nil。
-	ErrNilCallback = errors.New("callback is nil")
+	ErrClosed      = errors.New("callback queue is closed") // 队列已停止接纳 callback
+	ErrFull        = errors.New("callback queue is full")   // 等待队列已满
+	ErrNilCallback = errors.New("callback is nil")          // 提交的 callback 为 nil
 )
 
 // PanicHandler 接收 callback 执行时捕获的 panic。

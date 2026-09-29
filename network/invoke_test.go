@@ -44,7 +44,11 @@ func TestInvokerBuildsMiddlewareOnce(t *testing.T) {
 			called++
 			reply, err := next(ctx, req)
 			if err == nil {
-				reply.(*v1.Proto).Code = 7
+				message, ok := reply.(*v1.Proto)
+				if !ok {
+					t.Fatalf("unexpected reply type: %T", reply)
+				}
+				message.Code = 7
 			}
 			return reply, err
 		}

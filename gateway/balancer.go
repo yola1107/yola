@@ -11,17 +11,17 @@ import (
 )
 
 const (
-	backendBalancerName   = "yola_wrr"
-	rawServiceInstanceKey = "rawServiceInstance"
+	_backendBalancerName   = "yola_wrr"
+	_rawServiceInstanceKey = "rawServiceInstance"
 )
 
 type nodeIDContextKey struct{}
 
-// Kratos v3.0.0 captures its global selector before initialization; Yola also
-// needs exact NodeID routing, so keep the adapter local to Gateway.
+// Kratos v3.0.0 在初始化前捕获全局 selector；Yola 还需要精确 NodeID 路由，
+// 因此将适配器保留在 Gateway 内。
 func init() {
 	balancer.Register(base.NewBalancerBuilder(
-		backendBalancerName,
+		_backendBalancerName,
 		&backendPickerBuilder{},
 		base.Config{HealthCheck: true},
 	))
@@ -45,7 +45,7 @@ func (*backendPickerBuilder) Build(info base.PickerBuildInfo) balancer.Picker {
 	for conn, ready := range info.ReadySCs {
 		var service *registry.ServiceInstance
 		if ready.Address.Attributes != nil {
-			service, _ = ready.Address.Attributes.Value(rawServiceInstanceKey).(*registry.ServiceInstance)
+			service, _ = ready.Address.Attributes.Value(_rawServiceInstanceKey).(*registry.ServiceInstance)
 		}
 		nodes = append(nodes, &backendSubConn{
 			Node:    selector.NewNode("grpc", ready.Address.Addr, service),

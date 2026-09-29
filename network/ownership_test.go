@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	v1 "yola/api/protocol/v1"
+	"yola/api/protocol/v1"
 	"yola/network"
 	"yola/network/tcp"
 	"yola/network/websocket"
@@ -28,7 +28,7 @@ func TestSendProtoSharesImmutableInputAcrossTransports(t *testing.T) {
 			t.Run(transportName+"/"+codecName, func(t *testing.T) {
 				conn, received := startOwnershipConnection(t, transportName, customCodec)
 				message := &v1.Proto{Op: v1.OpPush, Cmd: 42, Body: bytes.Repeat([]byte{7}, 1024)}
-				expected := proto.Clone(message).(*v1.Proto)
+				expected := proto.CloneOf(message)
 				const sends = 16
 				results := make(chan error, sends)
 				var workers sync.WaitGroup
@@ -46,14 +46,14 @@ func TestSendProtoSharesImmutableInputAcrossTransports(t *testing.T) {
 				}
 				require.True(t, proto.Equal(expected, message), "encoding must not modify shared input")
 
-				prepared := new(network.PreparedProto)
+				prepared := &network.PreparedProto{}
 				prepared.Reset(message)
 				if capable, ok := conn.(network.PreparedConnection); ok {
 					require.NoError(t, capable.SendPrepared(prepared))
 				} else {
 					require.NoError(t, conn.SendProto(prepared.Message()))
 				}
-				next := proto.Clone(message).(*v1.Proto)
+				next := proto.CloneOf(message)
 				next.Body[0] = 9
 				prepared.Reset(next)
 				require.NoError(t, conn.SendProto(next))

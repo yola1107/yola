@@ -158,7 +158,7 @@ func TestServerMessageTimeoutCancelsHandlerContext(t *testing.T) {
 
 	requestCtx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	if _, _, err := client.Request(requestCtx, 1, new(v1.ClientAuthReq)); err == nil {
+	if _, _, err := client.Request(requestCtx, 1, &v1.ClientAuthReq{}); err == nil {
 		t.Fatal("Client.Request() error = nil, want connection failure after handler timeout")
 	}
 	if err := waitTCPValue(t, timedOut); !errors.Is(err, context.DeadlineExceeded) {
@@ -309,7 +309,7 @@ func TestServerMessageContextAndReplacementReply(t *testing.T) {
 	}
 	t.Cleanup(client.Close)
 
-	body, code, err := client.Request(context.Background(), 7, new(v1.ClientAuthReq))
+	body, code, err := client.Request(context.Background(), 7, &v1.ClientAuthReq{})
 	if err != nil {
 		t.Fatalf("Client.Request() error = %v", err)
 	}
@@ -402,7 +402,7 @@ func roundTripTCPProto(t *testing.T, reader *bufio.Reader, writer *bufio.Writer,
 	if err := writer.Flush(); err != nil {
 		t.Fatal(err)
 	}
-	reply := new(v1.Proto)
+	reply := &v1.Proto{}
 	if err := readFrame(reader, defaultCodec(), reply); err != nil {
 		t.Fatal(err)
 	}

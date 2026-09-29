@@ -12,10 +12,10 @@ import (
 
 var errInvalidHandlerReply = errors.New("network: handler returned an invalid reply")
 
-// Invoker runs decoded messages for one connection through a fixed middleware chain.
+// Invoker 为单连接的解码后消息执行固定 middleware 链。
 type Invoker func(context.Context, *v1.Proto) (*v1.Proto, error)
 
-// NewInvoker builds the middleware chain once for a connection.
+// NewInvoker 为一条连接构建一次 middleware 链。
 func NewInvoker(handler ConnectionHandler, conn Connection, timeout time.Duration, middlewares ...middleware.Middleware) Invoker {
 	h := middleware.Chain(middlewares...)(func(ctx context.Context, req any) (any, error) {
 		message, ok := req.(*v1.Proto)

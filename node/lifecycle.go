@@ -56,16 +56,16 @@ func (s *Server) Start(ctx context.Context) error {
 		return errors.New("node: server is stopping or stopped")
 	}
 	switch s.state {
-	case stStarted:
+	case _stStarted:
 		s.lifecycleMu.Unlock()
 		return errors.New("node: server is already started")
-	case stPrepared:
+	case _stPrepared:
 	default:
 		s.lifecycleMu.Unlock()
 		return errors.New("node: server is not prepared")
 	}
 	ready := s.lease.Load().start(s.failLifecycle)
-	s.state = stStarted
+	s.state = _stStarted
 	s.lifecycleMu.Unlock()
 	var startErr error
 	if ready != nil {
@@ -156,16 +156,16 @@ func (s *Server) BeforeStart(ctx context.Context) (err error) {
 		return errors.New("node: server is stopping or stopped")
 	}
 	switch s.state {
-	case stPreparing:
+	case _stPreparing:
 		s.lifecycleMu.Unlock()
 		return errors.New("node: server is already preparing or prepared")
-	case stPrepared, stStarted:
+	case _stPrepared, _stStarted:
 		s.requests.close()
 		s.lifecycleMu.Unlock()
 		return errors.New("node: server is already preparing or prepared")
 	}
 	preparationDone := make(chan struct{})
-	s.state = stPreparing
+	s.state = _stPreparing
 	s.preparationDone = preparationDone
 	s.lifecycleMu.Unlock()
 	var committed bool
@@ -192,13 +192,13 @@ func (s *Server) BeforeStart(ctx context.Context) (err error) {
 		return err
 	}
 	s.lifecycleMu.Lock()
-	if s.state != stPreparing || s.requests.isClosed() {
+	if s.state != _stPreparing || s.requests.isClosed() {
 		s.lifecycleMu.Unlock()
 		return errors.New("node: server is stopping or stopped")
 	}
 	s.lease.Store(lease)
 	s.identity.Store(&identity)
-	s.state = stPrepared
+	s.state = _stPrepared
 	committed = true
 	handlerCount := len(s.handlers)
 	s.lifecycleMu.Unlock()

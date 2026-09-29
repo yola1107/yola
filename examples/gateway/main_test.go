@@ -10,7 +10,7 @@ import (
 )
 
 func TestAuthenticatorPreservesPlayerUID(t *testing.T) {
-	auth := authenticator{}
+	var auth authenticator
 	for _, want := range []string{"player-1", "player-2"} {
 		token := message.AuthTokenPrefix + want
 		got, err := auth.Authenticate(context.Background(), "whot", []byte(token), "127.0.0.1")

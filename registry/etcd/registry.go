@@ -30,9 +30,9 @@ type Registry struct {
 }
 
 const (
-	defaultEndpoint    = "127.0.0.1:2379"
-	defaultPrefix      = "/etcd/prefix"
-	defaultDialTimeout = 3 * time.Second
+	_defaultEndpoint    = "127.0.0.1:2379"
+	_defaultPrefix      = "/etcd/prefix"
+	_defaultDialTimeout = 3 * time.Second
 )
 
 type config struct {
@@ -46,9 +46,9 @@ type Option func(*config)
 // New 创建进程专用 Registry；调用方负责 Close。
 func New(opts ...Option) (*Registry, error) {
 	c := &config{
-		endpoints:   []string{defaultEndpoint},
-		prefix:      defaultPrefix,
-		dialTimeout: defaultDialTimeout,
+		endpoints:   []string{_defaultEndpoint},
+		prefix:      _defaultPrefix,
+		dialTimeout: _defaultDialTimeout,
 	}
 	for _, opt := range opts {
 		opt(c)

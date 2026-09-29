@@ -11,7 +11,7 @@ import (
 	"yola/locate"
 	"yola/network"
 
-	kgrpc "github.com/go-kratos/kratos/v3/transport/grpc"
+	"github.com/go-kratos/kratos/v3/transport/grpc"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -130,7 +130,7 @@ func TestForwardBudgetUsesShortestDeadlineAcrossGRPC(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			backend := &deadlineBackendNode{budgets: make(chan time.Duration, 1)}
-			endpoint := startBackendNodeWithOptions(t, "grpc", backend, kgrpc.Timeout(test.node))
+			endpoint := startBackendNodeWithOptions(t, "grpc", backend, grpc.Timeout(test.node))
 			gate := newTestGateway(t, testLocator(t), endpoint, RPCTimeout(test.rpc))
 			t.Cleanup(func() { require.NoError(t, gate.Stop(context.Background())) })
 			client, err := backendClient(context.Background(), gate.backends, "game")

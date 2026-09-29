@@ -19,7 +19,7 @@ var (
 
 func TestPreparedProtoSharesOneEncoding(t *testing.T) {
 	message := &v1.Proto{Op: v1.OpPush, Body: []byte("first")}
-	prepared := new(PreparedProto)
+	prepared := &PreparedProto{}
 	prepared.Reset(message)
 
 	const readers = 32
@@ -57,7 +57,7 @@ func TestPreparedProtoSharesOneEncoding(t *testing.T) {
 	if bytes.Equal(body, shared) {
 		t.Fatal("Reset() retained the previous encoding")
 	}
-	previous := new(v1.Proto)
+	previous := &v1.Proto{}
 	if err := proto.Unmarshal(shared, previous); err != nil {
 		t.Fatal(err)
 	}
@@ -67,14 +67,14 @@ func TestPreparedProtoSharesOneEncoding(t *testing.T) {
 }
 
 func TestPreparedProtoRejectsInvalidInput(t *testing.T) {
-	nilMessage := new(PreparedProto)
+	nilMessage := &PreparedProto{}
 	nilMessage.Reset(nil)
 	for _, test := range []struct {
 		name     string
 		prepared *PreparedProto
 	}{
 		{name: "nil prepared"},
-		{name: "missing state", prepared: new(PreparedProto)},
+		{name: "missing state", prepared: &PreparedProto{}},
 		{name: "nil message", prepared: nilMessage},
 	} {
 		t.Run(test.name, func(t *testing.T) {

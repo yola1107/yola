@@ -22,11 +22,11 @@ import (
 )
 
 const (
-	clusterTransitionPrimaryCount = 3
-	clusterTransitionNodeCount    = 6
-	clusterTransitionTimeout      = 20 * time.Second
-	clusterTransitionPoll         = 50 * time.Millisecond
-	clusterTransitionEpochTTL     = 3 * time.Minute
+	_clusterTransitionPrimaryCount = 3
+	_clusterTransitionNodeCount    = 6
+	_clusterTransitionTimeout      = 20 * time.Second
+	_clusterTransitionPoll         = 50 * time.Millisecond
+	_clusterTransitionEpochTTL     = 3 * time.Minute
 )
 
 func TestNodeBindingClusterMigration(t *testing.T) {
@@ -36,7 +36,7 @@ func TestNodeBindingClusterMigration(t *testing.T) {
 	target := shards[(sourceIndex+1)%len(shards)]
 	keys := nodeBindingTestKeys(service)
 	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), clusterTransitionTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), _clusterTransitionTimeout)
 		defer cancel()
 		if err := restoreClusterTransitionSlot(ctx, shards, sourceIndex, slot, keys); err != nil {
 			t.Errorf("restore migration slot %d: %v", slot, err)
@@ -44,7 +44,7 @@ func TestNodeBindingClusterMigration(t *testing.T) {
 	})
 	ctx := t.Context()
 	store := locateredis.New(client)
-	require.NoError(t, store.RegisterNodeEpoch(ctx, service, "node-a", "current", clusterTransitionEpochTTL))
+	require.NoError(t, store.RegisterNodeEpoch(ctx, service, "node-a", "current", _clusterTransitionEpochTTL))
 	require.NoError(t, store.BindNode(ctx, service, "player", "node-a", "current"))
 	require.NoError(t, target.primary.Do(ctx, "CLUSTER", "SETSLOT", slot, "IMPORTING", source.primaryID).Err())
 	require.NoError(t, source.primary.Do(ctx, "CLUSTER", "SETSLOT", slot, "MIGRATING", target.primaryID).Err())
@@ -74,7 +74,7 @@ func TestNodeBindingClusterMigration(t *testing.T) {
 			require.NoError(t, shard.primary.Do(ctx, "CLUSTER", "SETSLOT", slot, "NODE", target.primaryID).Err())
 		}
 	}
-	transitionCtx, cancel := context.WithTimeout(ctx, clusterTransitionTimeout)
+	transitionCtx, cancel := context.WithTimeout(ctx, _clusterTransitionTimeout)
 	_, err = waitClusterTransitionView(transitionCtx, shards, slot, target.primaryID, false)
 	cancel()
 	require.NoError(t, err)
@@ -106,7 +106,7 @@ func TestNodeBindingClusterCooperativeFailover(t *testing.T) {
 	marker := keys[0] + ":replication-marker"
 	keys = append(keys, marker)
 	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*clusterTransitionTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), 2*_clusterTransitionTimeout)
 		defer cancel()
 		view, restoreErr := waitClusterTransitionView(ctx, shards, slot, "", false)
 		if restoreErr == nil {
@@ -130,7 +130,7 @@ func TestNodeBindingClusterCooperativeFailover(t *testing.T) {
 		}
 		if restoreErr != nil {
 			t.Errorf("restore original primary for slot %d: %v", slot, restoreErr)
-			cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), clusterTransitionTimeout)
+			cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), _clusterTransitionTimeout)
 			defer cancelCleanup()
 			// 恢复失败只清理预先登记的任务 key，不再改 slot 或其他 shard。
 			if err := client.Del(cleanupCtx, keys...).Err(); err != nil {
@@ -148,11 +148,11 @@ func TestNodeBindingClusterCooperativeFailover(t *testing.T) {
 	})
 	ctx := t.Context()
 	store := locateredis.New(client)
-	require.NoError(t, store.RegisterNodeEpoch(ctx, service, "node-a", "current", clusterTransitionEpochTTL))
+	require.NoError(t, store.RegisterNodeEpoch(ctx, service, "node-a", "current", _clusterTransitionEpochTTL))
 	require.NoError(t, store.BindNode(ctx, service, "player", "node-a", "current"))
 	require.NoError(t, acknowledgeClusterTransitionMarker(ctx, source.primary, source.replica, marker), "replication before failover")
 	require.NoError(t, source.replica.ClusterFailover(ctx).Err())
-	transitionCtx, cancel := context.WithTimeout(ctx, clusterTransitionTimeout)
+	transitionCtx, cancel := context.WithTimeout(ctx, _clusterTransitionTimeout)
 	_, err := waitClusterTransitionView(transitionCtx, shards, slot, source.replicaID, false)
 	cancel()
 	require.NoError(t, err)
@@ -185,7 +185,7 @@ func clusterTransitionClients(t *testing.T) (*redis.ClusterClient, []clusterTran
 		t.Skip("set all six dedicated Redis addresses and YOLA_REDIS_CLUSTER_ADMIN_INTEGRATION=1 for topology changes")
 	}
 	allowed := strings.Split(addresses, ",")
-	require.Len(t, allowed, clusterTransitionNodeCount)
+	require.Len(t, allowed, _clusterTransitionNodeCount)
 	for index, address := range allowed {
 		allowed[index] = strings.TrimSpace(address)
 		_, _, err := net.SplitHostPort(allowed[index])
@@ -198,7 +198,7 @@ func clusterTransitionClients(t *testing.T) (*redis.ClusterClient, []clusterTran
 	t.Cleanup(func() { require.NoError(t, client.Close()) })
 	shards, err := client.ClusterShards(t.Context()).Result()
 	require.NoError(t, err)
-	require.Len(t, shards, clusterTransitionPrimaryCount)
+	require.Len(t, shards, _clusterTransitionPrimaryCount)
 	result := make([]clusterTransitionShard, 0, len(shards))
 	for _, shard := range shards {
 		require.Len(t, shard.Nodes, 2)
@@ -257,7 +257,7 @@ func emptyClusterTransitionSlot(t *testing.T, client *redis.ClusterClient, shard
 		}
 		require.NotEqual(t, -1, owner)
 		if empty {
-			ctx, cancel := context.WithTimeout(t.Context(), clusterTransitionTimeout)
+			ctx, cancel := context.WithTimeout(t.Context(), _clusterTransitionTimeout)
 			_, err = waitClusterTransitionView(ctx, shards, int(slot), shards[owner].primaryID, false)
 			cancel()
 			require.NoError(t, err)
@@ -370,7 +370,7 @@ func restoreClusterTransitionSlot(ctx context.Context, shards []clusterTransitio
 
 // acknowledgeClusterTransitionMarker 在同一复制代次内用 SET/WAIT 确认写入，再复核复制链路。
 func acknowledgeClusterTransitionMarker(ctx context.Context, primary, replica *redis.Client, marker string) error {
-	ctx, cancel := context.WithTimeout(ctx, clusterTransitionTimeout)
+	ctx, cancel := context.WithTimeout(ctx, _clusterTransitionTimeout)
 	defer cancel()
 	for {
 		replID, err := waitClusterTransitionReplication(ctx, primary, replica)
@@ -378,7 +378,7 @@ func acknowledgeClusterTransitionMarker(ctx context.Context, primary, replica *r
 			return err
 		}
 		conn := primary.Conn()
-		err = conn.Set(ctx, marker, "confirmed", clusterTransitionEpochTTL).Err()
+		err = conn.Set(ctx, marker, "confirmed", _clusterTransitionEpochTTL).Err()
 		if err == nil {
 			var acknowledged int64
 			acknowledged, err = conn.Wait(ctx, 1, 5*time.Second).Result()
@@ -401,9 +401,9 @@ func acknowledgeClusterTransitionMarker(ctx context.Context, primary, replica *r
 }
 
 func waitClusterTransitionReplication(ctx context.Context, primary, replica *redis.Client) (string, error) {
-	ctx, cancel := context.WithTimeout(ctx, clusterTransitionTimeout)
+	ctx, cancel := context.WithTimeout(ctx, _clusterTransitionTimeout)
 	defer cancel()
-	ticker := time.NewTicker(clusterTransitionPoll)
+	ticker := time.NewTicker(_clusterTransitionPoll)
 	defer ticker.Stop()
 	for {
 		replID, err := checkClusterTransitionReplication(ctx, primary, replica)
@@ -501,11 +501,11 @@ func waitClusterTransitionView(
 	ctx context.Context, shards []clusterTransitionShard, slot int, ownerID string, allowTransition bool,
 ) (clusterTransitionView, error) {
 
-	observers := make([]*redis.Client, 0, clusterTransitionNodeCount)
+	observers := make([]*redis.Client, 0, _clusterTransitionNodeCount)
 	for _, shard := range shards {
 		observers = append(observers, shard.primary, shard.replica)
 	}
-	ticker := time.NewTicker(clusterTransitionPoll)
+	ticker := time.NewTicker(_clusterTransitionPoll)
 	defer ticker.Stop()
 	var lastErr error
 	for {
@@ -548,7 +548,7 @@ func readClusterTransitionView(ctx context.Context, observer *redis.Client, slot
 	if err != nil {
 		return clusterTransitionView{}, err
 	}
-	view := clusterTransitionView{nodes: make(map[string]clusterTransitionIdentity, clusterTransitionNodeCount)}
+	view := clusterTransitionView{nodes: make(map[string]clusterTransitionIdentity, _clusterTransitionNodeCount)}
 	primaryCount := 0
 	for _, line := range strings.Split(strings.TrimSpace(raw), "\n") {
 		fields := strings.Fields(line)
@@ -599,7 +599,7 @@ func readClusterTransitionView(ctx context.Context, observer *redis.Client, slot
 			}
 		}
 	}
-	if len(view.nodes) != clusterTransitionNodeCount || primaryCount != clusterTransitionPrimaryCount || view.owner == "" {
+	if len(view.nodes) != _clusterTransitionNodeCount || primaryCount != _clusterTransitionPrimaryCount || view.owner == "" {
 		return clusterTransitionView{}, errors.New("cluster roles or slot owner are not ready")
 	}
 	for _, node := range view.nodes {

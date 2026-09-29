@@ -36,7 +36,7 @@ func TestAppRegistrationWaitsForInitialRenewal(t *testing.T) {
 				}
 			})
 			server := newTestServer(t, Address("127.0.0.1:0"), Locator(store))
-			registrar := new(countingRegistrar)
+			registrar := &countingRegistrar{}
 			registering := make(chan struct{})
 			guarded := &observedRegistrar{Registrar: server.Registrar(registrar), registering: registering}
 			appCtx, cancel := context.WithCancel(context.Background())
@@ -74,7 +74,7 @@ func TestAppRegistrationPreservesInitialRenewalError(t *testing.T) {
 	store := &controlledEpochLocator{Locator: newMemoryLocator()}
 	store.setRenew(func(context.Context) error { return renewErr })
 	server := newTestServer(t, Address("127.0.0.1:0"), Locator(store))
-	registrar := new(countingRegistrar)
+	registrar := &countingRegistrar{}
 	appCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	t.Cleanup(func() { require.NoError(t, server.Stop(context.Background())) })

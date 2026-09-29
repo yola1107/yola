@@ -8,7 +8,7 @@ import (
 
 	"yola/api/cluster/v1"
 
-	kgrpc "github.com/go-kratos/kratos/v3/transport/grpc"
+	"github.com/go-kratos/kratos/v3/transport/grpc"
 	"github.com/stretchr/testify/require"
 )
 
@@ -40,7 +40,7 @@ func TestBackendsExactNodeWaitsUntilRegisteredNodeIsReady(t *testing.T) {
 	nodeA := startNamedBackendNode(t, "node-a")
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
-	server := kgrpc.NewServer(kgrpc.Listener(lis))
+	server := grpc.NewServer(grpc.Listener(lis))
 	v1.RegisterNodeServer(server, &namedBackendNode{name: "node-b"})
 	done := make(chan error, 1)
 	started := false

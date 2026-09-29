@@ -78,7 +78,7 @@ func (s *Server) ownsBinding(binding locate.GateBinding) bool {
 	return binding.GateID == s.identity.id && binding.GateEndpoint == s.identity.endpoint
 }
 
-// push delivers one message only if target still owns the connection.
+// push 仅在 target 仍持有连接时投递消息。
 func (s *Server) push(binding locate.GateBinding, msg *protocolv1.Proto) error {
 	if !locate.ValidGateBinding(binding) || msg == nil || msg.Op != protocolv1.OpPush ||
 		!s.ownsBinding(binding) {
@@ -112,9 +112,9 @@ func validExternalFrame(msg *protocolv1.Proto) bool {
 	return msg != nil && proto.Size(msg) <= protocolv1.MaxProtoSize
 }
 
-// kick closes the connection only if target still owns it.
-// Session replace intentionally skips notifyDisconnect: the player reconnects and
-// Node binding remains until business code calls UnbindNode.
+// kick 仅在 target 仍持有连接时关闭它。
+// 会话替换有意跳过 notifyDisconnect：玩家会重连，
+// Node binding 保留到业务调用 UnbindNode。
 func (s *Server) kick(ctx context.Context, binding locate.GateBinding, code int32) error {
 	if !locate.ValidGateBinding(binding) || !s.ownsBinding(binding) || code == 0 {
 		return errInvalidKick
@@ -125,7 +125,7 @@ func (s *Server) kick(ctx context.Context, binding locate.GateBinding, code int3
 	}
 	ctx, cancel := s.cleanupContext(ctx)
 	defer cancel()
-	// Another path may already have claimed the connection; the close below stays best-effort.
+	// 连接可能已被其他路径接管；此处关闭仍为 best-effort。
 	s.sessions.remove(sess.conn)
 	err := sess.conn.CloseWithProto(ctx, &protocolv1.Proto{Op: protocolv1.OpKick, Code: code})
 	if err != nil {

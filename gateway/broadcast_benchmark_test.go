@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	protocolv1 "yola/api/protocol/v1"
+	"yola/api/protocol/v1"
 	"yola/locate"
 	"yola/network"
 
@@ -19,7 +19,7 @@ func BenchmarkBroadcast(b *testing.B) {
 		b.Run(fmt.Sprintf("sessions=%d", sessionCount), func(b *testing.B) {
 			sessions := newBenchmarkSessions(sessionCount)
 			broadcaster, running := startBenchmarkFanout(b, sessions)
-			message := &protocolv1.Proto{Op: protocolv1.OpPush, Cmd: 1, Body: make([]byte, 256)}
+			message := &v1.Proto{Op: v1.OpPush, Cmd: 1, Body: make([]byte, 256)}
 			if !broadcaster.fanout(running, message) {
 				b.Fatal("fanout stopped during warmup")
 			}
@@ -39,7 +39,7 @@ func BenchmarkBroadcast(b *testing.B) {
 func BenchmarkBroadcastAdmission(b *testing.B) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	running := &broadcastRun{ctx: ctx, pushes: make(chan *protocolv1.Proto, 1)}
+	running := &broadcastRun{ctx: ctx, pushes: make(chan *v1.Proto, 1)}
 	server := &Server{broadcaster: &broadcaster{active: running}}
 	payload := make([]byte, 256)
 	b.ReportAllocs()
@@ -57,7 +57,7 @@ func BenchmarkBroadcastWebSocketEncoding(b *testing.B) {
 		b.Run(fmt.Sprintf("payload=%d", payloadSize), func(b *testing.B) {
 			sessions := newEncodingBenchmarkSessions(100_000)
 			broadcaster, running := startBenchmarkFanout(b, sessions)
-			message := &protocolv1.Proto{Op: protocolv1.OpPush, Cmd: 1, Body: make([]byte, payloadSize)}
+			message := &v1.Proto{Op: v1.OpPush, Cmd: 1, Body: make([]byte, payloadSize)}
 			running.sessions = sessions.snapshot(nil)
 			clear(running.sessions)
 			running.sessions = running.sessions[:0]
@@ -128,11 +128,11 @@ type benchmarkConnection struct {
 	connID string
 }
 
-func (c benchmarkConnection) ConnID() string                                        { return c.connID }
-func (benchmarkConnection) RemoteAddr() string                                      { return "127.0.0.1:5000" }
-func (benchmarkConnection) SendProto(*protocolv1.Proto) error                       { return nil }
-func (benchmarkConnection) CloseWithProto(context.Context, *protocolv1.Proto) error { return nil }
-func (benchmarkConnection) Close() error                                            { return nil }
+func (c benchmarkConnection) ConnID() string                                { return c.connID }
+func (benchmarkConnection) RemoteAddr() string                              { return "127.0.0.1:5000" }
+func (benchmarkConnection) SendProto(*v1.Proto) error                       { return nil }
+func (benchmarkConnection) CloseWithProto(context.Context, *v1.Proto) error { return nil }
+func (benchmarkConnection) Close() error                                    { return nil }
 
 type encodingBenchmarkConnection struct {
 	connID string
@@ -140,7 +140,7 @@ type encodingBenchmarkConnection struct {
 
 func (c encodingBenchmarkConnection) ConnID() string   { return c.connID }
 func (encodingBenchmarkConnection) RemoteAddr() string { return "127.0.0.1:5000" }
-func (encodingBenchmarkConnection) SendProto(message *protocolv1.Proto) error {
+func (encodingBenchmarkConnection) SendProto(message *v1.Proto) error {
 	encoded, err := proto.Marshal(message)
 	runtime.KeepAlive(encoded)
 	return err
@@ -152,7 +152,7 @@ func (encodingBenchmarkConnection) SendPrepared(message *network.PreparedProto) 
 	return err
 }
 
-func (encodingBenchmarkConnection) CloseWithProto(context.Context, *protocolv1.Proto) error {
+func (encodingBenchmarkConnection) CloseWithProto(context.Context, *v1.Proto) error {
 	return nil
 }
 func (encodingBenchmarkConnection) Close() error { return nil }

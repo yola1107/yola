@@ -16,7 +16,7 @@ import (
 	"github.com/go-kratos/kratos/v3/transport/grpc"
 )
 
-// Option configures a Node server.
+// Option 配置 Node 服务。
 type Option func(*options) error
 
 type options struct {
@@ -64,7 +64,7 @@ func (o *options) resolveEndpoint() error {
 	return nil
 }
 
-// Network configures the Node listen network.
+// Network 配置 Node 监听网络。
 func Network(network string) Option {
 	return func(o *options) error {
 		if network == "" {
@@ -75,7 +75,7 @@ func Network(network string) Option {
 	}
 }
 
-// Address configures the Node listen address.
+// Address 配置 Node 监听地址。
 func Address(address string) Option {
 	return func(o *options) error {
 		if address == "" {
@@ -86,7 +86,7 @@ func Address(address string) Option {
 	}
 }
 
-// AdvertiseHost publishes a reachable host while keeping the listen port from Address.
+// AdvertiseHost 指定对外可达的 host，保留 Address 的监听端口。
 func AdvertiseHost(host string) Option {
 	return func(o *options) error {
 		if host == "" {
@@ -97,7 +97,7 @@ func AdvertiseHost(host string) Option {
 	}
 }
 
-// Endpoint configures the Node endpoint published through service discovery.
+// Endpoint 配置通过服务发现发布的 Node endpoint。
 func Endpoint(endpoint *url.URL) Option {
 	return func(o *options) error {
 		if endpoint == nil {
@@ -109,7 +109,7 @@ func Endpoint(endpoint *url.URL) Option {
 	}
 }
 
-// HandlerTimeout configures the internal request handler timeout.
+// HandlerTimeout 配置内部请求 handler 超时。
 func HandlerTimeout(timeout time.Duration) Option {
 	return func(o *options) error {
 		if timeout < 0 {
@@ -120,7 +120,7 @@ func HandlerTimeout(timeout time.Duration) Option {
 	}
 }
 
-// Listener configures an existing Node listener.
+// Listener 配置已有的 Node listener。
 func Listener(listener net.Listener) Option {
 	return func(o *options) error {
 		if listener == nil {
@@ -131,7 +131,7 @@ func Listener(listener net.Listener) Option {
 	}
 }
 
-// ServerTLS configures TLS for the internal Node server.
+// ServerTLS 配置内部 Node 服务的 TLS。
 func ServerTLS(config *tls.Config) Option {
 	return func(o *options) error {
 		if config == nil {
@@ -146,7 +146,7 @@ func ServerTLS(config *tls.Config) Option {
 	}
 }
 
-// Middleware configures middleware for protobuf command handlers.
+// Middleware 配置 protobuf command handler 的 middleware。
 func Middleware(m ...middleware.Middleware) Option {
 	return func(o *options) error {
 		o.middlewares = append(o.middlewares, m...)
@@ -162,10 +162,9 @@ func ClientMiddleware(m ...middleware.Middleware) Option {
 	}
 }
 
-// Locator configures Node and Gate location storage together.
-// Node and Gate lookups are always configured as a pair: sticky routing needs the
-// Node binding and PushToUID needs the Gate binding, so a half-configured Locator
-// would only fail at request time.
+// Locator 同时配置 Node 和 Gate 定位存储。
+// 两类查询必须成对配置：sticky 路由需要 Node binding，
+// PushToUID 需要 Gate binding；仅配置一半会将错误推迟到请求期间。
 func Locator(locator locate.Locator) Option {
 	return func(o *options) error {
 		if locator == nil {
@@ -176,7 +175,7 @@ func Locator(locator locate.Locator) Option {
 	}
 }
 
-// ClientTLS configures verified TLS for Node-to-Gateway gRPC calls.
+// ClientTLS 为 Node 到 Gateway 的 gRPC 调用配置验证对端的 TLS。
 func ClientTLS(config *tls.Config) Option {
 	return func(o *options) error {
 		if config == nil {
@@ -190,7 +189,7 @@ func ClientTLS(config *tls.Config) Option {
 	}
 }
 
-// PushTimeout configures the timeout for Node-to-Gateway push requests.
+// PushTimeout 配置 Node 到 Gateway 的推送超时。
 func PushTimeout(timeout time.Duration) Option {
 	return func(o *options) error {
 		if timeout <= 0 {
@@ -212,8 +211,8 @@ func CleanupTimeout(timeout time.Duration) Option {
 	}
 }
 
-// Drain registers the business shutdown barrier invoked after accepted requests finish.
-// A returned error prevents Stop from actively releasing the Node epoch.
+// Drain 注册业务停止屏障，在已接纳请求完成后调用。
+// 返回错误会阻止 Stop 主动释放 Node epoch。
 func Drain(fn DrainFunc) Option {
 	return func(o *options) error {
 		o.drain = fn

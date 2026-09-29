@@ -108,8 +108,8 @@ func TestBackendResolverFiltersNodes(t *testing.T) {
 	require.Len(t, client.states, 1)
 	require.Equal(t, "127.0.0.1:9002", client.states[0].Addresses[0].Addr)
 	require.Equal(t, "127.0.0.1:9001", client.states[0].Addresses[1].Addr)
-	require.Same(t, nodeB, client.states[0].Addresses[0].Attributes.Value(rawServiceInstanceKey))
-	require.Same(t, nodeA, client.states[0].Addresses[1].Attributes.Value(rawServiceInstanceKey))
+	require.Same(t, nodeB, client.states[0].Addresses[0].Attributes.Value(_rawServiceInstanceKey))
+	require.Same(t, nodeA, client.states[0].Addresses[1].Attributes.Value(_rawServiceInstanceKey))
 	require.Contains(t, state.load().hostByNodeID, "node-a")
 	require.Contains(t, state.load().hostByNodeID, "node-b")
 

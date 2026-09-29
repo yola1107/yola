@@ -22,21 +22,21 @@ import (
 
 var ErrInvalidCredentials = errors.New("invalid credentials")
 
-// Authenticator authorizes client credentials for a service and returns a stable UID.
+// Authenticator 校验指定服务的客户端凭据，返回稳定 UID。
 type Authenticator interface {
 	Authenticate(ctx context.Context, serviceName string, token []byte, remoteIP string) (uid string, err error)
 }
 
-// ClientTransport is an external client-facing transport owned by Gateway.
-// BeforeStart must validate configuration and bind resources that can prevent serving.
-// Stop must be safe after every BeforeStart attempt and release partial resources.
+// ClientTransport 是 Gateway 持有的客户端接入 transport。
+// BeforeStart 必须校验配置，并提前绑定可能阻止服务启动的资源。
+// 每次 BeforeStart 尝试后均须能安全调用 Stop，释放部分初始化的资源。
 type ClientTransport interface {
 	transport.Server
 	BeforeStart(context.Context) error
 	SetHandler(network.ConnectionHandler) error
 }
 
-// Option configures a Gateway server.
+// Option 配置 Gateway 服务。
 type Option func(*options) error
 
 type options struct {
@@ -108,7 +108,7 @@ func (o *options) resolveEndpoint() error {
 	return nil
 }
 
-// Network configures the internal gRPC listen network.
+// Network 配置内部 gRPC 监听网络。
 func Network(network string) Option {
 	return func(o *options) error {
 		if network == "" {
@@ -119,7 +119,7 @@ func Network(network string) Option {
 	}
 }
 
-// Address configures the internal gRPC listen address.
+// Address 配置内部 gRPC 监听地址。
 func Address(address string) Option {
 	return func(o *options) error {
 		if address == "" {
@@ -130,7 +130,7 @@ func Address(address string) Option {
 	}
 }
 
-// AdvertiseHost publishes a reachable host while keeping the listen port from Address.
+// AdvertiseHost 指定对外可达的 host，保留 Address 的监听端口。
 func AdvertiseHost(host string) Option {
 	return func(o *options) error {
 		if host == "" {
@@ -141,7 +141,7 @@ func AdvertiseHost(host string) Option {
 	}
 }
 
-// Endpoint configures the internal gRPC endpoint published through service discovery.
+// Endpoint 配置通过服务发现发布的内部 gRPC endpoint。
 func Endpoint(endpoint *url.URL) Option {
 	return func(o *options) error {
 		if endpoint == nil {
@@ -153,7 +153,7 @@ func Endpoint(endpoint *url.URL) Option {
 	}
 }
 
-// Listener configures an existing internal gRPC listener.
+// Listener 配置已有的内部 gRPC listener。
 func Listener(listener net.Listener) Option {
 	return func(o *options) error {
 		if listener == nil {
@@ -164,7 +164,7 @@ func Listener(listener net.Listener) Option {
 	}
 }
 
-// ServerTLS configures TLS for the internal Gateway gRPC server.
+// ServerTLS 配置内部 Gateway gRPC 服务的 TLS。
 func ServerTLS(config *tls.Config) Option {
 	return func(o *options) error {
 		if config == nil {
@@ -179,7 +179,7 @@ func ServerTLS(config *tls.Config) Option {
 	}
 }
 
-// Locator configures Gate and Node location storage.
+// Locator 配置 Gate 和 Node 的定位存储。
 func Locator(locator locate.Locator) Option {
 	return func(o *options) error {
 		if locator == nil {
@@ -190,7 +190,7 @@ func Locator(locator locate.Locator) Option {
 	}
 }
 
-// Auth configures client authentication.
+// Auth 配置客户端认证。
 func Auth(auth Authenticator) Option {
 	return func(o *options) error {
 		o.auth = auth
@@ -198,7 +198,7 @@ func Auth(auth Authenticator) Option {
 	}
 }
 
-// Discovery configures Node service discovery.
+// Discovery 配置 Node 服务发现。
 func Discovery(discovery registry.Discovery) Option {
 	return func(o *options) error {
 		o.discovery = discovery
@@ -206,7 +206,7 @@ func Discovery(discovery registry.Discovery) Option {
 	}
 }
 
-// Transport registers external client transports owned by Gateway.
+// Transport 注册由 Gateway 持有的客户端接入 transport。
 func Transport(servers ...ClientTransport) Option {
 	return func(o *options) error {
 		for _, server := range servers {
@@ -219,7 +219,7 @@ func Transport(servers ...ClientTransport) Option {
 	}
 }
 
-// BroadcastWorkers configures the number of workers used for one local fanout.
+// BroadcastWorkers 配置单次本地 fanout 的 worker 数。
 func BroadcastWorkers(workers int) Option {
 	return func(o *options) error {
 		if workers <= 0 {
@@ -230,7 +230,7 @@ func BroadcastWorkers(workers int) Option {
 	}
 }
 
-// BroadcastQueueCapacity configures the number of broadcasts waiting for local fanout.
+// BroadcastQueueCapacity 配置等待本地 fanout 的广播队列容量。
 func BroadcastQueueCapacity(capacity int) Option {
 	return func(o *options) error {
 		if capacity <= 0 {
@@ -241,7 +241,7 @@ func BroadcastQueueCapacity(capacity int) Option {
 	}
 }
 
-// ClientTLS configures verified TLS for outbound Gateway gRPC calls.
+// ClientTLS 为 Gateway 出站 gRPC 调用配置验证对端的 TLS。
 func ClientTLS(config *tls.Config) Option {
 	return func(o *options) error {
 		if config == nil {
@@ -300,7 +300,7 @@ func CleanupTimeout(timeout time.Duration) Option {
 	}
 }
 
-// AuthTimeout sets the maximum lifetime of an unauthenticated connection.
+// AuthTimeout 设置未认证连接的最长存活时间。
 func AuthTimeout(timeout time.Duration) Option {
 	return func(o *options) error {
 		if timeout <= 0 {
@@ -311,7 +311,7 @@ func AuthTimeout(timeout time.Duration) Option {
 	}
 }
 
-// LeaseTTL sets the Gate location lease duration.
+// LeaseTTL 设置 Gate 定位租约时长。
 func LeaseTTL(ttl time.Duration) Option {
 	return func(o *options) error {
 		if ttl < time.Millisecond {

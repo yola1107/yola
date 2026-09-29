@@ -113,7 +113,7 @@ func TestRequestReportsTimeout(t *testing.T) {
 		requestTimeout: 10 * time.Millisecond,
 		channel:        ch,
 	}
-	_, _, err := c.Request(context.Background(), 1, new(v1.ClientAuthReq))
+	_, _, err := c.Request(context.Background(), 1, &v1.ClientAuthReq{})
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("Request() error = %v, want %v", err, context.DeadlineExceeded)
 	}
@@ -124,7 +124,7 @@ func TestRequestHonorsCanceledContext(t *testing.T) {
 	c := &Client{requestTimeout: time.Hour, channel: ch}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, _, err := c.Request(ctx, 1, new(v1.ClientAuthReq))
+	_, _, err := c.Request(ctx, 1, &v1.ClientAuthReq{})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("Request() error = %v, want %v", err, context.Canceled)
 	}
@@ -146,7 +146,7 @@ func TestResponseCompletesRequest(t *testing.T) {
 	}
 	completed := make(chan requestResult, 1)
 	go func() {
-		body, code, err := c.Request(context.Background(), 1, new(v1.ClientAuthReq))
+		body, code, err := c.Request(context.Background(), 1, &v1.ClientAuthReq{})
 		completed <- requestResult{body: body, code: code, err: err}
 	}()
 	var request v1.Proto
@@ -176,7 +176,7 @@ func TestClientDisconnectCallbackCanCloseClient(t *testing.T) {
 }
 
 func TestClientReceivesFinalKick(t *testing.T) {
-	handler := new(kickHandler)
+	handler := &kickHandler{}
 	kicked := make(chan *v1.Proto, 1)
 	endpoint := startWebSocketTestServer(t, handler)
 	client, err := NewClient(context.Background(), WithEndpoint(endpoint), WithServiceName("game"),
@@ -188,7 +188,7 @@ func TestClientReceivesFinalKick(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { client.Close() })
-	_, _, err = client.Request(context.Background(), 1, new(v1.ClientAuthReq))
+	_, _, err = client.Request(context.Background(), 1, &v1.ClientAuthReq{})
 	if err == nil {
 		t.Fatal("Client.Request() succeeded after the final kick")
 	}
@@ -236,7 +236,7 @@ func TestClientCallbacksAreOrderedAndDoNotBlockResponses(t *testing.T) {
 	}
 	requestCtx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	if _, _, err := client.Request(requestCtx, 1, new(v1.ClientAuthReq)); err != nil {
+	if _, _, err := client.Request(requestCtx, 1, &v1.ClientAuthReq{}); err != nil {
 		t.Fatalf("Request blocked behind callback: %v", err)
 	}
 	release()
@@ -275,7 +275,7 @@ func TestClientCallbackQueueFullClosesConnection(t *testing.T) {
 	}
 	requestCtx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	if _, _, err := client.Request(requestCtx, 1, new(v1.ClientAuthReq)); err != nil {
+	if _, _, err := client.Request(requestCtx, 1, &v1.ClientAuthReq{}); err != nil {
 		t.Fatalf("Request blocked while filling callback queue: %v", err)
 	}
 	if err := serverConn.SendProto(&v1.Proto{Op: v1.OpPush, Cmd: 1}); err != nil {
@@ -386,7 +386,7 @@ func TestClientContextCancellationClosesChannel(t *testing.T) {
 	t.Cleanup(client.Close)
 	requestDone := make(chan error, 1)
 	go func() {
-		_, _, requestErr := client.Request(context.Background(), 1, new(v1.ClientAuthReq))
+		_, _, requestErr := client.Request(context.Background(), 1, &v1.ClientAuthReq{})
 		requestDone <- requestErr
 	}()
 	waitWebSocketValue(t, handler.requestStarted)
@@ -480,7 +480,7 @@ func testInvalidAuthenticationReply(t *testing.T, write func(*websocket.Conn) er
 	t.Helper()
 	written := make(chan error, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		conn, err := new(websocket.Upgrader).Upgrade(w, r, nil)
+		conn, err := (&websocket.Upgrader{}).Upgrade(w, r, nil)
 		if err == nil {
 			err = write(conn)
 			_ = conn.Close()

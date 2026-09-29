@@ -22,16 +22,16 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// PushHandler handles a server push body.
+// PushHandler 处理服务端推送的消息体。
 type PushHandler func(body []byte)
 
-// KickHandler handles an intentional server-side disconnect.
+// KickHandler 处理服务端主动断开连接的通知。
 type KickHandler func(code int32)
 
-// ErrAuthenticationRejected reports that Gateway rejected the configured credentials.
+// ErrAuthenticationRejected 表示 Gateway 拒绝了配置的凭据。
 var ErrAuthenticationRejected = errors.New("tcp client authentication rejected")
 
-const clientSendQueueSize = 100
+const _clientSendQueueSize = 100
 
 type Client struct {
 	outbound       chan *v1.Proto
@@ -52,7 +52,7 @@ type Client struct {
 	requestTimeout time.Duration
 }
 
-// NewClient creates a TCP client and waits for initial authentication.
+// NewClient 创建 TCP client，并等待首次认证完成。
 func NewClient(ctx context.Context, opts ...ClientOption) (*Client, error) {
 	if ctx == nil {
 		return nil, errors.New("tcp: context is nil")
@@ -83,7 +83,7 @@ func NewClient(ctx context.Context, opts ...ClientOption) (*Client, error) {
 	c := &Client{
 		conn:           conn,
 		codec:          o.codec,
-		outbound:       make(chan *v1.Proto, clientSendQueueSize),
+		outbound:       make(chan *v1.Proto, _clientSendQueueSize),
 		pushHandlers:   o.pushHandlers,
 		kickHandler:    o.kickHandler,
 		disconnectFunc: o.disconnectFunc,
@@ -115,7 +115,7 @@ func NewClient(ctx context.Context, opts ...ClientOption) (*Client, error) {
 }
 
 func dialGateway(ctx context.Context, endpoint string, c *tls.Config) (net.Conn, error) {
-	dialer := new(net.Dialer)
+	dialer := &net.Dialer{}
 	if c == nil {
 		return dialer.DialContext(ctx, "tcp", endpoint)
 	}
@@ -377,13 +377,13 @@ func (c *Client) initialCallbacks(connect func(), pending []*v1.Proto) []func() 
 }
 
 func (o *clientOptions) authenticate(ctx context.Context, conn net.Conn, rd *bufio.Reader, wr *bufio.Writer) ([]*v1.Proto, error) {
-	authCtx, cancel := context.WithTimeout(ctx, defaultAuthenticationTimeout)
+	authCtx, cancel := context.WithTimeout(ctx, _defaultAuthenticationTimeout)
 	deadline, _ := authCtx.Deadline()
 	if err := conn.SetDeadline(deadline); err != nil {
 		cancel()
 		return nil, err
 	}
-	// Closing is the portable way to interrupt I/O when a context without a deadline is canceled.
+	// 无 deadline 的 context 取消时，通过关闭连接可跨平台中断 I/O。
 	stopInterrupt := context.AfterFunc(authCtx, func() {
 		_ = conn.Close()
 	})
@@ -412,7 +412,7 @@ func (o *clientOptions) readAuthenticationReply(authCtx context.Context, rd *buf
 		ErrAuthenticationRejected,
 		o.callbackQueueSize,
 		func() (*v1.Proto, error) {
-			reply := new(v1.Proto)
+			reply := &v1.Proto{}
 			if err := readFrame(rd, o.codec, reply); err != nil {
 				return nil, network.AuthenticationIOError(authCtx, err)
 			}

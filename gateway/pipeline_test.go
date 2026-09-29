@@ -319,7 +319,7 @@ func newHeartbeatWirePeer(t *testing.T, transportName string, backend clusterv1.
 			if readErr != nil {
 				return nil, readErr
 			}
-			message := new(protocolv1.Proto)
+			message := &protocolv1.Proto{}
 			return message, proto.Unmarshal(body, message)
 		},
 	}

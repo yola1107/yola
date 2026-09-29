@@ -8,18 +8,15 @@ import (
 )
 
 var (
-	// ErrConnectionClosed indicates that a connection can no longer accept messages.
-	ErrConnectionClosed = errors.New("network: connection closed")
-	// ErrSendQueueFull indicates that a connection cannot accept another queued message.
-	ErrSendQueueFull = errors.New("network: send queue full")
-	// ErrFrameTooLarge indicates that a serialized protocol frame exceeds the transport limit.
-	ErrFrameTooLarge = errors.New("network: frame too large")
+	ErrConnectionClosed = errors.New("network: connection closed") // 连接已不能接纳消息
+	ErrSendQueueFull    = errors.New("network: send queue full")   // 连接的发送队列无法再接纳消息
+	ErrFrameTooLarge    = errors.New("network: frame too large")   // 序列化协议帧超过 transport 大小限制
 )
 
-// ConnectionHandlerOperation identifies transport calls into ConnectionHandler.Handle.
+// ConnectionHandlerOperation 标识 transport 对 ConnectionHandler.Handle 的调用。
 const ConnectionHandlerOperation = "/network.ConnectionHandler/Handle"
 
-// Connection is one external client connection owned by a transport server.
+// Connection 是 transport server 持有的一条外部客户端连接。
 type Connection interface {
 	ConnID() string
 	RemoteAddr() string
@@ -31,17 +28,17 @@ type Connection interface {
 	Close() error
 }
 
-// PreparedConnection can share one protobuf encoding across a fanout.
+// PreparedConnection 可在 fanout 中共用一次 protobuf 编码。
 type PreparedConnection interface {
 	Connection
-	// SendPrepared must finish all access to prepared before returning. It may
-	// retain the immutable bytes returned by Marshal, but not prepared or Message.
+	// SendPrepared 返回前必须结束对 prepared 的全部访问；
+	// 可保留 Marshal 返回的不可变 bytes，但不能保留 prepared 或 Message。
 	SendPrepared(prepared *PreparedProto) error
 }
 
-// ConnectionHandler handles external connection lifecycle and decoded messages.
-// Close may receive a canceled context when the connection or server is shutting down.
-// Handlers that must finish cleanup should detach cancellation and apply a finite deadline.
+// ConnectionHandler 处理外部连接的生命周期和解码后消息。
+// 连接或服务停止时，Close 可能收到已取消的 context。
+// 必须完成清理的 handler 应脱离原取消信号，并设置有限 deadline。
 type ConnectionHandler interface {
 	Open(ctx context.Context, conn Connection) error
 	Close(ctx context.Context, conn Connection)

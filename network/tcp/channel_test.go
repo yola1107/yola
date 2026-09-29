@@ -257,7 +257,7 @@ func TestDispatchWriteDeadlineClosesSlowConsumer(t *testing.T) {
 	dispatched := make(chan struct{})
 	startedAt := time.Now()
 	go func() {
-		server.dispatchTCP(serverConn, bufio.NewWriterSize(serverConn, defaultIOBufferSize), ch)
+		server.dispatchTCP(serverConn, bufio.NewWriterSize(serverConn, _defaultIOBufferSize), ch)
 		close(dispatched)
 	}()
 	if err := ch.push(&v1.Proto{Op: v1.OpPush, Body: make([]byte, v1.MaxProtoSize-64)}); err != nil {
@@ -291,7 +291,7 @@ func TestCloseWithProtoReturnsWhenWriterFailsWithFullQueue(t *testing.T) {
 	server := NewServer(WriteTimeout(20 * time.Millisecond))
 	dispatched := make(chan struct{})
 	go func() {
-		server.dispatchTCP(conn, bufio.NewWriterSize(conn, defaultIOBufferSize), ch)
+		server.dispatchTCP(conn, bufio.NewWriterSize(conn, _defaultIOBufferSize), ch)
 		close(dispatched)
 	}()
 	if err := ch.push(&v1.Proto{Op: v1.OpPush, Body: make([]byte, v1.MaxProtoSize-64)}); err != nil {

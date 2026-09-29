@@ -232,7 +232,7 @@ func TestCommandMetadataDistinguishesSharedRequestsThroughGRPC(t *testing.T) {
 			if command == 22 {
 				return nil, cause
 			}
-			return new(emptypb.Empty), nil
+			return &emptypb.Empty{}, nil
 		})
 	}
 	server.RegisterRawHandler(0, func(ctx context.Context, body []byte) ([]byte, error) {

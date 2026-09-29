@@ -12,7 +12,7 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// PushToUID locates the player's current Gate binding and pushes a message.
+// PushToUID 查找玩家当前的 Gate binding 并推送消息。
 func (s *Server) PushToUID(ctx context.Context, uid string, command int32, msg proto.Message) error {
 	if !s.deliveries.admit() {
 		return status.Error(codes.Unavailable, "node is stopping or stopped")

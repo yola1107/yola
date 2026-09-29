@@ -1,4 +1,4 @@
-// Package tlsconfig centralizes the TLS invariants shared by Yola transports.
+// Package tlsconfig 集中校验 Yola transport 共用的 TLS 约束。
 package tlsconfig
 
 import (
@@ -11,7 +11,7 @@ var (
 	ErrCertificateRequired  = errors.New("TLS certificate is required")
 )
 
-// Clone returns an independent TLS configuration.
+// Clone 返回独立的 TLS 配置。
 func Clone(config *tls.Config) *tls.Config {
 	if config == nil {
 		return nil
@@ -19,7 +19,7 @@ func Clone(config *tls.Config) *tls.Config {
 	return config.Clone()
 }
 
-// ValidateClient rejects TLS configurations that disable certificate verification.
+// ValidateClient 拒绝关闭证书验证的 TLS 配置。
 func ValidateClient(config *tls.Config) error {
 	if config != nil && config.InsecureSkipVerify {
 		return ErrVerificationDisabled
@@ -27,7 +27,7 @@ func ValidateClient(config *tls.Config) error {
 	return nil
 }
 
-// ValidateServer requires verified TLS and a certificate source when TLS is enabled.
+// ValidateServer 要求启用的 TLS 配置保留证书验证并提供证书来源。
 func ValidateServer(config *tls.Config) error {
 	if err := ValidateClient(config); err != nil {
 		return err

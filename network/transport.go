@@ -8,14 +8,13 @@ import (
 
 var _ transport.Transporter = (*Transport)(nil)
 
+// 长连接在 Kratos 中使用的 transport 类型。
 const (
-	// KindTCP identifies the TCP transport.
-	KindTCP transport.Kind = "tcp"
-	// KindWebSocket identifies the WebSocket transport.
+	KindTCP       transport.Kind = "tcp"
 	KindWebSocket transport.Kind = "websocket"
 )
 
-// Transport is the shared Kratos transporter for long-lived client connections.
+// Transport 是长连接共用的 Kratos transporter。
 type Transport struct {
 	kind        transport.Kind
 	endpoint    string
@@ -23,32 +22,32 @@ type Transport struct {
 	replyHeader headerCarrier
 }
 
-// NewTransport builds a transporter for ConnectionHandler invocations.
+// NewTransport 为 ConnectionHandler 调用构建 transporter。
 func NewTransport(kind transport.Kind, endpoint, remoteIP, connectionID string) *Transport {
-	reqHeader := headerCarrier{}
+	reqHeader := make(headerCarrier)
 	reqHeader.Set("remote_ip", remoteIP)
 	reqHeader.Set("conn_id", connectionID)
 	return &Transport{
 		kind:        kind,
 		endpoint:    endpoint,
 		reqHeader:   reqHeader,
-		replyHeader: headerCarrier{},
+		replyHeader: make(headerCarrier),
 	}
 }
 
-// Kind returns the transport kind.
+// Kind 返回 transport 类型。
 func (tr *Transport) Kind() transport.Kind { return tr.kind }
 
-// Endpoint returns the transport endpoint.
+// Endpoint 返回 transport endpoint。
 func (tr *Transport) Endpoint() string { return tr.endpoint }
 
-// Operation returns the transport operation.
+// Operation 返回 transport 操作。
 func (tr *Transport) Operation() string { return ConnectionHandlerOperation }
 
-// RequestHeader returns the request header.
+// RequestHeader 返回请求 header。
 func (tr *Transport) RequestHeader() transport.Header { return tr.reqHeader }
 
-// ReplyHeader returns the reply header.
+// ReplyHeader 返回响应 header。
 func (tr *Transport) ReplyHeader() transport.Header { return tr.replyHeader }
 
 // headerCarrier 按小写键保存多值 header。

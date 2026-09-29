@@ -20,7 +20,7 @@ func TestSendStatsQueueAndClose(t *testing.T) {
 	observer, ok := any(ch).(network.SendStatsProvider)
 	require.True(t, ok, "WebSocket connection must expose send capacity stats")
 	require.NoError(t, ch.SendProto(&v1.Proto{Op: v1.OpPush, Body: make([]byte, 32)}))
-	prepared := new(network.PreparedProto)
+	prepared := &network.PreparedProto{}
 	prepared.Reset(&v1.Proto{Op: v1.OpPush, Body: make([]byte, 1024)})
 	require.NoError(t, ch.SendPrepared(prepared))
 	require.ErrorIs(t, ch.SendPrepared(prepared), network.ErrSendQueueFull)

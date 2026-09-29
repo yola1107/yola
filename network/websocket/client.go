@@ -19,21 +19,18 @@ import (
 )
 
 var (
-	// ErrNotConnected indicates that no writable channel is established.
-	ErrNotConnected = errors.New("client: channel not established")
-	// ErrInvalidURL indicates that the configured endpoint is invalid.
-	ErrInvalidURL = errors.New("client: invalid URL")
-	// ErrAuthenticationRejected reports that Gateway rejected the configured credentials.
-	ErrAuthenticationRejected = errors.New("client: authentication rejected")
+	ErrNotConnected           = errors.New("client: channel not established") // 尚未建立可写 channel
+	ErrInvalidURL             = errors.New("client: invalid URL")             // 配置的 endpoint 无效
+	ErrAuthenticationRejected = errors.New("client: authentication rejected") // Gateway 拒绝了配置的凭据
 )
 
-// PushHandler handles a server push body.
+// PushHandler 处理服务端推送的消息体。
 type PushHandler func(body []byte)
 
-// KickHandler handles an intentional server-side disconnect.
+// KickHandler 处理服务端主动断开连接的通知。
 type KickHandler func(code int32)
 
-// Client is a WebSocket client.
+// Client 是 WebSocket 客户端。
 type Client struct {
 	channel        *Channel
 	requests       request.Tracker
@@ -46,7 +43,7 @@ type Client struct {
 	requestTimeout time.Duration
 }
 
-// NewClient creates a client and waits for initial authentication.
+// NewClient 创建 client，并等待首次认证完成。
 func NewClient(ctx context.Context, opts ...ClientOption) (*Client, error) {
 	if ctx == nil {
 		return nil, errors.New("websocket: context is nil")
@@ -97,12 +94,12 @@ func NewClient(ctx context.Context, opts ...ClientOption) (*Client, error) {
 	return c, nil
 }
 
-// IsAlive reports whether the client connection is open.
+// IsAlive 判断客户端连接是否仍开放。
 func (c *Client) IsAlive() bool {
 	return c != nil && c.channel != nil && !c.channel.Closed()
 }
 
-// Channel returns the client connection.
+// Channel 返回客户端连接。
 func (c *Client) Channel() *Channel {
 	if c == nil {
 		return nil
@@ -118,7 +115,7 @@ func (c *Client) readLoop() {
 		c.shutdownWith(ch, nil)
 	}()
 	for {
-		p := new(v1.Proto)
+		p := &v1.Proto{}
 		if err := ch.readFrame(p); err != nil {
 			warnUnexpectedNetworkError("[websocket] read failed", ch.ConnID(), err)
 			return
@@ -221,7 +218,7 @@ func (c *Client) dispatchMessage(p *v1.Proto) error {
 	return nil
 }
 
-// Close closes the client connection.
+// Close 关闭客户端连接。
 func (c *Client) Close() {
 	if c == nil {
 		return
@@ -294,7 +291,7 @@ func (o *clientOptions) authenticate(ctx context.Context, conn *websocket.Conn) 
 		cancel()
 		return nil, err
 	}
-	// Gorilla allows Close, but not deadline setters, to run concurrently with reads and writes.
+	// Gorilla 允许 Close 与读写并发，deadline setter 则不允许。
 	stopInterrupt := context.AfterFunc(authCtx, func() {
 		_ = conn.Close()
 	})
@@ -332,7 +329,7 @@ func (o *clientOptions) readAuthenticationReply(authCtx context.Context, conn *w
 			if messageType != websocket.BinaryMessage {
 				return nil, errors.New("websocket: invalid authentication response")
 			}
-			reply := new(v1.Proto)
+			reply := &v1.Proto{}
 			if err := unmarshalFrame(o.codec, frame, reply); err != nil {
 				return nil, err
 			}

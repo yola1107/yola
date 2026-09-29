@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	protocolv1 "yola/api/protocol/v1"
+	"yola/api/protocol/v1"
 	"yola/locate"
 	"yola/network/tcp"
 	"yola/network/websocket"
@@ -337,7 +337,7 @@ type followingRequestCodec struct {
 
 func (c *followingRequestCodec) Marshal(value any) ([]byte, error) {
 	body, err := c.Codec.Marshal(value)
-	if message, ok := value.(*protocolv1.Proto); err == nil && ok && message.Op == protocolv1.OpRequest && message.Cmd == 2 {
+	if message, ok := value.(*v1.Proto); err == nil && ok && message.Op == v1.OpRequest && message.Cmd == 2 {
 		c.once.Do(func() { close(c.encoded) })
 	}
 	return body, err

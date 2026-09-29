@@ -122,7 +122,7 @@ func (c *countingCodec) Marshal(any) ([]byte, error) {
 }
 
 func (*countingCodec) Unmarshal([]byte, any) error { return nil }
-func (*countingCodec) Name() string                { return defaultCodecName }
+func (*countingCodec) Name() string                { return _defaultCodecName }
 
 type fixedSizeCodec struct {
 	size int

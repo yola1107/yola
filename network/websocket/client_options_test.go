@@ -120,7 +120,7 @@ func TestClientRejectsInvalidConfiguration(t *testing.T) {
 				WithEndpoint("ws://127.0.0.1:1"),
 				WithServiceName("game"),
 				WithToken("token"),
-				WithTLSConfig(new(tls.Config)),
+				WithTLSConfig(&tls.Config{}),
 			},
 			want: "websocket: TLS config requires a wss endpoint",
 		},

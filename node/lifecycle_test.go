@@ -9,14 +9,14 @@ import (
 	"testing"
 	"time"
 
-	v1 "yola/api/cluster/v1"
+	"yola/api/cluster/v1"
 	"yola/instance"
 	"yola/internal/clusterroute"
 	"yola/locate"
 
 	"github.com/go-kratos/kratos/v3"
 	"github.com/stretchr/testify/require"
-	grpcgo "google.golang.org/grpc"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
@@ -86,7 +86,7 @@ func TestBeforeStartReentryWhilePreparingKeepsOwnerState(t *testing.T) {
 
 	require.EqualError(t, server.BeforeStart(ctx), "node: server is already preparing or prepared")
 	server.lifecycleMu.Lock()
-	require.Equal(t, stPreparing, server.state)
+	require.Equal(t, _stPreparing, server.state)
 	server.lifecycleMu.Unlock()
 	require.False(t, server.requests.isClosed())
 	cancel()
@@ -254,7 +254,7 @@ func TestRollbackPreparationPreservesCauseAndEpochForRetry(t *testing.T) {
 	require.True(t, hasDeadline)
 	require.Same(t, lease, server.lease.Load())
 	require.NoError(t, lease.retryRelease(context.Background()))
-	require.Equal(t, epochReleased, lease.releaseState)
+	require.Equal(t, _epochReleased, lease.releaseState)
 	require.True(t, server.requests.isClosed())
 }
 
@@ -321,7 +321,7 @@ func TestServerTransportTimeoutRecoveryAndRepeatedStop(t *testing.T) {
 	require.NoError(t, server.BeforeStart(ctx))
 	go func() { done <- server.Start(ctx) }()
 
-	conn, err := grpcgo.NewClient(lis.Addr().String(), grpcgo.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := grpc.NewClient(lis.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, conn.Close()) })
 	client := v1.NewNodeClient(conn)
@@ -378,12 +378,12 @@ func TestStickyStartFailureKeepsEpochCleanupForStop(t *testing.T) {
 	require.ErrorIs(t, server.Start(ctx), cleanupErr)
 	require.ErrorIs(t, server.lease.Load().ctx.Err(), context.Canceled)
 	require.Empty(t, server.currentIdentity().epoch)
-	require.Equal(t, epochReleaseFailed, server.lease.Load().releaseState)
+	require.Equal(t, _epochReleaseFailed, server.lease.Load().releaseState)
 	require.True(t, server.requests.isClosed())
 	require.EqualError(t, server.BeforeStart(ctx), "node: server is stopping or stopped")
 	require.NoError(t, server.Stop(context.Background()))
-	require.Equal(t, epochReleased, server.lease.Load().releaseState)
-	// Epoch must be free for a replacement process with the same NodeID.
+	require.Equal(t, _epochReleased, server.lease.Load().releaseState)
+	// 必须释放 epoch，让使用同一 NodeID 的替换进程接管。
 	require.NoError(t, base.RegisterNodeEpoch(context.Background(), "game", "node-a", "fresh", DefaultNodeEpochTTL))
 }
 

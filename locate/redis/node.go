@@ -12,9 +12,9 @@ import (
 )
 
 const (
-	nodeBindingTTL     = 6 * time.Hour
-	nodeKeyPrefix      = "locate:node:"
-	nodeEpochKeyPrefix = "locate:node:epoch:"
+	_nodeBindingTTL     = 6 * time.Hour
+	_nodeKeyPrefix      = "locate:node:"
+	_nodeEpochKeyPrefix = "locate:node:epoch:"
 )
 
 func (l *locator) BindNode(ctx context.Context, serviceName, uid, nodeID, epoch string) error {
@@ -24,9 +24,9 @@ func (l *locator) BindNode(ctx context.Context, serviceName, uid, nodeID, epoch 
 	if epoch == "" {
 		return locate.ErrInvalidNodeEpoch
 	}
-	values, err := bindNodeScript.Run(ctx, l.client,
+	values, err := _bindNodeScript.Run(ctx, l.client,
 		[]string{nodeEpochKey(serviceName, nodeID), nodeKey(serviceName, uid)},
-		epoch, nodeID, nodeBindingTTL.Milliseconds(),
+		epoch, nodeID, _nodeBindingTTL.Milliseconds(),
 	).Slice()
 	if err != nil {
 		return locatorError(ctx, err)
@@ -58,17 +58,17 @@ func (l *locator) RenewNode(ctx context.Context, serviceName, uid, nodeID, epoch
 	if epoch == "" {
 		return locate.ErrInvalidNodeEpoch
 	}
-	values, err := renewNodeScript.Run(ctx, l.client,
+	values, err := _renewNodeScript.Run(ctx, l.client,
 		[]string{nodeEpochKey(serviceName, nodeID), nodeKey(serviceName, uid)},
-		epoch, nodeID, nodeBindingTTL.Milliseconds(),
+		epoch, nodeID, _nodeBindingTTL.Milliseconds(),
 	).Slice()
 	if err != nil {
 		return locatorError(ctx, err)
 	}
 	switch scriptStatus(values) {
-	case statusNodeMissing:
+	case _statusNodeMissing:
 		return locate.ErrNodeNotFound
-	case statusNodeConflict:
+	case _statusNodeConflict:
 		return locate.ErrNodeConflict
 	default:
 		return decodeNodeEpochResult(values)
@@ -82,7 +82,7 @@ func (l *locator) UnbindNode(ctx context.Context, serviceName, uid, nodeID, epoc
 	if epoch == "" {
 		return locate.ErrInvalidNodeEpoch
 	}
-	values, err := unbindNodeScript.Run(ctx, l.client,
+	values, err := _unbindNodeScript.Run(ctx, l.client,
 		[]string{nodeEpochKey(serviceName, nodeID), nodeKey(serviceName, uid)}, epoch, nodeID,
 	).Slice()
 	if err != nil {
@@ -111,7 +111,7 @@ func (l *locator) RenewNodeEpoch(ctx context.Context, serviceName, nodeID, epoch
 	if err != nil {
 		return err
 	}
-	values, err := l.run(ctx, renewNodeEpochScript, nodeEpochKey(serviceName, nodeID), epoch, ttlMillis)
+	values, err := l.run(ctx, _renewNodeEpochScript, nodeEpochKey(serviceName, nodeID), epoch, ttlMillis)
 	if err != nil {
 		return err
 	}
@@ -139,7 +139,7 @@ func (l *locator) UnregisterNodeEpoch(ctx context.Context, serviceName, nodeID, 
 	if !locate.ValidServiceName(serviceName) || nodeID == "" || epoch == "" {
 		return locate.ErrInvalidNodeEpoch
 	}
-	values, err := l.run(ctx, deleteIfValueMatchesScript, nodeEpochKey(serviceName, nodeID), epoch)
+	values, err := l.run(ctx, _deleteIfValueMatchesScript, nodeEpochKey(serviceName, nodeID), epoch)
 	if err != nil {
 		return err
 	}
@@ -157,11 +157,11 @@ func nodeEpochLeaseMilliseconds(serviceName, nodeID, epoch string, ttl time.Dura
 }
 
 func nodeKey(serviceName, uid string) string {
-	return nodeLocationKey(nodeKeyPrefix, serviceName, uid)
+	return nodeLocationKey(_nodeKeyPrefix, serviceName, uid)
 }
 
 func nodeEpochKey(serviceName, nodeID string) string {
-	return nodeLocationKey(nodeEpochKeyPrefix, serviceName, nodeID)
+	return nodeLocationKey(_nodeEpochKeyPrefix, serviceName, nodeID)
 }
 
 func nodeLocationKey(prefix, serviceName, id string) string {
@@ -172,11 +172,11 @@ func nodeLocationKey(prefix, serviceName, id string) string {
 
 func decodeNodeEpochResult(values []any) error {
 	switch scriptStatus(values) {
-	case statusOK:
+	case _statusOK:
 		return nil
-	case statusMissing:
+	case _statusMissing:
 		return locate.ErrNodeEpochNotFound
-	case statusConflict:
+	case _statusConflict:
 		return locate.ErrNodeEpochConflict
 	default:
 		return errInvalidScriptResult

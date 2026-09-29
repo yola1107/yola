@@ -8,7 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	protocolv1 "yola/api/protocol/v1"
+	"yola/api/protocol/v1"
 	"yola/internal/contextwait"
 	"yola/network"
 )
@@ -18,7 +18,7 @@ var (
 	ErrBroadcastQueueFull   = errors.New("gateway: broadcast queue is full")
 )
 
-// BroadcastStats is a point-in-time snapshot of local broadcast admission and fanout.
+// BroadcastStats 是本地广播接纳和 fanout 的瞬时统计。
 type BroadcastStats struct {
 	QueueDepth         int
 	QueueCapacity      int
@@ -30,9 +30,9 @@ type BroadcastStats struct {
 	MaxFanoutDuration  time.Duration
 }
 
-// Broadcast queues one push for every currently authenticated local session.
+// Broadcast 为当前已认证的每个本地 Session 排入一次推送。
 func (s *Server) Broadcast(command int32, payload []byte) error {
-	message := &protocolv1.Proto{Op: protocolv1.OpPush, Cmd: command, Body: payload}
+	message := &v1.Proto{Op: v1.OpPush, Cmd: command, Body: payload}
 	if !validExternalFrame(message) {
 		return network.ErrFrameTooLarge
 	}
@@ -40,7 +40,7 @@ func (s *Server) Broadcast(command int32, payload []byte) error {
 	return s.broadcaster.enqueue(message)
 }
 
-// BroadcastStats returns local broadcaster counters without resetting them.
+// BroadcastStats 返回本地广播统计，不重置计数。
 func (s *Server) BroadcastStats() BroadcastStats {
 	return s.broadcaster.stats()
 }
@@ -62,7 +62,7 @@ type broadcaster struct {
 type broadcastRun struct {
 	ctx       context.Context
 	cancel    context.CancelFunc
-	pushes    chan *protocolv1.Proto
+	pushes    chan *v1.Proto
 	batches   chan fanoutBatch
 	batchDone chan struct{}
 	sessions  []*session
@@ -94,7 +94,7 @@ func (b *broadcaster) start() error {
 	running := &broadcastRun{
 		ctx:       ctx,
 		cancel:    cancel,
-		pushes:    make(chan *protocolv1.Proto, b.queueCapacity),
+		pushes:    make(chan *v1.Proto, b.queueCapacity),
 		batches:   make(chan fanoutBatch, b.workers),
 		batchDone: make(chan struct{}, b.workers),
 		done:      make(chan struct{}),
@@ -132,7 +132,7 @@ func (b *broadcaster) stop(ctx context.Context) error {
 	return contextwait.Done(ctx, running.done)
 }
 
-func (b *broadcaster) enqueue(message *protocolv1.Proto) error {
+func (b *broadcaster) enqueue(message *v1.Proto) error {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 	if b.active == nil || b.active.ctx.Err() != nil {
@@ -150,7 +150,7 @@ func (b *broadcaster) enqueue(message *protocolv1.Proto) error {
 
 func (b *broadcaster) coordinate(running *broadcastRun) {
 	defer b.finishRun(running)
-	// Complete one push before taking the next so every connection observes the same order.
+	// 完成当前推送后再取下一条，保证所有连接观察到相同顺序。
 	for {
 		select {
 		case <-running.ctx.Done():
@@ -165,7 +165,7 @@ func (b *broadcaster) coordinate(running *broadcastRun) {
 	}
 }
 
-func (b *broadcaster) fanout(running *broadcastRun, message *protocolv1.Proto) bool {
+func (b *broadcaster) fanout(running *broadcastRun, message *v1.Proto) bool {
 	running.prepared.Reset(message)
 	sessions := b.sessions.snapshot(running.sessions)
 	running.sessions = sessions
