@@ -220,7 +220,7 @@ func TestClientHeartbeatRequiresReplyDespiteOtherTraffic(t *testing.T) {
 	client := &Client{
 		conn:         clientConn,
 		codec:        defaultCodec(),
-		pushChan:     make(chan *v1.Proto, 1),
+		outbound:     make(chan *v1.Proto, 1),
 		done:         make(chan struct{}),
 		pingInterval: 10 * time.Millisecond,
 		readTimeout:  500 * time.Millisecond,
@@ -231,7 +231,7 @@ func TestClientHeartbeatRequiresReplyDespiteOtherTraffic(t *testing.T) {
 
 	go client.readLoop(bufio.NewReader(clientConn))
 	go client.writeLoop(bufio.NewWriter(clientConn))
-	go client.sendHeart()
+	go client.heartbeatLoop()
 	go func() {
 		reader := bufio.NewReader(serverConn)
 		writer := bufio.NewWriter(serverConn)
@@ -261,7 +261,7 @@ func TestClientRequestRejectsOversizedFrameWithoutClosing(t *testing.T) {
 	client := &Client{
 		conn:           clientConn,
 		codec:          defaultCodec(),
-		pushChan:       make(chan *v1.Proto, 1),
+		outbound:       make(chan *v1.Proto, 1),
 		done:           make(chan struct{}),
 		requestTimeout: time.Second,
 	}
@@ -274,7 +274,7 @@ func TestClientRequestRejectsOversizedFrameWithoutClosing(t *testing.T) {
 	if !errors.Is(err, network.ErrFrameTooLarge) {
 		t.Fatalf("Request() error = %v, want %v", err, network.ErrFrameTooLarge)
 	}
-	if len(client.pushChan) != 0 {
+	if len(client.outbound) != 0 {
 		t.Fatal("oversized request entered the send queue")
 	}
 	select {
@@ -312,7 +312,7 @@ func TestClientWriteTimeoutClosesBlockedWrite(t *testing.T) {
 	client := &Client{
 		conn:         clientConn,
 		codec:        defaultCodec(),
-		pushChan:     make(chan *v1.Proto, 1),
+		outbound:     make(chan *v1.Proto, 1),
 		done:         make(chan struct{}),
 		writeTimeout: 20 * time.Millisecond,
 	}
@@ -518,7 +518,7 @@ func TestClientCloseFailsPendingRequest(t *testing.T) {
 	clientConn, serverConn := net.Pipe()
 	defer serverConn.Close()
 	c := &Client{
-		conn: clientConn, codec: defaultCodec(), pushChan: make(chan *v1.Proto, 1),
+		conn: clientConn, codec: defaultCodec(), outbound: make(chan *v1.Proto, 1),
 		done: make(chan struct{}), requestTimeout: time.Hour,
 	}
 	completed := make(chan error, 1)
@@ -526,7 +526,7 @@ func TestClientCloseFailsPendingRequest(t *testing.T) {
 		_, _, err := c.Request(context.Background(), 1, &v1.Proto{})
 		completed <- err
 	}()
-	if message := <-c.pushChan; message.Op != v1.OpRequest {
+	if message := <-c.outbound; message.Op != v1.OpRequest {
 		t.Fatalf("queued operation = %d, want request", message.Op)
 	}
 	c.Close()

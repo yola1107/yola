@@ -115,7 +115,7 @@ func (c *Client) readLoop() {
 	defer func() {
 		_ = ch.closeWithReason("read loop stopped")
 		<-ch.writerDone
-		c.shutdown(ch)
+		c.shutdownWith(ch, nil)
 	}()
 	for {
 		p := new(v1.Proto)
@@ -226,11 +226,7 @@ func (c *Client) Close() {
 	if c == nil {
 		return
 	}
-	c.shutdown(c.channel)
-}
-
-func (c *Client) shutdown(ch *Channel) {
-	c.shutdownWith(ch, nil)
+	c.shutdownWith(c.channel, nil)
 }
 
 func (c *Client) shutdownWith(ch *Channel, beforeDisconnect func()) {

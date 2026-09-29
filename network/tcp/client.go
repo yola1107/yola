@@ -34,7 +34,7 @@ var ErrAuthenticationRejected = errors.New("tcp client authentication rejected")
 const clientSendQueueSize = 100
 
 type Client struct {
-	pushChan       chan *v1.Proto
+	outbound       chan *v1.Proto
 	pushHandlers   map[int32]PushHandler
 	kickHandler    KickHandler
 	disconnectFunc func()
@@ -83,7 +83,7 @@ func NewClient(ctx context.Context, opts ...ClientOption) (*Client, error) {
 	c := &Client{
 		conn:           conn,
 		codec:          o.codec,
-		pushChan:       make(chan *v1.Proto, clientSendQueueSize),
+		outbound:       make(chan *v1.Proto, clientSendQueueSize),
 		pushHandlers:   o.pushHandlers,
 		kickHandler:    o.kickHandler,
 		disconnectFunc: o.disconnectFunc,
@@ -103,11 +103,11 @@ func NewClient(ctx context.Context, opts ...ClientOption) (*Client, error) {
 	go c.callbacks.Run()
 	go c.readLoop(rd)
 	go c.writeLoop(wr)
-	go c.sendHeart()
+	go c.heartbeatLoop()
 	go func() {
 		select {
 		case <-ctx.Done():
-			c.shutdown()
+			c.Close()
 		case <-c.done:
 		}
 	}()
@@ -149,10 +149,10 @@ func (c *Client) Request(ctx context.Context, command int32, msg proto.Message) 
 }
 
 func (c *Client) Close() {
-	c.shutdown()
+	c.shutdownWith(nil)
 }
 
-func (c *Client) sendHeart() {
+func (c *Client) heartbeatLoop() {
 	ticker := time.NewTicker(c.pingInterval)
 	defer ticker.Stop()
 	for {
@@ -165,13 +165,13 @@ func (c *Client) sendHeart() {
 				continue
 			case heartbeat.TickTimeout:
 				slog.Warn("[tcp] heartbeat reply timed out")
-				c.shutdown()
+				c.Close()
 				return
 			}
 			if err := c.send(&v1.Proto{Op: v1.OpHeartbeat}); err != nil {
 				c.heartbeat.CancelQueue()
 				slog.Warn("[tcp] heartbeat send failed", "error", err)
-				c.shutdown()
+				c.Close()
 				return
 			}
 		}
@@ -182,7 +182,7 @@ func (c *Client) readLoop(rd *bufio.Reader) {
 	for {
 		if err := c.conn.SetReadDeadline(time.Now().Add(c.readTimeout)); err != nil {
 			slog.Warn("[tcp] set read deadline failed", "error", err)
-			c.shutdown()
+			c.Close()
 			return
 		}
 		p := &v1.Proto{}
@@ -190,7 +190,7 @@ func (c *Client) readLoop(rd *bufio.Reader) {
 			if !isConnectionClosedError(err) {
 				slog.Warn("[tcp] read failed", "error", err)
 			}
-			c.shutdown()
+			c.Close()
 			return
 		}
 		if !c.handleIncoming(p) {
@@ -204,7 +204,7 @@ func (c *Client) handleIncoming(p *v1.Proto) bool {
 	case v1.OpHeartbeatReply:
 		if !c.heartbeat.Reply() {
 			slog.Warn("[tcp] unexpected heartbeat reply")
-			c.shutdown()
+			c.Close()
 			return false
 		}
 	case v1.OpPush:
@@ -214,7 +214,7 @@ func (c *Client) handleIncoming(p *v1.Proto) bool {
 			return true
 		}
 		if err := c.submitCallback("push", func() { handler(p.Body) }); err != nil {
-			c.shutdown()
+			c.Close()
 			return false
 		}
 
@@ -243,22 +243,22 @@ func (c *Client) writeLoop(wr *bufio.Writer) {
 		select {
 		case <-c.done:
 			return
-		case p = <-c.pushChan:
+		case p = <-c.outbound:
 		}
 		heartbeat := p.Op == v1.OpHeartbeat
 		if heartbeat && !c.heartbeat.BeginWrite() {
 			slog.Warn("[tcp] heartbeat write has invalid state")
-			c.shutdown()
+			c.Close()
 			return
 		}
 		if err := c.writeMessage(wr, p); err != nil {
 			slog.Warn("[tcp] write failed", "error", err)
-			c.shutdown()
+			c.Close()
 			return
 		}
 		if heartbeat && !c.heartbeat.FinishWrite() {
 			slog.Warn("[tcp] heartbeat completion has invalid state")
-			c.shutdown()
+			c.Close()
 			return
 		}
 	}
@@ -302,15 +302,11 @@ func (c *Client) send(p *v1.Proto) error {
 	default:
 	}
 	select {
-	case c.pushChan <- p:
+	case c.outbound <- p:
 		return nil
 	default:
 		return network.ErrSendQueueFull
 	}
-}
-
-func (c *Client) shutdown() {
-	c.shutdownWith(nil)
 }
 
 func (c *Client) shutdownWith(beforeDisconnect func()) {
