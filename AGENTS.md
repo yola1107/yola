@@ -44,18 +44,17 @@ Yola 是基于 Kratos 的长连接框架；根目录与 `test/` 是独立 Go mod
 
 ## 验证
 
-仅文档改动核对引用、命令和约束一致性。其他改动按下表执行所有适用项；`make check` 已覆盖的普通检查不重复运行。
+按以下条目执行所有适用检查；`make check` 已覆盖的普通检查不重复运行。
 
-| 触发条件 | 工作目录 | 检查 |
-| --- | --- | --- |
-| Go 文件改动 | 仓库根 | `golangci-lint fmt --config .golangci.yml <修改文件>` |
-| 非纯文档改动 | 仓库根 | `make lint` |
-| Go 包改动，未触发 `make check` | 所属 module | `go test <受影响包>` |
-| 公共 API、依赖、跨 module 或多包改动 | 仓库根 | `make check` |
-| 并发、连接或生命周期改动 | 所属 module | `go test -race <受影响包>` |
-| 根 `api/**` 协议改动 | 仓库根 | `make breaking 'BUF_BREAKING_AGAINST=.git#ref=<基线>'` |
-| 服务入口或构建链改动 | 对应的仓库根、`test/ludo` 或 `test/whot` | `make build` |
-| 无 build 目标的入口改动 | 所属 module | `go build -o <输出目录>/ <入口包>` |
+- **仅文档改动**：核对引用、命令和约束一致性。
+- **Go 文件改动**：在仓库根执行 `golangci-lint fmt --config .golangci.yml <修改文件>`。
+- **非纯文档改动**：在仓库根执行 `make lint`。
+- **Go 包改动，未触发 `make check`**：在所属 module 执行 `go test <受影响包>`。
+- **公共 API、依赖、跨 module 或多包改动**：在仓库根执行 `make check`。
+- **并发、连接或生命周期改动**：在所属 module 执行 `go test -race <受影响包>`。
+- **根 `api/**` 协议改动**：在仓库根执行 `make breaking 'BUF_BREAKING_AGAINST=.git#ref=<基线>'`。
+- **服务入口或构建链改动**：在对应的仓库根、`test/ludo` 或 `test/whot` 执行 `make build`。
+- **无 build 目标的入口改动**：在所属 module 执行 `go build -o <输出目录>/ <入口包>`。
 
 - 全量或外部服务测试前确认 `TestMain`、环境与依赖，并遵守[隔离要求](docs/README.md#开发与验证)；缺少依赖而跳过的测试不算通过。
 - 如实区分本次运行、有效复用和未运行的检查；仅复用代码、依赖、配置、工具及环境未变的有效结果，未经验证不得声称通过。
