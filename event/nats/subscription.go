@@ -39,17 +39,17 @@ func (s *subscription) Unsubscribe(ctx context.Context) error {
 	return s.wait(ctx)
 }
 
-func (s *subscription) activate(conn *natsgo.Conn, queueCapacity int) (<-chan *natsgo.Msg, error) {
+func (s *subscription) activate(conn *natsgo.Conn, queueCapacity int) error {
 	messages := make(chan *natsgo.Msg, queueCapacity)
 	native, err := conn.ChanSubscribe(s.topic, messages)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	s.native = native
 	s.messages = messages
 	s.stats.QueueCapacity = queueCapacity
-	return messages, nil
+	return nil
 }
 
 // SubscriptionStats 返回本地订阅快照；原生 drop 失效后保留最后可得值。
@@ -75,21 +75,21 @@ func (s *subscription) sampleDropped() {
 	}
 }
 
-func (s *subscription) start(parent context.Context, messages <-chan *natsgo.Msg) {
+func (s *subscription) start(parent context.Context) {
 	ctx, cancel := context.WithCancel(parent)
 	s.cancel = cancel
 	go func() {
-		s.consume(ctx, messages)
+		s.consume(ctx)
 		s.finish()
 	}()
 }
 
-func (s *subscription) consume(ctx context.Context, messages <-chan *natsgo.Msg) {
+func (s *subscription) consume(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case message, ok := <-messages:
+		case message, ok := <-s.messages:
 			if !ok {
 				return
 			}

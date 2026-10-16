@@ -272,11 +272,10 @@ func (b *Bus) Subscribe(ctx context.Context, topic string, handler event.Handler
 		deactivated:     make(chan struct{}),
 		stopDone:        make(chan struct{}),
 	}
-	messages, err := registered.activate(b.conn, b.queueCapacity)
-	if err != nil {
+	if err := registered.activate(b.conn, b.queueCapacity); err != nil {
 		return nil, b.failRegistration(registered, fmt.Errorf("nats: subscribe %q: %w", topic, err))
 	}
-	err = flush(activationCtx, b.conn, b.timeout)
+	err := flush(activationCtx, b.conn, b.timeout)
 	if err == nil {
 		err = activationCtx.Err()
 	}
@@ -286,7 +285,7 @@ func (b *Bus) Subscribe(ctx context.Context, topic string, handler event.Handler
 		}
 		return nil, b.failRegistration(registered, fmt.Errorf("nats: subscribe %q: %w", topic, err))
 	}
-	registered.start(b.ctx, messages)
+	registered.start(b.ctx)
 	// 只回收已结束且无错误的记录；取消中的 handler 和历史清理错误仍由 Close 等待、汇总。
 	b.subscriptions = slices.DeleteFunc(b.subscriptions, func(previous *subscription) bool {
 		select {
