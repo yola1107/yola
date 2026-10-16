@@ -6,11 +6,10 @@ import (
 	"net"
 )
 
-// AuthenticationIOError 在认证 deadline 到期时，
-// 将认证期间的 dial/read 失败映射为 ctx 错误。
+// AuthenticationIOError 优先返回 ctx 错误，再将网络超时映射为 context.DeadlineExceeded。
 func AuthenticationIOError(ctx context.Context, err error) error {
-	if ctx.Err() != nil {
-		return ctx.Err()
+	if cause := ctx.Err(); cause != nil {
+		return cause
 	}
 	var timeout net.Error
 	if errors.As(err, &timeout) && timeout.Timeout() {

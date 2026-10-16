@@ -24,13 +24,13 @@ type Transport struct {
 
 // NewTransport 为 ConnectionHandler 调用构建 transporter。
 func NewTransport(kind transport.Kind, endpoint, remoteIP, connectionID string) *Transport {
-	reqHeader := make(headerCarrier)
-	reqHeader.Set("remote_ip", remoteIP)
-	reqHeader.Set("conn_id", connectionID)
 	return &Transport{
-		kind:        kind,
-		endpoint:    endpoint,
-		reqHeader:   reqHeader,
+		kind:     kind,
+		endpoint: endpoint,
+		reqHeader: headerCarrier{
+			"remote_ip": {remoteIP},
+			"conn_id":   {connectionID},
+		},
 		replyHeader: make(headerCarrier),
 	}
 }

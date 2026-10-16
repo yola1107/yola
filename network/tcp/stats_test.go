@@ -48,7 +48,15 @@ func TestSendStatsSlowWriterAndCanceledReply(t *testing.T) {
 	ch := newChannel(1, defaultCodec())
 	conn := tcpConnection{conn: controlled, ch: ch}
 	server := NewServer(WriteTimeout(time.Second))
-	go server.dispatchTCP(controlled, bufio.NewWriterSize(controlled, _defaultIOBufferSize), ch)
+	writerDone := make(chan struct{})
+	t.Cleanup(func() {
+		_ = conn.Close()
+		waitTCPValue(t, writerDone)
+	})
+	go func() {
+		defer close(writerDone)
+		server.dispatchTCP(controlled, bufio.NewWriterSize(controlled, _defaultIOBufferSize), ch)
+	}()
 	require.NoError(t, conn.SendProto(&v1.Proto{Op: v1.OpPush, Body: make([]byte, 32)}))
 	waitTCPValue(t, controlled.started)
 	require.Zero(t, conn.SendStats().PendingPayloadBytes, "writer owns the dequeued frame")
@@ -63,7 +71,7 @@ func TestSendStatsSlowWriterAndCanceledReply(t *testing.T) {
 	require.Equal(t, int64(1024), conn.SendStats().PendingPayloadBytes)
 	require.ErrorIs(t, conn.SendProto(&v1.Proto{Op: v1.OpPush}), network.ErrSendQueueFull)
 	require.NoError(t, conn.Close())
-	waitTCPValue(t, ch.writerDone)
+	waitTCPValue(t, writerDone)
 	require.Equal(t, int64(1024), conn.SendStats().PendingPayloadBytes)
 	require.Equal(t, uint64(1), conn.SendStats().QueueDropped)
 }

@@ -12,10 +12,7 @@ import (
 )
 
 // PreparedProto 的零值须支持比较和 map key；使用后不得复制。
-var (
-	_ = PreparedProto{} == PreparedProto{}
-	_ map[PreparedProto]struct{}
-)
+var _ map[PreparedProto]struct{}
 
 func TestPreparedProtoSharesOneEncoding(t *testing.T) {
 	message := &v1.Proto{Op: v1.OpPush, Body: []byte("first")}

@@ -269,9 +269,9 @@ func TestDispatchWriteDeadlineClosesSlowConsumer(t *testing.T) {
 		t.Fatal("writer remained blocked after write deadline")
 	}
 	select {
-	case <-ch.writerDone:
+	case <-ch.stop:
 	default:
-		t.Fatal("writer exit did not close channel")
+		t.Fatal("writer exit did not stop channel")
 	}
 	var timeout net.Error
 	if err := ch.writerError(); !errors.As(err, &timeout) || !timeout.Timeout() {

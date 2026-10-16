@@ -109,13 +109,17 @@ func (ch *Channel) SendProto(p *v1.Proto) error {
 // SendPrepared 为 Gateway fanout 排入共用的默认 protobuf 编码。
 // 自定义 codec 保持 SendProto 行为：同名 codec 不保证产生相同协议 bytes。
 func (ch *Channel) SendPrepared(message *network.PreparedProto) error {
-	if message == nil || message.Message() == nil {
+	if message == nil {
+		return errNilPayload
+	}
+	p := message.Message()
+	if p == nil {
 		return errNilPayload
 	}
 	if !canOptimizeFrames(ch.codec) {
-		return ch.SendProto(message.Message())
+		return ch.SendProto(p)
 	}
-	return ch.enqueueFrame(len(message.Message().Body), false, func() ([]byte, error) {
+	return ch.enqueueFrame(len(p.Body), false, func() ([]byte, error) {
 		body, err := message.Marshal()
 		if err != nil {
 			return nil, err

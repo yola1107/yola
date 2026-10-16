@@ -21,10 +21,9 @@ type channelEvent struct {
 }
 
 type channel struct {
-	outbound   chan channelEvent
-	closing    chan struct{}
-	stop       chan struct{}
-	writerDone chan struct{}
+	outbound chan channelEvent
+	closing  chan struct{}
+	stop     chan struct{}
 
 	connID string
 	codec  encoding.Codec
@@ -64,9 +63,6 @@ func (c *channel) closeWithProto(ctx context.Context, p *v1.Proto) error {
 	case <-c.stop:
 		c.pendingPayloadBytes.Add(-size)
 		return c.writerError()
-	case <-c.writerDone:
-		c.pendingPayloadBytes.Add(-size)
-		return c.writerError()
 	}
 	return c.waitFinal(ctx, event.done)
 }
@@ -84,7 +80,6 @@ func (c *channel) waitFinal(ctx context.Context, result <-chan error) error {
 	case <-ctx.Done():
 		contextDone = true
 	case <-c.stop:
-	case <-c.writerDone:
 	}
 	select {
 	case err := <-result:
@@ -100,11 +95,10 @@ func (c *channel) waitFinal(ctx context.Context, result <-chan error) error {
 
 func newChannel(queueSize int, codec encoding.Codec) *channel {
 	return &channel{
-		outbound:   make(chan channelEvent, queueSize),
-		closing:    make(chan struct{}),
-		stop:       make(chan struct{}),
-		writerDone: make(chan struct{}),
-		codec:      codec,
+		outbound: make(chan channelEvent, queueSize),
+		closing:  make(chan struct{}),
+		stop:     make(chan struct{}),
+		codec:    codec,
 	}
 }
 
@@ -208,7 +202,6 @@ func (c *channel) finishWriter(err error) {
 	c.mu.Lock()
 	c.writerErr = err
 	c.stopLocked()
-	close(c.writerDone)
 	cancel := c.cancel
 	c.mu.Unlock()
 	if cancel != nil {

@@ -121,18 +121,18 @@ func (q *Queue) Run() {
 func (q *Queue) next() (callback func(), terminals []func(), closed bool) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	if !q.closed && len(q.tasks) > 0 {
-		callback = q.tasks[0]
-		q.tasks[0] = nil
-		q.tasks = q.tasks[1:]
-		return callback, nil, false
-	}
 	if q.closed {
 		terminals = q.terminals
 		q.terminals = nil
 		return nil, terminals, true
 	}
-	return nil, nil, false
+	if len(q.tasks) == 0 {
+		return nil, nil, false
+	}
+	callback = q.tasks[0]
+	q.tasks[0] = nil
+	q.tasks = q.tasks[1:]
+	return callback, nil, false
 }
 
 func hasNilCallback(callbacks []func()) bool {

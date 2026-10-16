@@ -17,12 +17,13 @@ type Invoker func(context.Context, *v1.Proto) (*v1.Proto, error)
 
 // NewInvoker 为一条连接构建一次 middleware 链。
 func NewInvoker(handler ConnectionHandler, conn Connection, timeout time.Duration, middlewares ...middleware.Middleware) Invoker {
+	heartbeat, _ := handler.(HeartbeatHandler)
 	h := middleware.Chain(middlewares...)(func(ctx context.Context, req any) (any, error) {
 		message, ok := req.(*v1.Proto)
 		if !ok || message == nil {
 			return nil, errInvalidHandlerReply
 		}
-		if heartbeat, ok := handler.(HeartbeatHandler); ok && message.Op == v1.OpHeartbeat {
+		if heartbeat != nil && message.Op == v1.OpHeartbeat {
 			if err := heartbeat.Heartbeat(ctx, conn); err != nil {
 				return nil, err
 			}

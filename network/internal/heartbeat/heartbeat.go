@@ -29,7 +29,7 @@ type State struct {
 // 或将等待回复的心跳判为超时并消费其状态。
 func (s *State) Tick() TickResult {
 	for {
-		switch state := s.value.Load(); state {
+		switch s.value.Load() {
 		case _idle:
 			if s.value.CompareAndSwap(_idle, _queued) {
 				return TickQueue

@@ -245,8 +245,8 @@ func (c *Client) writeLoop(wr *bufio.Writer) {
 			return
 		case p = <-c.outbound:
 		}
-		heartbeat := p.Op == v1.OpHeartbeat
-		if heartbeat && !c.heartbeat.BeginWrite() {
+		isHeartbeat := p.Op == v1.OpHeartbeat
+		if isHeartbeat && !c.heartbeat.BeginWrite() {
 			slog.Warn("[tcp] heartbeat write has invalid state")
 			c.Close()
 			return
@@ -256,7 +256,7 @@ func (c *Client) writeLoop(wr *bufio.Writer) {
 			c.Close()
 			return
 		}
-		if heartbeat && !c.heartbeat.FinishWrite() {
+		if isHeartbeat && !c.heartbeat.FinishWrite() {
 			slog.Warn("[tcp] heartbeat completion has invalid state")
 			c.Close()
 			return
