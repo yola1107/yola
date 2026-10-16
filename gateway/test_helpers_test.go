@@ -394,9 +394,9 @@ func initTestGateway(t *testing.T, gateway *Server) {
 	require.Eventually(t, gateway.admission.accepting.Load, time.Second, time.Millisecond)
 }
 
-func startTestApp(t *testing.T, gateway *Server, servers ...transport.Server) {
+func startTestApp(t *testing.T, gateway *Server) {
 	t.Helper()
-	app := newTestApp(gateway, servers...)
+	app := newTestApp(gateway)
 	serverDone := make(chan error, 1)
 	t.Cleanup(func() {
 		if err := app.Stop(); err != nil {
@@ -422,14 +422,13 @@ func startTestApp(t *testing.T, gateway *Server, servers ...transport.Server) {
 }
 
 func newTestApp(gateway *Server, servers ...transport.Server) *kratos.App {
-	opts := []kratos.Option{
+	return kratos.New(
 		kratos.ID("gate-a"),
 		kratos.Name("gateway"),
 		kratos.StopTimeout(time.Second),
 		kratos.BeforeStart(gateway.BeforeStart),
 		kratos.Server(append([]transport.Server{gateway}, servers...)...),
-	}
-	return kratos.New(opts...)
+	)
 }
 
 type blockingBackendDiscovery struct {

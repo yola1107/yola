@@ -87,5 +87,6 @@ func (p *backendPicker) Pick(info balancer.PickInfo) (balancer.PickResult, error
 
 type backendSubConn struct {
 	selector.Node
+
 	subConn balancer.SubConn
 }

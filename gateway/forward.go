@@ -31,25 +31,9 @@ func (s *Server) forward(ctx context.Context, sess *session, msg *protocolv1.Pro
 		code := forwardStatusCode(err)
 		switch code {
 		case codes.Unavailable:
-			slog.ErrorContext(ctx, "forward node unavailable",
-				"uid", binding.UID,
-				"conn_id", binding.ConnID,
-				"service", binding.ServiceName,
-				"gate_id", binding.GateID,
-				"code", int32(code),
-				"status", code.String(),
-				"error", err,
-			)
+			logForwardError(ctx, slog.LevelError, "forward node unavailable", binding, code, err)
 		case codes.Aborted, codes.Internal:
-			slog.WarnContext(ctx, "forward node fenced",
-				"uid", binding.UID,
-				"conn_id", binding.ConnID,
-				"service", binding.ServiceName,
-				"gate_id", binding.GateID,
-				"code", int32(code),
-				"status", code.String(),
-				"error", err,
-			)
+			logForwardError(ctx, slog.LevelWarn, "forward node fenced", binding, code, err)
 		}
 		msg.Op, msg.Code, msg.Body = protocolv1.OpResponse, int32(code), nil
 		return
@@ -64,15 +48,7 @@ func (s *Server) forward(ctx context.Context, sess *session, msg *protocolv1.Pro
 	if err != nil {
 		code := status.Code(err)
 		if code != codes.Canceled && code != codes.Aborted {
-			slog.ErrorContext(ctx, "forward node failed",
-				"uid", binding.UID,
-				"conn_id", binding.ConnID,
-				"service", binding.ServiceName,
-				"gate_id", binding.GateID,
-				"code", int32(code),
-				"status", code.String(),
-				"error", err,
-			)
+			logForwardError(ctx, slog.LevelError, "forward node failed", binding, code, err)
 		}
 		msg.Op, msg.Code, msg.Body = protocolv1.OpResponse, int32(code), nil
 		return
@@ -128,21 +104,6 @@ func (s *Server) resolveNodeRoute(ctx context.Context, binding locate.GateBindin
 	return nodeBackend.client, nodeID, nil
 }
 
-func forwardStatusCode(err error) codes.Code {
-	switch {
-	case errors.Is(err, context.Canceled):
-		return codes.Canceled
-	case errors.Is(err, context.DeadlineExceeded):
-		return codes.DeadlineExceeded
-	case errors.Is(err, locate.ErrInvalidNodeBinding), errors.Is(err, locate.ErrInvalidNodeEpoch):
-		return codes.Internal
-	case errors.Is(err, locate.ErrNodeEpochNotFound), errors.Is(err, locate.ErrNodeEpochConflict):
-		return codes.Aborted
-	default:
-		return codes.Unavailable
-	}
-}
-
 func (s *Server) notifyDisconnect(ctx context.Context, binding locate.GateBinding) {
 	client, nodeID, err := s.resolveNodeRoute(ctx, binding)
 	if err != nil {
@@ -168,4 +129,35 @@ func (s *Server) notifyDisconnect(ctx context.Context, binding locate.GateBindin
 			"error", err,
 		)
 	}
+}
+
+func forwardStatusCode(err error) codes.Code {
+	switch {
+	case errors.Is(err, context.Canceled):
+		return codes.Canceled
+	case errors.Is(err, context.DeadlineExceeded):
+		return codes.DeadlineExceeded
+	case errors.Is(err, locate.ErrInvalidNodeBinding), errors.Is(err, locate.ErrInvalidNodeEpoch):
+		return codes.Internal
+	case errors.Is(err, locate.ErrNodeEpochNotFound), errors.Is(err, locate.ErrNodeEpochConflict):
+		return codes.Aborted
+	default:
+		return codes.Unavailable
+	}
+}
+
+func logForwardError(
+	ctx context.Context, level slog.Level, message string,
+	binding locate.GateBinding, code codes.Code, err error,
+) {
+
+	slog.Log(ctx, level, message,
+		"uid", binding.UID,
+		"conn_id", binding.ConnID,
+		"service", binding.ServiceName,
+		"gate_id", binding.GateID,
+		"code", int32(code),
+		"status", code.String(),
+		"error", err,
+	)
 }

@@ -28,6 +28,7 @@ var (
 
 type pushService struct {
 	clusterv1.UnimplementedGatewayServer
+
 	server *Server
 }
 
