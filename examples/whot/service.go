@@ -15,6 +15,7 @@ import (
 )
 
 type gameService struct {
+	nodeID string
 	events event.Publisher
 }
 
@@ -47,10 +48,10 @@ func (s gameService) Echo(ctx context.Context, in *wrapperspb.StringValue) (*wra
 	if err != nil {
 		return nil, err
 	}
-	if pushErr := sess.Push(ctx, message.WhotPushCommand, wrapperspb.String(id+" push: "+in.Value)); pushErr != nil {
+	if pushErr := sess.Push(ctx, message.WhotPushCommand, wrapperspb.String(s.nodeID+" push: "+in.Value)); pushErr != nil {
 		return nil, pushErr
 	}
-	payload, err := proto.Marshal(wrapperspb.String(id + " announcement: " + in.Value))
+	payload, err := proto.Marshal(wrapperspb.String(s.nodeID + " announcement: " + in.Value))
 	if err != nil {
 		return nil, err
 	}
@@ -58,7 +59,7 @@ func (s gameService) Echo(ctx context.Context, in *wrapperspb.StringValue) (*wra
 		slog.WarnContext(ctx, "publish announcement", "error", err)
 	}
 	slog.DebugContext(ctx, "Echo invoked")
-	return wrapperspb.String(id + " " + "say hello"), nil
+	return wrapperspb.String(s.nodeID + " say hello"), nil
 }
 
 func sessionFromContext(ctx context.Context) (node.Session, error) {

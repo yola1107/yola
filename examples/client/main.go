@@ -18,7 +18,7 @@ import (
 	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
-const requestInterval = 3 * time.Second
+const _requestInterval = 3 * time.Second
 
 var (
 	serviceName string
@@ -54,7 +54,7 @@ func main() {
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(requestInterval):
+		case <-time.After(_requestInterval):
 		}
 	}
 }
@@ -95,7 +95,7 @@ func runClient(ctx context.Context, address, serviceName, uid, token string) {
 				slog.Error("request failed", "error", err)
 				return
 			}
-			timer.Reset(requestInterval)
+			timer.Reset(_requestInterval)
 		}
 	}
 }
@@ -104,7 +104,7 @@ func request(ctx context.Context, client *tcp.Client, serviceName, uid string) e
 	requestCtx, requestCancel := context.WithTimeout(ctx, 5*time.Second)
 	defer requestCancel()
 	if serviceName == "whot" {
-		if _, err := sendRequest(requestCtx, client, "enter", message.WhotEnterCommand, new(emptypb.Empty)); err != nil {
+		if _, err := sendRequest(requestCtx, client, "enter", message.WhotEnterCommand, &emptypb.Empty{}); err != nil {
 			return err
 		}
 	}
@@ -120,7 +120,7 @@ func request(ctx context.Context, client *tcp.Client, serviceName, uid string) e
 	slog.Info("response received", "body", reply.Value)
 
 	if serviceName == "whot" {
-		if _, err := sendRequest(requestCtx, client, "leave", message.WhotLeaveCommand, new(emptypb.Empty)); err != nil {
+		if _, err := sendRequest(requestCtx, client, "leave", message.WhotLeaveCommand, &emptypb.Empty{}); err != nil {
 			return err
 		}
 		slog.Info("-----------")

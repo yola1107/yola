@@ -81,7 +81,7 @@ func main() {
 			slog.Error("stop Whot Node", "error", stopErr)
 		}
 	}()
-	service := gameService{events: eventBus}
+	service := gameService{nodeID: id, events: eventBus}
 	node.Register(nodeServer, message.WhotEnterCommand, service.Enter)
 	node.Register(nodeServer, message.WhotLeaveCommand, service.Leave)
 	node.Register(nodeServer, message.EchoCommand, service.Echo)
