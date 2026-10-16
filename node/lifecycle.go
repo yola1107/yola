@@ -294,6 +294,7 @@ func (s *Server) Registrar(registrar registry.Registrar) registry.Registrar {
 
 type readyRegistrar struct {
 	registry.Registrar
+
 	server *Server
 }
 

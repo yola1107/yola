@@ -95,10 +95,7 @@ func validate(endpoint *url.URL) error {
 		return invalidError("gRPC endpoint must not include userinfo, path, query, or fragment")
 	}
 	host, port, err := net.SplitHostPort(endpoint.Host)
-	if err != nil || host == "" {
-		return invalidError("invalid gRPC endpoint host %q", endpoint.Host)
-	}
-	if !validHost(host) {
+	if err != nil || host == "" || !validHost(host) {
 		return invalidError("invalid gRPC endpoint host %q", endpoint.Host)
 	}
 	portNumber, err := strconv.ParseUint(port, 10, 16)

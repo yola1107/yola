@@ -18,6 +18,7 @@ import (
 // 每个 Registry 只尝试注册一次，租约丢失后不自动重建记录。
 type Registry struct {
 	registry.Discovery
+
 	client    *clientv3.Client
 	namespace string
 	operation chan struct{}
@@ -85,9 +86,11 @@ func WithEndpoints(endpoints ...string) Option {
 		config.endpoints = config.endpoints[:0]
 		for _, values := range endpoints {
 			for _, endpoint := range strings.Split(values, ",") {
-				if endpoint = strings.TrimSpace(endpoint); endpoint != "" {
-					config.endpoints = append(config.endpoints, endpoint)
+				endpoint = strings.TrimSpace(endpoint)
+				if endpoint == "" {
+					continue
 				}
+				config.endpoints = append(config.endpoints, endpoint)
 			}
 		}
 	}

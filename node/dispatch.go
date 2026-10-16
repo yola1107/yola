@@ -17,6 +17,7 @@ type DisconnectHandler func(ctx context.Context, sess Session) error
 
 type forwardService struct {
 	v1.UnimplementedNodeServer
+
 	server *Server
 }
 
