@@ -20,7 +20,7 @@ const (
 
 var errInvalidScriptResult = errors.New("locate redis returned an invalid result")
 
-// bindGateScript 返回状态码、当前绑定、TTL 和可选旧绑定。
+// _bindGateScript 返回状态码、当前绑定、TTL 和可选旧绑定。
 var _bindGateScript = redis.NewScript(`
 local function valid_binding(raw)
   local ok, binding = pcall(cjson.decode, raw)
@@ -118,8 +118,8 @@ redis.call("PEXPIRE", KEYS[1], ARGV[2])
 return {1}
 `)
 
-func (l *locator) run(ctx context.Context, script *redis.Script, key string, args ...any) ([]any, error) {
-	values, err := script.Run(ctx, l.client, []string{key}, args...).Slice()
+func (l *locator) runScript(ctx context.Context, script *redis.Script, keys []string, args ...any) ([]any, error) {
+	values, err := script.Run(ctx, l.client, keys, args...).Slice()
 	return values, locatorError(ctx, err)
 }
 

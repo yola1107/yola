@@ -28,7 +28,7 @@ func (l *locator) BindGate(ctx context.Context, candidate locate.GateBinding, tt
 	if err != nil {
 		return locate.GateLease{}, nil, err
 	}
-	values, err := l.run(ctx, _bindGateScript, gateKey(candidate.ServiceName, candidate.UID),
+	values, err := l.runScript(ctx, _bindGateScript, []string{gateKey(candidate.ServiceName, candidate.UID)},
 		ttlMillis, raw, candidate.ServiceName, candidate.UID)
 	if err != nil {
 		return locate.GateLease{}, nil, err
@@ -49,7 +49,7 @@ func (l *locator) LocateGate(ctx context.Context, serviceName, uid string) (loca
 	if !locate.ValidServiceName(serviceName) || !locate.ValidUID(uid) {
 		return locate.GateLease{}, locate.ErrInvalidGateBinding
 	}
-	values, err := l.run(ctx, _locateGateScript, gateKey(serviceName, uid))
+	values, err := l.runScript(ctx, _locateGateScript, []string{gateKey(serviceName, uid)})
 	if err != nil {
 		return locate.GateLease{}, err
 	}
@@ -68,7 +68,7 @@ func (l *locator) RenewGateLease(ctx context.Context, expected locate.GateBindin
 	if err != nil {
 		return locate.GateLease{}, err
 	}
-	values, err := l.run(ctx, _renewGateLeaseScript, gateKey(expected.ServiceName, expected.UID), raw, ttlMillis)
+	values, err := l.runScript(ctx, _renewGateLeaseScript, []string{gateKey(expected.ServiceName, expected.UID)}, raw, ttlMillis)
 	if err != nil {
 		return locate.GateLease{}, err
 	}
@@ -83,7 +83,7 @@ func (l *locator) UnbindGate(ctx context.Context, expected locate.GateBinding) e
 	if err != nil {
 		return err
 	}
-	values, err := l.run(ctx, _unbindGateScript, gateKey(expected.ServiceName, expected.UID), raw)
+	values, err := l.runScript(ctx, _unbindGateScript, []string{gateKey(expected.ServiceName, expected.UID)}, raw)
 	if err != nil {
 		return err
 	}

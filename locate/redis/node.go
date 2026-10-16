@@ -24,12 +24,12 @@ func (l *locator) BindNode(ctx context.Context, serviceName, uid, nodeID, epoch 
 	if epoch == "" {
 		return locate.ErrInvalidNodeEpoch
 	}
-	values, err := _bindNodeScript.Run(ctx, l.client,
+	values, err := l.runScript(ctx, _bindNodeScript,
 		[]string{nodeEpochKey(serviceName, nodeID), nodeKey(serviceName, uid)},
 		epoch, nodeID, _nodeBindingTTL.Milliseconds(),
-	).Slice()
+	)
 	if err != nil {
-		return locatorError(ctx, err)
+		return err
 	}
 	return decodeNodeEpochResult(values)
 }
@@ -58,12 +58,12 @@ func (l *locator) RenewNode(ctx context.Context, serviceName, uid, nodeID, epoch
 	if epoch == "" {
 		return locate.ErrInvalidNodeEpoch
 	}
-	values, err := _renewNodeScript.Run(ctx, l.client,
+	values, err := l.runScript(ctx, _renewNodeScript,
 		[]string{nodeEpochKey(serviceName, nodeID), nodeKey(serviceName, uid)},
 		epoch, nodeID, _nodeBindingTTL.Milliseconds(),
-	).Slice()
+	)
 	if err != nil {
-		return locatorError(ctx, err)
+		return err
 	}
 	switch scriptStatus(values) {
 	case _statusNodeMissing:
@@ -82,11 +82,11 @@ func (l *locator) UnbindNode(ctx context.Context, serviceName, uid, nodeID, epoc
 	if epoch == "" {
 		return locate.ErrInvalidNodeEpoch
 	}
-	values, err := _unbindNodeScript.Run(ctx, l.client,
+	values, err := l.runScript(ctx, _unbindNodeScript,
 		[]string{nodeEpochKey(serviceName, nodeID), nodeKey(serviceName, uid)}, epoch, nodeID,
-	).Slice()
+	)
 	if err != nil {
-		return locatorError(ctx, err)
+		return err
 	}
 	return decodeNodeEpochResult(values)
 }
@@ -111,7 +111,7 @@ func (l *locator) RenewNodeEpoch(ctx context.Context, serviceName, nodeID, epoch
 	if err != nil {
 		return err
 	}
-	values, err := l.run(ctx, _renewNodeEpochScript, nodeEpochKey(serviceName, nodeID), epoch, ttlMillis)
+	values, err := l.runScript(ctx, _renewNodeEpochScript, []string{nodeEpochKey(serviceName, nodeID)}, epoch, ttlMillis)
 	if err != nil {
 		return err
 	}
@@ -139,7 +139,7 @@ func (l *locator) UnregisterNodeEpoch(ctx context.Context, serviceName, nodeID, 
 	if !locate.ValidServiceName(serviceName) || nodeID == "" || epoch == "" {
 		return locate.ErrInvalidNodeEpoch
 	}
-	values, err := l.run(ctx, _deleteIfValueMatchesScript, nodeEpochKey(serviceName, nodeID), epoch)
+	values, err := l.runScript(ctx, _deleteIfValueMatchesScript, []string{nodeEpochKey(serviceName, nodeID)}, epoch)
 	if err != nil {
 		return err
 	}
