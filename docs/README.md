@@ -2,7 +2,39 @@
 
 Yola 是基于 Kratos v3 的长连接框架。Gateway 持有 TCP/WebSocket 连接，通过 Redis Locator 和 gRPC 将请求投递到 Node；业务通过 command handler 和 `node.Session` 绑定、续租、解绑及推送。
 
-Gateway/Node 是外层原生 Kratos App 的内嵌 transport。应用拥有 identity、配置、日志和外部依赖，业务拥有玩家、Table 和执行模型。项目尚未上线，按当前设计直接演进，不维护历史兼容层或数据迁移流程；改动同步仓内调用方、测试和文档。
+Gateway 与 Node 分别作为 Kratos App 的 transport 运行。应用管理 identity、配置、日志和外部依赖；业务管理玩家、Table 和执行模型。
+
+项目尚未上线，按当前设计演进。改动同步仓内调用方、测试和文档，无需维护历史兼容层或数据迁移流程。
+
+## 项目结构
+
+```text
+yola/
+├── api/                 # 客户端与集群通信协议
+├── gateway/             # 连接管理、认证与请求转发
+├── node/                # 业务分发、会话与绑定
+├── network/             # TCP / WebSocket 传输
+├── event/               # 事件接口与 NATS 实现
+├── locate/              # 绑定定位接口与 Redis 实现
+├── registry/            # etcd 服务注册与发现
+├── instance/            # 实例元数据
+├── internal/            # 框架内部组件
+├── examples/            # 最小应用与客户端示例
+├── test/                # 游戏、集成测试与压测，独立 Go module
+│   ├── gateway/         # 测试 Gateway
+│   ├── ludo/            # Ludo 服务、客户端与压测
+│   ├── whot/            # Whot 服务、客户端与压测
+│   ├── internal/        # 测试模块共享组件
+│   └── go.mod
+├── docs/                # 接入、架构、性能与待办
+│   └── agents/          # 工程 Skills 的任务与领域文档配置
+├── AGENTS.md            # AI 开发约定
+├── Makefile             # 生成、构建与验证入口
+├── .golangci.yml        # Go 格式化与 lint 配置
+├── buf.yaml             # Protobuf 检查配置
+├── buf.gen.yaml         # Protobuf 生成配置
+└── go.mod               # 框架 Go module
+```
 
 ## 文档入口
 
@@ -15,8 +47,7 @@ Gateway/Node 是外层原生 Kratos App 的内嵌 transport。应用拥有 ident
 | 判断下一步要修什么、何时验收 | [当前待办](./issues.md) |
 | 启动最小应用 | [examples](../examples/README.md) |
 | 运行完整游戏、集成测试及压测 | [测试模块](../test/README.md)、[Ludo 压测入口](../test/ludo/README.md#当前-press-入口) |
-
-文档只描述当前契约和未完成事项，已提交改动由 Git 追溯。
+| 使用工程类 Skills | [本地任务](./agents/issue-tracker.md)、[领域文档](./agents/domain.md) |
 
 ## 快速开始
 
@@ -43,7 +74,7 @@ Whot 演示 Stateful 绑定，Ludo 演示 Stateless 路由；客户端可改为 
 
 ## 最小接入流程
 
-Gate 与 Node 是两个独立进程，各自创建一个原生 Kratos App。先启动 Node，再启动 Gate，最后连接客户端；认证只由 Gate 执行，业务 handler 只注册到 Node。
+先启动 Node，再启动 Gateway，最后连接客户端。Gateway 负责认证，Node 注册业务 handler。
 
 ```text
 Client(service=ludo, token)
@@ -54,7 +85,10 @@ Client(service=ludo, token)
 
 ### 1. 应用准备依赖
 
-Gateway 需要 Authenticator、Redis Locator、Registry/Discovery；Stateless Node 只需要 Registry，Stateful Node 再加 Locator。下面的 `reg` 是 `*etcd.Registry`，`store` 是 `locate.Locator`；每个进程分别创建自己的依赖实例，在 runGate/runNode 返回并完成组件 Stop 后关闭。
+- Gateway 需要 Authenticator、Redis Locator 和 Registry/Discovery。
+- Stateless Node 需要 Registry；Stateful Node 还需要 Locator。
+
+每个进程创建自己的依赖实例，在 `runGate` / `runNode` 返回且组件停止后关闭。下面的 `reg` 是 `*etcd.Registry`，`store` 实现 `locate.Locator`。
 
 ```go
 reg, err := etcd.New(etcd.WithEndpoints("127.0.0.1:2379"))
@@ -73,11 +107,15 @@ store := locateredis.New(redisClient)
 
 这里 `etcd` 为 `yola/registry/etcd`，`locateredis` 为 `yola/locate/redis`，`redis` 为 `github.com/redis/go-redis/v9`。
 
-业务实现 `gateway.Authenticator.Authenticate(ctx, serviceName, token, remoteIP) (string, error)`：验证允许访问的 service 和凭据，返回规范化 UID；拒绝可返回 `gateway.ErrInvalidCredentials`。下例将实现作为 `auth` 注入，参考[示例认证实现](../examples/gateway/main.go)，不能在生产直接信任 token 中的 UID。
+业务实现 `gateway.Authenticator.Authenticate(ctx, serviceName, token, remoteIP) (string, error)`。它校验 service 和凭据，返回规范化 UID；拒绝时可返回 `gateway.ErrInvalidCredentials`。
+
+下例通过 `auth` 注入认证器，参考[示例实现](../examples/gateway/main.go)。生产环境须验证 token 中的 UID。
 
 ### 2. Gateway 装配
 
-以下为启动函数；标准包使用 context、log/slog、time，框架包为 yola/gateway、yola/locate、yola/network/tcp、yola/network/websocket，以及 Kratos v3。9010 是内部 gRPC 端口，3101/3102 才是客户端入口。
+以下启动函数使用标准包 `context`、`log/slog`、`time`，框架包 `yola/gateway`、`yola/locate`、`yola/network/tcp`、`yola/network/websocket`，以及 Kratos v3。
+
+`9010` 是内部 gRPC 端口；客户端通过 TCP `3101` 或 WebSocket `3102` 接入。
 
 ```go
 func runGate(auth gateway.Authenticator, store locate.Locator, reg *etcd.Registry) error {
@@ -117,7 +155,9 @@ func runGate(auth gateway.Authenticator, store locate.Locator, reg *etcd.Registr
 
 ### 3. Node 注册业务并启动
 
-这个最小 Stateless Node 只处理 Echo，不保存玩家状态；service 名称必须与客户端传入的 `ludo` 一致。`message.EchoCommand` 来自 `yola/examples/message`，请求/响应使用 `wrapperspb.StringValue`；实际业务换成自己的 protobuf 和 command 常量。注册必须在 BeforeStart 前完成。
+这个 Stateless Node 处理 Echo，不保存玩家状态。service 名称须与客户端的 `ludo` 一致，command 须在 `BeforeStart` 前注册。
+
+`message.EchoCommand` 来自 `yola/examples/message`，请求和响应使用 `wrapperspb.StringValue`。实际业务替换为自己的 protobuf 和 command 常量。
 
 ```go
 func runNode(reg *etcd.Registry) error {
@@ -150,11 +190,13 @@ func runNode(reg *etcd.Registry) error {
 }
 ```
 
-`wrapperspb` 为 `google.golang.org/protobuf/types/known/wrapperspb`。Node 的就绪 Registrar 不能省略；正常停止由 Kratos 调度，defer 还负责 Run 启动失败后的资源回收。它使用独立停止预算，并保留原 Run 错误。
+`wrapperspb` 为 `google.golang.org/protobuf/types/known/wrapperspb`。Node 必须使用就绪 Registrar。
+
+Kratos 调度正常停止；`defer` 负责补充清理，包括 `Run` 启动失败的情况。清理使用独立预算，并保留原 `Run` 错误。
 
 ### 4. 客户端认证与请求
 
-使用 TCP Client；NewClient 会等待认证，`token` 是业务认证器接受的凭据。这里 `code` 是 gRPC 状态码，成功为0，业务内容在解码后的响应中。
+`tcp.NewClient` 等待认证完成，`token` 是业务认证器接受的凭据。返回的 `code` 是 gRPC 状态码，`0` 表示成功；业务内容从响应 body 解码。
 
 ```go
 client, err := tcp.NewClient(ctx,
@@ -179,11 +221,17 @@ if err := proto.Unmarshal(body, reply); err != nil {
 fmt.Println(reply.Value)
 ```
 
-WebSocket 使用 `websocket.NewClient`、`WithEndpoint("ws://127.0.0.1:3102")`，其余 service/token/request 对应相同协议；完整两种客户端见 [client 示例](../examples/client/main.go)。
+WebSocket 使用 `websocket.NewClient` 和 `WithEndpoint("ws://127.0.0.1:3102")`，service、token 和请求协议相同。完整用法见 [client 示例](../examples/client/main.go)。
 
 ### 5. Stateful Node 的差异
 
-Stateful Node 创建时增加 `node.Locator(store)`，用稳定且在线唯一的 ID，例如 `whot-1`；App.Name 与客户端 service 改为 `whot`，并向 App 传入 `kratos.Metadata(server.Metadata())`。仍使用上面的 BeforeStart、Server 和就绪 Registrar。已有业务 metadata 须先合并再设置。
+Stateful Node 在上述装配中增加：
+
+- 配置 `node.Locator(store)`，使用稳定且在线唯一的 ID，例如 `whot-1`。
+- 将 `App.Name` 和客户端 service 设为 `whot`。
+- 向 App 传入 `kratos.Metadata(server.Metadata())`；已有业务 metadata 须先合并。
+
+保留原有的 `BeforeStart`、`Server` 和就绪 Registrar。
 
 在入座等明确业务时点从请求 context 取 Session，再绑定本 Node；后续请求就会按 NodeID 精确路由：
 
@@ -201,17 +249,20 @@ node.Register(server, message.WhotEnterCommand,
 	})
 ```
 
-离桌由业务调用 `sess.UnbindNode(ctx)`；向本请求的连接推送用 `sess.Push(ctx, command, protobufMessage)`，按 UID 定位当前连接用 `server.PushToUID`。断线不自动解绑 Node。
+- 离桌时调用 `sess.UnbindNode(ctx)`；断线不会自动解绑 Node。
+- 向本请求的连接推送用 `sess.Push`；按 UID 定位当前连接用 `server.PushToUID`。
+- 绑定保活用 `sess.RenewNode(ctx)`，由业务在 6h 到期前调度。遇到 `Aborted` 时处理归属变化，不能退回 `BindNode` 覆盖绑定。
+- 持有玩家、Table 或后台任务时，配置 `node.Drain(usecase.Drain)`。返回前停止绑定、续租和推送的生产者。
 
-绑定保活使用 `sess.RenewNode(ctx)`：仅续期当前 NodeID/epoch 匹配的既有绑定，不能改用会覆盖归属的 BindNode 重试。业务 owner 在6h到期前按自己的生命周期调度续租，框架不自动续租；遇到 Aborted 时按业务归属变化处理。
+自定义 `locate.NodeLocator`、`node.Session` 和测试替身须实现条件续租。续租和原 ID 重启的边界见[修改权契约](./architecture.md#node-binding-修改权)。
 
-持有玩家/Table/后台任务的业务增加 `node.Drain(usecase.Drain)`，返回前停止绑定、续租和推送的生产者。参考[完整 Stateful 示例](../examples/whot/main.go)和[Session handler](../examples/whot/service.go)。
+装配见[完整示例](../examples/whot/main.go)，业务接入见 [Session handler](../examples/whot/service.go)。
 
-自定义 `locate.NodeLocator` / `node.Session` 及测试替身按当前接口实现条件续租。原 NodeID 重启取得新 epoch 后可继续使用既有绑定；续租不代表玩家/Table 唯一业务 owner，见[修改权契约](./architecture.md#node-binding-修改权)。
+以上地址用于本机接入。跨主机时配置可达的 `AdvertiseHost` / endpoint，TLS 两端成对启用。可选 EventBus 按[事件接线](./eventbus.md)装配；失败回收见[生命周期](./architecture.md#3-生命周期)。
 
-上述回环地址用于本机接入；跨主机需显式配置可达的 AdvertiseHost/endpoint，TLS两端成对配置。EventBus是可选的应用依赖，按 [事件接线](./eventbus.md) 单独装配；资源归属和失败回收见 [生命周期](./architecture.md#3-生命周期)。
+## 开发
 
-## 源码导航
+### 源码导航
 
 Gateway/Node 按职责阅读：
 
@@ -222,27 +273,33 @@ Gateway/Node 按职责阅读：
 | 启动、就绪与停止 | [Gateway 生命周期](../gateway/lifecycle.go)、[Node 生命周期与 Registrar](../node/lifecycle.go) |
 | socket 接入与请求处理 | [TCP 连接](../network/tcp/server_connection.go)、[WebSocket 连接](../network/websocket/server_connection.go) |
 
-同一职责的生产代码与行为测试就近放置，不要求一文件一测试文件：Gateway 认证、心跳属于 `inbound`，Node 请求 metadata 属于 `dispatch`；跨职责的 pipeline、request lifecycle 和集成场景按各自契约组织。选项声明与校验放在 `options.go` 或 `*_options.go`，连接接纳和读循环放在 `server_connection.go`，不按行数拆分或合并。
+选项声明与校验放在 `options.go` 或 `*_options.go`。跨职责的 pipeline、request lifecycle 和集成场景按契约组织。
 
-测试用例放在文件前部，仅本文件使用的 helper 放在后部；跨文件复用的启动器、fake 和断言按共享职责聚合，`test_helpers_test.go` 用于包内共用夹具。fake 只模拟测试所需契约，明确省略的行为，未支持的意外调用应显式失败；TTL、Redis 原子修改及 etcd 租约由对应 adapter 测试验证，示例测试验证装配参数。
+### 测试约定
 
-同一存储契约可在 miniredis、standalone、cluster 子测试中复用断言；真实依赖显式门控，逐后端报告通过或跳过。表驱动或并行测试仅在场景独立、断言更清楚时使用。资源创建成功后立即注册清理，再做就绪断言；阻塞的测试 worker 必须有失败时也能触发的释放路径，并有界等待退出。
+- 优先扩展就近的现有测试，仅补充未覆盖的行为或回归风险。新文件须有职责、构建或隔离需要。
+- Bug 用例须复现原问题并在修复后通过；等价清理的补充用例须在清理前后均通过。
+- 用例在前，文件内 helper 在后；包内共用夹具放在 `test_helpers_test.go`。
+- 按契约断言；fake 只模拟所需行为，意外调用须显式失败。
+- TTL、Redis 原子修改和 etcd 租约由 adapter 测试验证，示例测试验证装配参数。
+- 资源创建成功后立即注册清理，再断言就绪；阻塞 worker 须有失败释放路径，并有界等待退出。
 
-## 开发与验证
+### 常用命令
 
-根目录与 `test/` 是独立 Go module；验证矩阵以 [AGENTS.md](../AGENTS.md#验证) 为准。
+以下命令在仓库根目录执行，定义见 [Makefile](../Makefile)。
 
-| 命令（仓库根目录） | 用途与影响 |
+| 命令 | 用途 |
 | --- | --- |
-| `make check` | 根协议 buf lint、两个 module 的依赖检查、vet、staticcheck、测试及工作树/暂存区 diff 检查；不改写 tracked files |
-| `make lint` | 两个 module 的本地/AI lint；不接入 check、all、CI、Git hooks 或提交门禁 |
-| `make build` | 构建根 module；Ludo/Whot 在各自目录执行，测试 Gateway 在 test 目录执行 `go build -o ../bin/ ./gateway` |
-| `make api` / `make generate` | 分别生成根协议；运行根 go generate 和 go mod tidy，会修改生成文件或依赖 |
-| `make all` | 根完整生成后运行 check，不覆盖 test module |
-| `make init` | 安装或更新工具，仅用于初始化或明确升级 |
+| `make help` | 查看命令说明 |
+| `make init` | 安装或更新开发工具 |
+| `make api` | 生成根协议代码 |
+| `make generate` | 运行代码生成并整理根 module 依赖 |
+| `make build` | 构建根 module |
+| `make check` | 检查根协议及两个 Go module |
+| `make lint` | 对两个 Go module 执行 lint |
+| `make race` | 对两个 Go module 执行竞态测试 |
+| `make breaking 'BUF_BREAKING_AGAINST=.git#ref=<基线>'` | 检查根协议兼容性 |
+| `make all` | 生成根代码并执行 `make check` |
+| `make clean` | 清理根目录构建产物 |
 
-Go 文件按 `golangci-lint fmt --config .golangci.yml <修改文件>` 格式化。根协议变更显式执行 `make breaking 'BUF_BREAKING_AGAINST=.git#ref=<基线>'`。test module 的生成按 [Ludo Makefile](../test/ludo/Makefile)、[Whot Makefile](../test/whot/Makefile) 选择 api/config/generate；它们的 all 只生成，不替代验证。
-
-真实依赖测试前检查 TestMain、环境变量和资源归属，仅使用任务专用实例、DB/prefix 和可丢弃 UID，不改 tracked 配置、不操作既有服务数据；结束后核对并清理本任务资源。Redis/etcd 通过 `YOLA_REDIS_INTEGRATION`、`YOLA_ETCD_INTEGRATION` 注入；Redis 凭据使用 `YOLA_REDIS_PASSWORD`，NATS 外部测试使用 `YOLA_NATS_URL`。未配置时被跳过的测试不算通过。
-
-Cluster 普通回归使用 `YOLA_REDIS_CLUSTER_INTEGRATION` 注入逗号分隔地址。`TestNodeBindingClusterMigration` 和 `TestNodeBindingClusterCooperativeFailover` 还要求 `YOLA_REDIS_CLUSTER_ADMIN_INTEGRATION=1`，地址包含专用 3 主 3 从全部六个节点；它们会修改 slot/角色，Failover 要求全库为空。每个管理场景使用新建集群，连续切换的稳定性仍有 [验证限制](./issues.md#redis-cluster-拓扑变更)。
+单包测试在所属 module 执行 `go test <包路径>`。测试应用的命令见 [Ludo Makefile](../test/ludo/Makefile) 和 [Whot Makefile](../test/whot/Makefile)。

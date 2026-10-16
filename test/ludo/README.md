@@ -150,7 +150,7 @@ gatewayPerIPLimit: 52000
 
 ## 开发与验证
 
-从 `test/ludo` 目录按改动选择 `make test`、`make build`；`make all` 会生成 API、配置和 Wire 文件，仅在需要重新生成且核对源定义与目标后运行。`make init` 会通过 `go install ...@latest` 更新用户工具，仅用于初始化或明确升级。AI 的必需检查见 [AGENTS.md](../../AGENTS.md#验证)。
+应用命令见本目录 [Makefile](./Makefile)，仓库命令见[常用命令](../../docs/README.md#常用命令)。
 
 从独立 `test` module 根目录运行包测试，例如：
 
