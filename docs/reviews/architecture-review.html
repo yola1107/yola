@@ -1,0 +1,239 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Yola · 架构审核 · 2026-10-16</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script type="module">
+    import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+    mermaid.initialize({ startOnLoad: true, theme: "neutral", securityLevel: "strict", flowchart: { useMaxWidth: true, htmlLabels: false, curve: "linear" }, themeVariables: { fontFamily: "system-ui, sans-serif", fontSize: "14px" } });
+  </script>
+  <style>
+    :root{--ink:#172b2b;--muted:#526361;--line:#d7e0dc;--paper:#f6f6f0;--accent:#176750;--warn:#985f13;--red:#a73b35}
+    *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--paper);color:var(--ink);font:15px/1.7 system-ui,-apple-system,"PingFang SC",sans-serif}
+    main{max-width:1200px;margin:auto;padding:50px 32px 80px}h1,h2,h3,p{margin:0}h1{font-size:clamp(34px,5vw,58px);line-height:1.14;letter-spacing:-.04em;font-weight:750}h2{font-size:26px;line-height:1.35;font-weight:700}h3{font-size:16px;font-weight:700}a{color:var(--accent);text-underline-offset:3px}a:hover{text-decoration:underline}code,.mono{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px;overflow-wrap:anywhere}
+    .eyebrow{font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--accent);font-weight:700}.intro{display:grid;grid-template-columns:1fr auto;gap:24px;align-items:end;padding:20px 0 28px;border-bottom:2px solid var(--ink)}.date{text-align:right;color:var(--muted);font-size:13px}.subline{color:var(--muted);margin-top:15px}.legend{display:flex;flex-wrap:wrap;gap:18px;font-size:12px;color:var(--muted);margin:20px 0}.legend span{display:flex;align-items:center;gap:7px}.legend i{display:inline-block;width:18px;height:12px;border:1px solid var(--ink)}.legend .dash{height:0;border:0;border-top:2px dashed var(--accent)}.legend .leakline{height:0;border:0;border-top:2px solid var(--red)}.legend .solid{background:var(--ink);border-width:3px}
+    .summary{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:22px 0}.summary div{padding:18px;background:white;border:1px solid var(--line);border-radius:10px}.summary b{font-size:30px;font-weight:700;display:block;line-height:1.1}.summary small{display:block;margin-top:8px;color:var(--muted)}
+    .note{background:#e9f0e9;border-left:3px solid var(--accent);padding:14px 18px;margin:18px 0;font-size:13px}.note.warn{background:#fcf2df;border-color:#b68536}.note.subtle{background:#edf0ed;border-color:#9aa7a0}.nav{display:flex;flex-wrap:wrap;gap:10px;margin:24px 0 36px}.nav a{padding:8px 13px;background:#fff;border:1px solid var(--line);border-radius:20px;font-size:13px}
+    .section{margin:35px 0}.overview{border:1px solid var(--line);border-radius:12px;padding:22px;background:white}.overview .mermaid{max-width:960px;margin:15px auto}.caption{font-size:12px;color:var(--muted)}
+    article{margin:32px 0;padding:28px;background:#fff;border:1px solid var(--line);border-radius:16px;scroll-margin-top:20px}.cardhead{display:flex;justify-content:space-between;align-items:start;gap:18px}.num{font-size:12px;letter-spacing:.12em;color:var(--muted);margin-bottom:8px}.badges{display:flex;gap:8px;flex-wrap:wrap;margin:14px 0}.badge{padding:4px 10px;border-radius:20px;font-size:12px;font-weight:650}.worth{background:#fff0cb;color:#825414}.strong{background:#dcf4e6;color:#166447}.speculative{background:#e9edf0;color:#51616d}.tag{background:#f2f4f2;color:#58655d}.files{font-size:12px;color:var(--muted);margin:15px 0;line-height:1.9}.files a{white-space:normal}
+    .brief{display:grid;grid-template-columns:60px 1fr;gap:8px 12px;margin-top:16px}.brief dt{font-size:12px;color:var(--muted);padding-top:3px;font-weight:700}.brief dd{margin:0}.twocol{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin:24px 0}.visual{border:1px solid var(--line);border-radius:10px;background:#fafbf9;padding:16px;min-width:0}.visual.after{background:#f2f7f3}.visualtitle{font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin-bottom:14px;font-weight:750}.diagram{min-height:285px;display:flex;flex-direction:column;justify-content:center}.mermaid{margin:0;white-space:pre-wrap;font-size:12px;line-height:1.45;overflow-wrap:anywhere}.mermaid svg{max-width:100%;height:auto;display:block;margin:auto}.schematic{display:grid;gap:8px;font-size:13px}.box{border:1px solid #9daea2;border-radius:6px;padding:9px 12px;text-align:center;background:white}.box.deep{background:#173b31;color:white;border:3px solid #173b31;padding:14px}.internals{color:#ccdbd4;font-size:12px;line-height:1.9;border-top:1px solid #557166;padding-top:8px;margin-top:8px}.arrow{text-align:center;line-height:1.5;font-size:13px;color:var(--accent)}.arrow.leak{color:var(--red)}.twins{display:grid;grid-template-columns:1fr 1fr;gap:10px}.protocol{border-left:3px solid var(--red);font-size:12px;background:#faf0ed;padding:7px 9px;text-align:left;line-height:1.8}.seam{border-top:2px dashed #709984;margin:6px 0}.micro{font-size:12px;color:var(--muted);text-align:center;margin-top:9px}
+    table{width:100%;border-collapse:collapse;font-size:13px;margin:16px 0}th{text-align:left;font-size:12px;font-weight:700;background:#f1f4ef}th,td{padding:11px 13px;border-bottom:1px solid var(--line);vertical-align:top}td:first-child{width:16%;color:var(--muted)}.evidence td:first-child{width:37%;font-family:ui-monospace,monospace;font-size:12px}.tablewrap{overflow:auto}.wins{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0 18px;padding:0;list-style:none}.wins li{padding:5px 10px;border:1px solid #cbded0;border-radius:6px;color:var(--accent);font-size:12px}.checks{padding-left:20px;font-size:13px;margin:10px 0}.checks li{margin:6px 0}.mini{color:var(--muted);font-size:13px}.top{background:#173b31;color:white;border-radius:14px;padding:28px;margin-top:35px}.top a{color:#ceebad}.top p{margin-top:12px}.foot{border-top:1px solid var(--line);padding-top:22px;margin-top:32px;font-size:12px;color:var(--muted)}.cmd{white-space:pre-wrap;overflow-wrap:anywhere;padding:14px;background:#edf0eb;border-radius:7px;font-size:12px;line-height:1.7}
+    @media(max-width:760px){main{padding:28px 16px 50px}.intro,.twocol{grid-template-columns:1fr}.summary{grid-template-columns:1fr 1fr}.date{text-align:left}.cardhead{display:block}article{padding:20px 16px}h2{font-size:23px}.diagram{min-height:240px}th,td{padding:9px 8px}.evidence td:first-child{width:43%}}
+    @media print{body{background:white}main{max-width:none;padding:0}.nav{display:none}article,.overview{break-inside:avoid}.twocol{grid-template-columns:1fr 1fr}.diagram{min-height:0}a{color:inherit}.top{background:#edf0eb;color:#172b2b}.top a{color:#176750}}
+  </style>
+</head>
+<body class="bg-stone-50 text-slate-900">
+<main>
+  <header>
+    <div class="eyebrow">Architecture review / Yola</div>
+    <div class="intro"><div><h1>收拢顺序知识，<br>保留已有的 depth。</h1><p class="subline">三个有限的深化机会 · 一个推测候选 · 没有确认的架构故障</p></div><div class="date">2026 / 10 / 16<br>HEAD <code>ec6049a</code> + 工作区<br>Go 1.26.7 · darwin/arm64</div></div>
+    <div class="legend"><span><i></i>module</span><span><i class="dash"></i>seam</span><span><i class="leakline"></i>调用者承担的顺序知识</span><span><i class="solid"></i>deep module</span></div>
+    <div class="summary"><div><b>3</b><small>Worth exploring</small></div><div><b>1</b><small>Speculative</small></div><div><b>16</b><small>相关包 race 通过</small></div><div><b>0</b><small>Strong / 必须重构</small></div></div>
+    <div class="note">范围：根框架、根示例及文档；排除 <code>test/</code>。30 个既有改动保留。先读 AGENTS、docs/agents、issues、architecture、eventbus；GLOSSARY 与 ADR 目录不存在，按本地约定继续，沿用现有契约术语。</div>
+    <div class="note subtle">证据等级：代码与调用顺序是已核对事实；减少未来漏项是设计推断。没有复现竞态或数据损坏。文件小、函数短、少量重复不构成候选依据。建议仅到职责归属，不设计新的具体 interface 签名。</div>
+  </header>
+  <nav class="nav" aria-label="报告目录"><a href="#current">现有关系</a><a href="#c1">C1 · callback 终止</a><a href="#c2">C2 · Node 出站</a><a href="#c3">C3 · Session 转换</a><a href="#c4">C4 · 批次视图</a><a href="#keep">应保留的设计</a><a href="#verification">验证</a><a href="task-audit.md">任务审核 ↗</a></nav>
+
+  <section id="current" class="section overview">
+    <div class="eyebrow">Observed structure</div><h2>依赖方向清楚，摩擦主要在内部组合。</h2>
+    <pre class="mermaid">
+flowchart LR
+  App["外层 Kratos App"] --> G["Gateway module"]
+  App --> N["Node module"]
+  App --> E["EventBus / NATS adapter"]
+  G --> T["network interface / TCP、WS adapters"]
+  G --> L["Locator interface / Redis adapter"]
+  N --> L
+  G --> R["Discovery / etcd adapter"]
+  N --> H["业务 handler / Drain"]
+  G -->|"Forward"| N
+  N --> C["gateclient module"]
+  C -->|"Push / Kick"| G
+  classDef deep fill:#173b31,color:#fff,stroke:#173b31,stroke-width:3px;
+  class L,C,E deep;
+    </pre>
+    <p class="caption">调用/依赖图，非包循环图。App 持有 identity、完整 transport 列表与外部依赖；Gateway 持有物理 Session；Node Session 保存请求回程路由；业务持有玩家/Table 与后台生产者。依据：<a href="../architecture.md#L19">docs/architecture.md:19</a>、<a href="../../node/session.go#L56">node/session.go:56</a>、<a href="../eventbus.md#L3">docs/eventbus.md:3</a>。</p>
+    <div class="tablewrap"><table><thead><tr><th>近期证据</th><th>本次关注点</th></tr></thead><tbody>
+      <tr><td>最近 45 个范围内提交</td><td>继续定位最近 30 个提交的生产改动：Node 7 次，Gateway、Redis 各 6 次，TCP、WS、NATS 各 5 次；计数按提交/目录去重，仅用于选取阅读范围。</td></tr>
+      <tr><td><code>57d89c2</code> / <code>8c70429</code> / <code>e132932</code></td><td>客户端关闭转交、Node 条件续租、NATS 发布等待都改变了生命周期组合。以具体调用链核对，不按改动次数认定缺陷。</td></tr>
+      <tr><td>当前工作区</td><td>包含 callback queue、发送 channel、NATS 订阅和 Redis script 调用的整理；结论以当前磁盘源码为准，不把这些改动归为本次产出。</td></tr>
+    </tbody></table></div>
+  </section>
+
+  <section id="candidates" aria-label="架构候选">
+    <article id="c1">
+      <div class="cardhead"><div><div class="num">C1 / FIRST TO EXPLORE</div><h2>把客户端终止协议收进一个内部 module</h2></div></div>
+      <div class="badges"><span class="badge worth">Worth exploring</span><span class="badge tag">in-process</span><span class="badge tag">事实：两条生产调用路径</span></div>
+      <dl class="brief"><dt>问题</dt><dd>TCP/WS 的 Client 都必须正确组合 Queue 的终止闸门、资源关闭、请求失败，以及 sync.Once 外的 callback 放行。</dd><dt>方向</dt><dd>在客户端内部集中这段终止协议，替换两处手工编排；socket、writer 与具体关闭动作仍由各 transport 持有。</dd></dl>
+      <div class="files">Files · <a href="../../network/tcp/client.go#L312">network/tcp/client.go:312</a> · <a href="../../network/websocket/client.go#L229">network/websocket/client.go:229</a> · <a href="../../internal/queue/queue.go#L89">internal/queue/queue.go:89</a></div>
+      <div class="twocol">
+        <div class="visual"><div class="visualtitle">Before / 调用者拼接协议</div><div class="diagram schematic">
+          <div class="twins"><div class="box">TCP Client<div class="protocol">closeOnce 内：<br>闸门 → 关连接 → Fail<br>closeOnce 外：放行</div></div><div class="box">WS Client<div class="protocol">closeOnce 内：<br>闸门 → 关 Channel → Fail<br>closeOnce 外：放行</div></div></div>
+          <div class="arrow leak">↓ 两处负责“何时放行、只能一次”</div><div class="seam"></div><div class="box">Queue.BeginTermination<br><small>返回尚未执行的放行函数</small></div><div class="arrow">↓</div><div class="box">当前 callback → Kick → disconnect</div>
+        </div></div>
+        <div class="visual after"><div class="visualtitle">After / 内部 module 持有顺序</div><div class="diagram schematic">
+          <div class="box">TCP Client / WS Client</div><div class="arrow">↓ 终止意图与具体清理动作</div><div class="seam"></div><div class="box deep">客户端终止 module<div class="internals">一次性终止 · 丢弃等待 callback<br>资源关闭 / pending 请求失败<br>退出一次性区段后放行 terminal<br>沿用 Queue 的串行与 panic 隔离</div></div><div class="arrow">↓</div><div class="box">当前 callback → Kick → disconnect</div>
+        </div></div>
+      </div>
+      <div class="tablewrap"><table class="evidence"><thead><tr><th>代码证据</th><th>当前理解 / 修改成本</th></tr></thead><tbody>
+        <tr><td><a href="../../internal/queue/queue.go#L89">internal/queue/queue.go:89</a></td><td>BeginTermination 返回放行函数；Run 的一次调用、资源先关后放行、放行次数都是 interface 的额外知识。</td></tr>
+        <tr><td><a href="../../network/tcp/client.go#L312">network/tcp/client.go:312</a><br><a href="../../network/websocket/client.go#L229">network/websocket/client.go:229</a></td><td>两处各建 terminals、BeginTermination、关闭资源、Fail pending，退出 closeOnce 后再放行。修改终止策略须同步核对两个生产 caller 与 Queue。</td></tr>
+        <tr><td><a href="../../network/tcp/client_test.go#L538">network/tcp/client_test.go:538</a><br><a href="../../network/websocket/client_test.go#L165">network/websocket/client_test.go:165</a></td><td>disconnect callback 可以再次 Close；终止执行点不是可随意挪动的格式问题。已有回归通过，未证明当前实现错误。</td></tr>
+      </tbody></table></div>
+      <ul class="wins"><li>locality：一次修改终止规则</li><li>leverage：两种 Client 复用</li><li>depth：减少手工时序知识</li></ul>
+      <table><tbody>
+        <tr><td>Deletion test</td><td>删除 Queue 会把串行、容量、panic 隔离散回两个 caller，故 Queue 应保留。仅给两处 shutdown 再加转发函数没有收益；只有收回“一次终止＋清理后放行”的完整规则才算深化。</td></tr>
+        <tr><td>Depth / seam</td><td>Queue 对队列行为已 deep；缺口在客户端终止这一内部 seam。已有 TCP/WS 两种实际清理路径，无需引入公共 Client interface 或统一 I/O adapter。</td></tr>
+        <tr><td>代价 / 兼容性</td><td>中等：需明确协调 module 与 socket owner 的分工；保留 Close 非等待自身 callback、错误身份、Kick/disconnect 顺序及初始化失败路径。公共 Client 及 wire 行为不变。</td></tr>
+        <tr><td>推荐条件</td><td>下一次修改终止语义时优先探索；当前仅有维护成本证据，没有必须立即重构的故障。</td></tr>
+      </tbody></table>
+      <h3>验证方向</h3><ul class="checks"><li>复用 <code>internal/queue/queue_test.go:44,129,140</code> 的顺序、重入和放行等待用例。</li><li>通过 Client interface 保留 <code>network/tcp/client_test.go:382,427,517,538</code> 与 <code>network/websocket/client_test.go:248,294,165</code> 的队列满、终止顺序、pending 失败和重入断言；并发 Close/Kick 用有界同步控制。</li><li>若迁移私有测试，只替换被吸收的编排断言；保留两种真实 transport 的行为回归，运行三个相关包的 race。</li></ul>
+      <p class="mini">契约约束：<a href="../architecture.md#L82">docs/architecture.md:82</a>。没有 ADR 冲突；方案不得将 Queue 扩张为通用 socket 生命周期管理器。</p>
+    </article>
+
+    <article id="c2">
+      <div class="num">C2 / NODE</div><h2>集中 Node 出站操作的准入与本代取消</h2>
+      <div class="badges"><span class="badge worth">Worth exploring</span><span class="badge tag">in-process</span><span class="badge tag">事实：五个操作共享约束</span></div>
+      <dl class="brief"><dt>问题</dt><dd>Bind、RenewNode、Unbind 和两种 Push 都自行拼接 deliveries 计数、身份/epoch 检查、取消派生及清理。</dd><dt>方向</dt><dd>把共同的“已接纳出站工作生命周期”收进 Node 内部 implementation；保留各操作的参数、路由和错误语义，保持入站与出站分阶段排空。</dd></dl>
+      <div class="files">Files · <a href="../../node/session.go#L67">node/session.go:67</a> · <a href="../../node/push.go#L16">node/push.go:16</a> · <a href="../../node/admission.go#L20">node/admission.go:20</a> · <a href="../../node/epoch.go#L169">node/epoch.go:169</a> · <a href="../../node/lifecycle.go#L123">node/lifecycle.go:123</a></div>
+      <div class="twocol"><div class="visual"><div class="visualtitle">Before / 五条路径自行组合</div><div class="diagram"><pre class="mermaid">
+flowchart TB
+  B["Bind / RenewNode / Unbind"] --> A["deliveries.admit / done"]
+  P["Session.Push / PushToUID"] --> A
+  B --> I["identity + checkEpoch"]
+  P --> I
+  B --> C["lease.requestContext / cancel"]
+  P --> C
+  A --> O["Locator / gateclient"]
+  I --> O
+  C --> O
+  classDef leak stroke:#a73b35,stroke-width:2px;
+  class A,I,C leak;
+      </pre></div></div><div class="visual after"><div class="visualtitle">After / 共同规则收回内部</div><div class="diagram"><pre class="mermaid">
+flowchart TB
+  X["五种出站操作"] --> D["出站工作 module\n准入 · 本代检查 · 取消 · 完成计数"]
+  D --> A["现有 deliveries / epochLease"]
+  D --> O["各操作 implementation\n绑定 / 条件续租 / 请求路由 / UID 路由"]
+  O --> L["现有 Locator / gateclient seam"]
+  S["Stop：requests → Drain → deliveries"] -.-> D
+  classDef deep fill:#173b31,color:#fff,stroke:#173b31,stroke-width:3px;
+  class D deep;
+      </pre></div></div></div>
+      <table class="evidence"><thead><tr><th>代码证据</th><th>当前理解 / 修改成本</th></tr></thead><tbody>
+        <tr><td><a href="../../node/session.go#L67">node/session.go:67,86,105</a></td><td>三个 binding 操作各自接纳、defer done、validatedIdentity、派生 lease context，再通过 handleBindingError 区分普通错误与本代失权。</td></tr>
+        <tr><td><a href="../../node/push.go#L16">node/push.go:16,51</a></td><td>两种 Push 另行组合 deliveries、checkEpoch 与 pushTimeout。Session 的旧 GateBinding 和 PushToUID 的当前 Gate 查询不可合并。</td></tr>
+        <tr><td><a href="../../node/lifecycle.go#L130">node/lifecycle.go:130</a><br><a href="../../node/server.go#L62">node/server.go:62</a></td><td>Drain 期间仍允许出站，随后等 deliveries；新增操作若漏计数就会破坏 epoch 释放条件。当前五条路径均已接入，风险是未来漏项，非已确认 bug。</td></tr>
+      </tbody></table>
+      <ul class="wins"><li>locality：出站规则集中</li><li>leverage：覆盖五种操作</li><li>depth：减少生命周期组合</li></ul>
+      <table><tbody>
+        <tr><td>Deletion test</td><td>删除 epochLease 或 requestAdmission 会让续租、取消或排空算法扩散，故保留。拟议 module 仅在能替代五处完整准入/完成协议时成立；单独抽出一条 defer 或 pass-through 没有价值。</td></tr>
+        <tr><td>Depth / seam</td><td>Node 的外部 interface 已 deep。深化的是内部出站 seam，不把所有 Server 状态装进新大类型。复用 Redis Locator 和测试中的 memory/blocking adapters，不新增只有一个实现的公共抽象。</td></tr>
+        <tr><td>代价 / 兼容性</td><td>中高：需保留错误优先级、pushTimeout、nil Locator、Stateless 路径，以及保存 Session 后调用的语义。identity 快照与固定 lease 凭据继续分开；绑定错误撤权与普通改绑 Aborted 继续区分。</td></tr>
+        <tr><td>推荐条件</td><td>在下次增加出站能力或调整排空规则时实施；无故扩大到 Forward/Registrar、自动绑定保活或业务 owner 管理不合适。</td></tr>
+      </tbody></table>
+      <h3>验证方向</h3><ul class="checks"><li>复用 <code>node/binding_test.go:20,63,98,118,185,255</code>：保存 Session 的三种写入、Drain 内写入、失权取消、普通错误不撤权。</li><li>复用 <code>node/push_test.go:196,212,261,309</code>：Drain 内 Push、等待副作用、超时保留 epoch、Gate 查询纳入预算。</li><li>通过 Session/Server interface 观察准入和完成，不按新私有类型结构断言；继续运行 Node race 及 Redis adapter 用例，生产协议与数据格式不变。</li></ul>
+      <p class="mini">契约约束：<a href="../architecture.md#L184">docs/architecture.md:184</a>、<a href="../architecture.md#L199">:199</a>。没有 ADR 冲突；保持 requests → Drain → deliveries → epoch 释放。</p>
+    </article>
+
+    <article id="c3">
+      <div class="num">C3 / GATEWAY</div><h2>收拢 Close / Kick 的本地 Session 转换</h2>
+      <div class="badges"><span class="badge worth">Worth exploring</span><span class="badge tag">in-process</span><span class="badge tag">范围限定：两种移交顺序</span></div>
+      <dl class="brief"><dt>问题</dt><dd>Close 与 Kick 的 caller 分别维护 registry 移除、Session detach 的相反顺序，并自行携带正确 binding 去做后续清理。</dd><dt>方向</dt><dd>在现有 Session module 内收拢这两种本地转换的顺序知识；caller 在转换完成后执行连接关闭、条件 Unbind 与通知。</dd></dl>
+      <div class="files">Files · <a href="../../gateway/inbound.go#L38">gateway/inbound.go:38</a> · <a href="../../gateway/delivery.go#L119">gateway/delivery.go:119</a> · <a href="../../gateway/session.go#L52">gateway/session.go:52</a> · <a href="../../gateway/lifecycle.go#L319">gateway/lifecycle.go:319</a></div>
+      <div class="twocol"><div class="visual"><div class="visualtitle">Before / 两种 caller 知道两套顺序</div><div class="diagram"><pre class="mermaid">
+flowchart TB
+  C["Close"] --> R["registry.remove(conn)"]
+  R --> D["detachForClose\n等待 handler / heartbeat"]
+  K["Kick"] --> E["detachForKick(expected binding)"]
+  E --> S["registry.remove(conn)"]
+  D --> IO["条件 Unbind / 通知"]
+  S --> KO["最后一帧 / 条件 Unbind"]
+  classDef leak stroke:#a73b35,stroke-width:2px;
+  class R,D,E,S leak;
+      </pre></div></div><div class="visual after"><div class="visualtitle">After / 组合约束藏在私有 module</div><div class="diagram"><pre class="mermaid">
+flowchart TB
+  C["Close / Kick 意图"] --> M["本地 Session module\n连接身份检查 · 条件 detach · 移除顺序"]
+  M --> B["取得本次清理所需 binding / connection"]
+  B --> O["caller 在锁外执行 I/O"]
+  O --> U["Unbind / Close / 按原语义通知"]
+  A["认证 commit / Stop takeAll\n继续沿用已有行为"] -.-> M
+  classDef deep fill:#173b31,color:#fff,stroke:#173b31,stroke-width:3px;
+  class M deep;
+      </pre></div></div></div>
+      <table class="evidence"><thead><tr><th>代码证据</th><th>当前理解 / 修改成本</th></tr></thead><tbody>
+        <tr><td><a href="../../gateway/inbound.go#L38">gateway/inbound.go:38</a><br><a href="../../gateway/session.go#L52">gateway/session.go:52,174</a></td><td>普通 Close 先按同一 connection 移除，再等待 handler → heartbeat → binding 并取得旧 binding，最后条件清理和通知。</td></tr>
+        <tr><td><a href="../../gateway/delivery.go#L119">gateway/delivery.go:119</a><br><a href="../../gateway/session.go#L191">gateway/session.go:191</a></td><td>Kick 先按完整 binding 且 lease 有效执行 detach，再移除；不等待业务锁，也不发 takeover Disconnect。顺序差异有语义，不能直接合并为同一路径。</td></tr>
+        <tr><td><a href="../../gateway/session.go#L41">gateway/session.go:41,63</a><br><a href="../../gateway/inbound.go#L225">gateway/inbound.go:225</a></td><td>认证提交与 takeAll 已集中；BindGate → commit 失败 → 条件 Unbind 是外部补偿，不能伪装成单次内存事务。修改 Close/Kick 时仍须回看这些竞争路径。</td></tr>
+      </tbody></table>
+      <ul class="wins"><li>locality：移交规则集中</li><li>leverage：两种关闭意图</li><li>depth：隐藏组合顺序</li></ul>
+      <table><tbody>
+        <tr><td>Deletion test</td><td>删除 sessionRegistry 会让 map、连接身份核验和终态 takeAll 扩散，因此它已经有 depth。候选只深化 Close/Kick 的组合，不将整个 registry 判为 shallow，也不因跨文件而重写 Server。</td></tr>
+        <tr><td>代价 / 兼容性</td><td>中等，收益有限：锁顺序与 concurrent takeover 易回归。三把 Session 锁保持分工；registry 全局锁不得覆盖等待 handler、Redis/RPC 或连接关闭。admission 仍归 Gateway 生命周期。</td></tr>
+        <tr><td>保留的原子段</td><td><code>gateway/session.go:203,212</code> 的 binding 检查与发送接纳继续在同一短状态保护段；本地转换收拢不等于延长全局锁，也不声称 Redis 与本地状态原子提交。</td></tr>
+        <tr><td>推荐条件</td><td>下一次触及 Close/Kick 的状态修改时探索；维持 cleanup 总预算、stale BindingToken 无操作、第三次绑定不误删和 best-effort 语义。wire 与存储格式不变。</td></tr>
+      </tbody></table>
+      <h3>验证方向</h3><ul class="checks"><li>复用 <code>gateway/delivery_test.go:113,132,146,180</code>：当前 binding、最后一帧失败、共用预算、第三绑定保护。</li><li>复用 <code>gateway/inbound_test.go:183,207,241,288,329</code>：认证补偿、Stop 竞争、takeover 不通知与心跳等待。</li><li>通过 Gateway 行为验证旧连接 Close 不移除新连接，复用 <code>gateway/lifecycle_test.go:269,327,369</code> 的排空用例，运行 Gateway race；不要只测试新私有方法的调用次数。</li></ul>
+      <p class="mini">契约约束：<a href="../architecture.md#L231">docs/architecture.md:231</a>、<a href="../architecture.md#L241">:241</a>。没有 ADR 冲突；这是内部 interface 的有限深化，不是 Session 所有权迁到业务。</p>
+    </article>
+
+    <article id="c4">
+      <div class="num">C4 / MESSAGE OWNERSHIP</div><h2>批次视图的复用约束是否值得隐藏</h2>
+      <div class="badges"><span class="badge speculative">Speculative</span><span class="badge tag">in-process</span><span class="badge tag">缺少误用或收益证据</span></div>
+      <dl class="brief"><dt>观察</dt><dd>PreparedProto 的 interface 要求调用者理解“不可复制、整批 SendPrepared 返回后才 Reset、旧 Proto 仍不可写”。</dd><dt>方向</dt><dd>只有后续出现误用或更多批次 caller 时，才评估让批次 owner 提供独立只读视图、在 implementation 内处理复用；当前保留实现。</dd></dl>
+      <div class="files">Files · <a href="../../network/prepared.go#L14">network/prepared.go:14,29</a> · <a href="../../network/connection.go#L23">network/connection.go:23,34</a> · <a href="../../gateway/broadcast.go#L168">gateway/broadcast.go:168</a> · <a href="../../network/websocket/channel.go#L111">network/websocket/channel.go:111</a></div>
+      <div class="twocol"><div class="visual"><div class="visualtitle">Before / 同一视图按批复用</div><div class="diagram schematic">
+        <div class="box">broadcastRun.prepared</div><div class="arrow">↓ Reset(message A)</div><div class="twins"><div class="box">PreparedConnection<br>共享只读 bytes</div><div class="box">fallback SendProto<br>可持有旧 Proto</div></div><div class="arrow leak">↓ 等本批全部调用返回</div><div class="box">Reset(message B)<br><small>A 仍不可写；bytes 仍可被 writer 持有</small></div>
+      </div></div><div class="visual after"><div class="visualtitle">After / 仅作未来比较方案</div><div class="diagram schematic">
+        <div class="box">批次 owner</div><div class="seam"></div><div class="box deep">独立只读批次视图<div class="internals">视图 A 与视图 B 生命周期分离<br>可复用的内部存储由 owner 决定<br>仍不恢复旧消息写入权</div></div><div class="arrow">↓</div><div class="twins"><div class="box">共享编码路径</div><div class="box">现有 fallback 路径</div></div>
+      </div></div></div>
+      <div class="note warn">推测：当前范围内唯一生产 Reset caller 是 <code>gateway/broadcast.go:169</code>，它在 <code>:189</code> 等待批次完成；中途取消会退出 coordinator 并在 <code>:111</code> 等待 worker。没有发现错误复用，不能宣称存在 data race。</div>
+      <table><tbody>
+        <tr><td>当前成本</td><td>新增 caller 或 PreparedConnection adapter 时须读所有权契约并实现同步视图交接；现有广播已把正确顺序集中在一处。默认 WS 编码与 custom codec/fallback 的保留行为不同。</td></tr>
+        <tr><td>Depth / locality / leverage</td><td>当前 interface 已隐藏并发惰性编码并在 fanout 中产生 leverage；拟议调整只减少复用知识，新增 locality 收益有限，因为已有一个生产 owner。</td></tr>
+        <tr><td>Deletion test</td><td>删掉 PreparedProto 会丢掉共享编码或把缓存/同步散回 fanout 与 adapters，不应删除。仅添加新视图类型但仍要求调用者手动 join，则没有增加 depth。</td></tr>
+        <tr><td>代价 / 兼容性</td><td>可能增加每批分配并改变公开类型的使用方式；需核对下游消费者，保留 SendProto 不可变契约、custom codec 与旧 bytes 有效性。无测量前不承诺更快或更省内存。</td></tr>
+        <tr><td>升级条件</td><td>出现第二个实际批次 owner、可复现的 Reset 误用，或测量证明新形状成本可接受时重新评估；当前不立重构票。</td></tr>
+      </tbody></table>
+      <h3>验证方向</h3><ul class="checks"><li>复用 <code>network/prepared_test.go:17</code> 的单次编码与 Reset 后旧 bytes 有效性。</li><li>复用 <code>gateway/broadcast_test.go:49,89,122</code> 的 Payload 隔离、Prepared 路径与有序批次；同时覆盖 TCP fallback、WS custom codec、取消中的 worker join。</li><li>若进入实施，比较相同负载下的广播分配与 fanout 基准；本次未运行性能基准。</li></ul>
+      <p class="mini">契约约束：<a href="../architecture.md#L88">docs/architecture.md:88</a>。没有 ADR 冲突；候选不意味着发送成功等于写出，也不意味着 Reset 恢复写入权。</p>
+    </article>
+  </section>
+
+  <section id="keep" class="section overview">
+    <div class="eyebrow">Keep the depth</div><h2>通过 deletion test，继续保留。</h2>
+    <div class="tablewrap"><table><thead><tr><th>module / seam</th><th>Depth、locality 与 leverage 的证据</th><th>删除或误改的代价</th></tr></thead><tbody>
+      <tr><td><a href="../../node/epoch.go#L40">epochLease</a></td><td><code>node/epoch.go:77,109,169,199,236</code> 集中首次续租、独立过期监视、迟到成功拒绝、取消原因与固定代次释放。</td><td>复杂度会扩散到请求、Session 与停止路径；不合并对外 identity 与释放重试凭据。</td></tr>
+      <tr><td><a href="../../internal/gateclient/client.go#L69">gateclient</a></td><td><code>internal/gateclient/client.go:69,85,97</code> 把 endpoint/TLS、共享建连、在途引用与空闲回收藏在 Push/Kick 后；<code>a85180b</code> 的空闲回收修复局部化。</td><td>Node 和 Gateway 的 caller 会各自维护回程连接生命周期；不与 Gateway 按 service 的 backend pool 合并。</td></tr>
+      <tr><td><a href="../../locate/redis/script.go#L76">Redis Lua adapter</a></td><td><code>locate/redis/script.go:76,84,94</code> 在存储中原子核验 epoch 并修改 binding；<code>locate/redis/node.go:54</code> 将 RenewNode 与 Bind 的语义分开。</td><td>Go caller 的先查后写无法替代同次原子操作。不同文件或相近脚本不是架构缺陷。</td></tr>
+      <tr><td><a href="../../node/lifecycle.go#L289">readyRegistrar + 原生 App 装配</a></td><td><code>node/lifecycle.go:301</code> 隐藏首次续租/注册竞态；<code>examples/whot/main.go:89</code> 保留 App 对 identity、transports、hooks 与外部资源的所有权。</td><td>仅包装几个 Kratos Option 的新 module 不通过 deletion test；若接管完整 App 又会冲突于 <code>docs/architecture.md:19,23,159</code>。不建议新增。</td></tr>
+      <tr><td><a href="../../event/nats/bus.go#L165">EventBus / NATS</a></td><td><code>event/nats/bus.go:165,211,240</code> 与 <code>subscription.go:159,191</code> 隐藏发布交接、Payload 复制、停止后台回收与再次等待。单个应用可注入 Publisher，不依赖 Gateway/Node。</td><td>删掉 module 会向业务扩散连接与取消规则。激活/Flush/start 的私有组合目前仅一个 Bus caller，且在同包内；不足以据此重构订阅架构。</td></tr>
+      <tr><td><a href="../../network/internal/inbound/dispatcher.go#L28">inbound / request / heartbeat</a></td><td><code>network/internal/inbound/dispatcher.go:35,66</code> 管理认证屏障、业务 FIFO、独立心跳和退出；<code>network/internal/request/tracker.go:28,46,59</code> 管理请求结果竞争。两种 transport 复用。</td><td>删除会使相同协议散回两套 I/O。TCP 与 WS 的 socket、deadline、writer 形状仍有真实差异，保留各自 adapter。</td></tr>
+    </tbody></table></div>
+    <div class="note">消息所有权已核对：<code>event/nats/bus.go:179</code> 和 <code>gateway/broadcast.go:39</code> 复制 caller 的 Payload；<code>network/connection.go:23</code> 的 SendProto 则接受不可变消息。它们位于不同 seam，语义差异明确，不要求统一为“全复制”或“全借用”。</div>
+    <p class="mini">业务继续拥有 Node binding 的保活调度、玩家/Table、幂等与 Drain；Disconnect 是连接事件。没有把状态自动接管给框架，也没有把尚未部署验证当成实现缺陷。</p>
+  </section>
+
+  <section id="verification" class="section overview">
+    <div class="eyebrow">Evidence & limits</div><h2>本地行为回归通过；部署结论仍待实际环境。</h2>
+    <pre class="cmd">env -u YOLA_NATS_URL -u YOLA_NATS_CAPACITY_PUBLISHER -u YOLA_ETCD_INTEGRATION \
+  go test -race -count=1 -timeout=180s \
+  ./event/... ./network/... ./internal/queue ./registry/etcd
+
+env -u YOLA_REDIS_INTEGRATION -u YOLA_REDIS_CLUSTER_INTEGRATION \
+  -u YOLA_REDIS_CLUSTER_ADMIN_INTEGRATION \
+  go test -race -count=1 -timeout=180s \
+  ./node ./gateway ./internal/gateclient ./locate/redis</pre>
+    <ul class="checks"><li><strong>结果：</strong>16 个包通过，复用已有测试，无源码修改。架构探索子代理与主审核分工核对；候选经二次挑战后收窄，未以文件分散程度代替架构证据。</li><li><strong>未覆盖：</strong>独立 <code>test/</code>、真实 Redis/etcd、Redis Cluster 管理、生产 NATS 凭据/TLS/ACL、容量基准及长期 SLO。嵌入 broker 与本地替身不能代替部署验收。</li><li><strong>工具限制：</strong>gopls 用于源代码关系导航，其工具链路径与 shell Go 不同；引用行号以磁盘源码核对，构建结论只来自上述 Go 1.26.7 命令。</li><li><strong>文档决策：</strong>没有 GLOSSARY 或 ADR 可追溯；按 <code>docs/agents/domain.md:8</code> 继续，现有架构契约仍是约束。方案获选后再决定是否记录术语或 ADR。</li></ul>
+    <p class="mini">报告检查：本地链接、HTML 标签结构、锚点与引用行号范围已通过静态校验。已打开 HTML 文件；浏览器工具拒绝读取本地文件协议，未完成自动视觉与 Mermaid 渲染检查。</p>
+    <p class="mini">任务条件、已完成能力、可实施增量与待澄清项见 <a href="task-audit.md">task-audit.md</a>；<a href="../issues.md">docs/issues.md</a> 继续担任验收索引。用户随后确认 setup，普通实施票状态已补入 <a href="../agents/issue-tracker.md#L13">docs/agents/issue-tracker.md:13</a>。本报告的推荐强度不是发布阻塞等级。</p>
+  </section>
+
+  <section id="top-recommendation" class="top">
+    <div class="eyebrow" style="color:#ceebad">Top recommendation</div><h2>先探索 C1：客户端终止协议</h2><p>两种实际 Client 共享明确的时序约束，范围比改动 Gateway 状态机或 Node 租约更小，并已有可复用的行为回归。先验证能否真正收回顺序知识，再决定实施。</p><p><a href="#c1">回到 C1 →</a></p>
+  </section>
+  <footer class="foot">依据本地 improve-codebase-architecture 与 codebase-design 的 HTML 格式和术语。输出位置按用户指定覆盖临时目录规则。Tailwind 与 Mermaid 按 Skill 使用 CDN；基础排版另有内联 CSS，离线时 Mermaid 区域保留图源码。源码链接相对仓库根定位，标签给出审核时的 path:line。</footer>
+</main>
+</body>
+</html>

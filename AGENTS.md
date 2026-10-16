@@ -18,11 +18,12 @@ Yola 是基于 Kratos 的长连接框架；根目录与 `test/` 是独立 Go mod
 
 Go 代码遵循 [Uber Go](https://github.com/uber-go/guide/blob/master/style.md)、[Effective Go](https://go.dev/doc/effective_go) 和 [Go Code Review Comments](https://go.dev/wiki/CodeReviewComments)。
 
-- 优先级：安全 > 清晰度 > 简单 > 短。
+- 优先级：安全 > 清晰度 > 简单 > 简短。
 - 保持职责集中、主流程平直，减少重复逻辑和嵌套。
-- import 分组以 [.golangci.yml](.golangci.yml) 为准。别名仅用于消除冲突或明确区分领域、版本。
 - 按业务用途命名，使用 MixedCaps 和一致的缩写。
+- 保留必要换行，删除多余空行。
 - 注释用简洁中文解释意图、约束或所有权，省略对代码的复述。
+- import 分组以 [.golangci.yml](.golangci.yml) 为准。别名仅用于消除冲突或明确区分领域、版本。
 
 ## 工作流程
 
