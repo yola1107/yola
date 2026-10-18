@@ -116,6 +116,63 @@ func TestRegistrationDerivesOnlyInternalNodeRecord(t *testing.T) {
 	}
 }
 
+func TestRegistrationLossClosesHealthAndAdmission(t *testing.T) {
+	registrar := newLifecycleRegistrar()
+	registrar.done = make(chan struct{})
+	draining := make(chan struct{})
+	release := make(chan struct{})
+	resume := sync.OnceFunc(func() { close(release) })
+	server := newTestServer(t, Address("127.0.0.1:0"), Registration(registrar), Drain(func(context.Context) error {
+		close(draining)
+		<-release
+		return nil
+	}))
+	server.RegisterRawHandler(1, func(context.Context, []byte) ([]byte, error) { return []byte("ready"), nil })
+	result := runTestNode(t, server)
+	t.Cleanup(resume)
+	record := receiveNodeValue(t, registrar.entered)
+	client, health := nodeClients(t, record)
+	require.Eventually(t, func() bool { return healthStatus(t, health) == healthpb.HealthCheckResponse_SERVING }, time.Second, time.Millisecond)
+	close(registrar.done)
+	receiveNodeValue(t, draining)
+	require.Equal(t, healthpb.HealthCheckResponse_NOT_SERVING, healthStatus(t, health))
+	_, err := client.Forward(t.Context(), &v1.ForwardRequest{Route: clusterroute.FromBinding(testBinding("player-a", "conn-a")), Command: 1})
+	require.Equal(t, codes.Unavailable, status.Code(err))
+	resume()
+	require.ErrorIs(t, receiveNodeValue(t, result), errRegistrationLost)
+	require.Equal(t, int32(1), registrar.deregistered.Load())
+	assertNodeAddressReusable(t, record)
+}
+
+func TestRegistrationLostBeforeAdmissionFailsStartup(t *testing.T) {
+	registrar := newLifecycleRegistrar()
+	registrar.done = make(chan struct{})
+	registrar.register = func(context.Context, *registry.ServiceInstance) error {
+		close(registrar.done)
+		return nil
+	}
+	server := newTestServer(t, Address("127.0.0.1:0"), Registration(registrar))
+	result := runTestNode(t, server)
+	require.ErrorIs(t, receiveNodeValue(t, result), errRegistrationLost)
+	require.Equal(t, int32(1), registrar.deregistered.Load())
+	assertNodeAddressReusable(t, registrar.instance())
+}
+
+func TestNormalDeregistrationDoesNotFailStart(t *testing.T) {
+	registrar := newLifecycleRegistrar()
+	registrar.done = make(chan struct{})
+	registrar.deregister = func(context.Context, *registry.ServiceInstance) error {
+		close(registrar.done)
+		return nil
+	}
+	server := newTestServer(t, Address("127.0.0.1:0"), Registration(registrar))
+	result := runTestNode(t, server)
+	_, health := nodeClients(t, receiveNodeValue(t, registrar.entered))
+	require.Eventually(t, func() bool { return healthStatus(t, health) == healthpb.HealthCheckResponse_SERVING }, time.Second, time.Millisecond)
+	require.NoError(t, server.Stop(t.Context()))
+	require.NoError(t, receiveNodeValue(t, result))
+}
+
 func TestRegistrationWaitsForInitialEpochRenewal(t *testing.T) {
 	store := &controlledEpochLocator{Store: newMemoryNodeStore()}
 	renewing := make(chan struct{})

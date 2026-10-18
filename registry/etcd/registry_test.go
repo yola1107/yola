@@ -83,14 +83,14 @@ func TestRegistryCloseStopsKeepAlive(t *testing.T) {
 	require.NoError(t, provider.Register(registerCtx, instance))
 	cancelRegister()
 	select {
-	case <-provider.session.Done():
+	case <-provider.Done():
 		t.Fatal("register context cancellation stopped lifetime keepalive")
 	default:
 	}
 	require.NoError(t, closeRegistry())
 	require.ErrorIs(t, provider.client.Ctx().Err(), context.Canceled)
 	select {
-	case <-provider.session.Done():
+	case <-provider.Done():
 	case <-time.After(time.Second):
 		t.Fatal("client Close left registration worker running")
 	}
@@ -123,7 +123,7 @@ func TestRegistryProtectsReplacementOwnership(t *testing.T) {
 	_, err = client.Revoke(ctx, old.leaseID)
 	require.NoError(t, err)
 	select {
-	case <-old.session.Done():
+	case <-old.Done():
 	case <-time.After(10 * time.Second):
 		t.Fatal("lost registration lease did not stop its worker")
 	}

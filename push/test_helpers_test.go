@@ -53,21 +53,24 @@ func startGateway(t *testing.T, gateway clusterv1.GatewayServer, opts ...kgrpc.S
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
+	t.Cleanup(func() { _ = listener.Close() })
 	ready := &readyListener{Listener: listener, accepting: make(chan struct{})}
 	opts = append([]kgrpc.ServerOption{kgrpc.Listener(ready), kgrpc.Timeout(0)}, opts...)
 	server := kgrpc.NewServer(opts...)
 	clusterv1.RegisterGatewayServer(server, gateway)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- server.Start(ctx) }()
-	receive(t, ready.accepting)
 	t.Cleanup(func() {
 		cancel()
 		stopCtx, stopCancel := context.WithTimeout(context.Background(), time.Second)
 		defer stopCancel()
-		require.NoError(t, server.Stop(stopCtx))
+		if err := server.Stop(stopCtx); err != nil {
+			t.Error(err)
+		}
 		require.NoError(t, receive(t, done))
 	})
+	go func() { done <- server.Start(ctx) }()
+	receive(t, ready.accepting)
 	return "grpc://" + listener.Addr().String()
 }
 

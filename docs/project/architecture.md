@@ -136,6 +136,8 @@ command/disconnect handler 在 Start 前注册。Start 准备 listener；Statefu
 
 登记前或停止后 health 为 NOT_SERVING，业务 RPC 拒绝准入。登记与准入不是分布式原子操作；短暂发现尚未开放的实例时返回 Unavailable，Gateway 不重试写请求。
 
+内部登记租约失效后，Node 关闭 health、入站和副作用准入，取消本代工作并执行回收；Start 返回失租错误。失租检测跟随 Registry 的 keepalive，不自动重新登记。正常 Stop 引起的注销不会被视为运行期失租。
+
 Start 与 Stop 只有一个资源回收所有者。登记取消后仍迟到成功时，回收其本代记录；登记失败的本次资源由 Registrar 契约负责回滚，不能猜测未知登记所有权。实现见 [Node 生命周期](../../node/lifecycle.go)。
 
 正常回收使用 ShutdownTimeout，分阶段停止入站请求和出站副作用：
@@ -162,6 +164,7 @@ Stateful Node 使用本代 epoch 约束准入与副作用，续租参数见[实�
 
 - 每个 Registry 只尝试注册一次；同 service/ID 已存在时返回 `ErrInstanceExists`，等待旧 lease 失效后重建应用。
 - 复用官方 Discovery/Watch 和 Session，只续本代 lease；失租不自动重新登记。
+- `Done()` 在成功登记的租约结束时关闭，供 Node 监听；成功登记前返回 nil。自定义租约型 Registrar 应提供同一通知，否则 Node 无法感知其运行期失租。
 - Deregister 只撤本代 lease。失败回收使用独立预算，并保留可重试凭据。
 - Registry.Close 停止续租；未注销记录按 TTL 回收。Redis 与 etcd 的操作不组成事务。
 

@@ -99,6 +99,7 @@ func StartGame(
 	store := locateredis.New(client)
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
+	t.Cleanup(func() { _ = listener.Close() })
 	locator := &measuredLocator{Locator: store, measurements: measurements}
 	server, err := node.NewServer(
 		node.Address("127.0.0.1:0"), node.Listener(listener), node.Registration(discovery), node.Stateful(locator), node.GateDirectory(locator),

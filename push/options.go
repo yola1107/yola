@@ -11,7 +11,7 @@ import (
 	"github.com/go-kratos/kratos/v3/middleware"
 )
 
-const defaultTimeout = 3 * time.Second
+const _defaultTimeout = 3 * time.Second
 
 // Option 配置 Sender。
 type Option func(*options) error
@@ -23,7 +23,7 @@ type options struct {
 }
 
 func resolveOptions(opts ...Option) (options, error) {
-	configured := options{timeout: defaultTimeout}
+	configured := options{timeout: _defaultTimeout}
 	for _, opt := range opts {
 		if opt == nil {
 			return options{}, errors.New("push: option is required")

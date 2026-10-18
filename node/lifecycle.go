@@ -17,7 +17,10 @@ import (
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 )
 
-var errNodeStopped = errors.New("node: server is stopping or stopped")
+var (
+	errNodeStopped      = errors.New("node: server is stopping or stopped")
+	errRegistrationLost = errors.New("node: registration lease lost")
+)
 
 // Start 拥有内部监听、epoch 和目录登记；全部就绪后才开放请求。
 func (s *Server) Start(ctx context.Context) error {
@@ -48,23 +51,32 @@ func (s *Server) Start(ctx context.Context) error {
 	if err != nil {
 		return s.stopAfterFailure(ctx, errors.Join(context.Cause(s.fatalCtx), err), s.cleanupTimeout)
 	}
-	select {
-	case <-s.fatalCtx.Done():
-		return s.stopAfterFailure(ctx, context.Cause(s.fatalCtx), s.shutdownTimeout)
-	case serveErr := <-serveResult:
-		if fatalErr := context.Cause(s.fatalCtx); fatalErr != nil {
-			return s.stopAfterFailure(ctx, fatalErr, s.shutdownTimeout)
-		}
-		if !s.requests.isClosed() {
-			if serveErr == nil {
-				serveErr = errors.New("node: gRPC server stopped unexpectedly")
+	registrationDone := s.registrationDone()
+	for {
+		select {
+		case <-registrationDone:
+			registrationDone = nil
+			// 正常 Stop 会主动注销；只有仍在服务时失租才触发 fatal。
+			if !s.requests.isClosed() {
+				s.failLifecycle(errRegistrationLost)
 			}
-			return s.stopAfterFailure(ctx, serveErr, s.shutdownTimeout)
+		case <-s.fatalCtx.Done():
+			return s.stopAfterFailure(ctx, context.Cause(s.fatalCtx), s.shutdownTimeout)
+		case serveErr := <-serveResult:
+			if fatalErr := context.Cause(s.fatalCtx); fatalErr != nil {
+				return s.stopAfterFailure(ctx, fatalErr, s.shutdownTimeout)
+			}
+			if !s.requests.isClosed() {
+				if serveErr == nil {
+					serveErr = errors.New("node: gRPC server stopped unexpectedly")
+				}
+				return s.stopAfterFailure(ctx, serveErr, s.shutdownTimeout)
+			}
+			if errors.Is(serveErr, grpc.ErrServerStopped) {
+				return nil
+			}
+			return serveErr
 		}
-		if errors.Is(serveErr, grpc.ErrServerStopped) {
-			return nil
-		}
-		return serveErr
 	}
 }
 
@@ -157,11 +169,23 @@ func (s *Server) start(ctx, serveCtx context.Context) (<-chan error, error) {
 	if err = lease.valid(); err != nil {
 		return nil, err
 	}
+	select {
+	case <-s.registrationDone():
+		return nil, errRegistrationLost
+	default:
+	}
 	s.state = _stStarted
 	s.deliveries.open()
 	s.requests.open()
 	s.healthServer.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
 	return serveResult, nil
+}
+
+func (s *Server) registrationDone() <-chan struct{} {
+	if lifetime, ok := s.registrar.(interface{ Done() <-chan struct{} }); ok {
+		return lifetime.Done()
+	}
+	return nil
 }
 
 func (s *Server) startCleanup(base context.Context, timeout time.Duration) {

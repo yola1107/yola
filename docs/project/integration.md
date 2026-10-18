@@ -134,6 +134,7 @@ node.Register(server, message.WhotEnterCommand,
 - 离桌时调用 `sess.UnbindNode(ctx)`；断线不会自动解绑 Node。
 - 向本请求的连接推送用 `sess.Push`；按 UID 定位当前连接用 `server.PushToUID`。
 - 绑定保活用 `sess.RenewNode(ctx)`，由业务在 6h 到期前调度。遇到 `Aborted` 时处理归属变化，不能退回 `BindNode` 覆盖绑定。
+- 续租失权结果须在业务状态 owner 内核对会话代次，再停止该代的续租和推送；重连的绑定与会话发布须与失权处理串行。回收已失权玩家时不保存旧状态或修改新归属的绑定，暂时依赖错误则保留重试。
 - 持有玩家、Table 或后台任务时，配置 `node.Drain(usecase.Drain)`。返回前停止绑定、续租和推送的生产者。
 
 自定义 Locator 或 Session 须遵守[修改权契约](architecture.md#node-binding-修改权)。

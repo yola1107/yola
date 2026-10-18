@@ -69,7 +69,7 @@ func (r *Registry) Register(ctx context.Context, service *registry.ServiceInstan
 		return errors.New("etcd: registration lease is unavailable")
 	}
 	r.cancel = cancel
-	r.session = session
+	r.session.Store(session)
 	return ctx.Err()
 }
 
@@ -104,7 +104,7 @@ func (r *Registry) enter(ctx context.Context) error {
 func (r *Registry) revoke(ctx context.Context) error {
 	if r.cancel != nil {
 		r.cancel()
-		if err := contextwait.Done(ctx, r.session.Done()); err != nil {
+		if err := contextwait.Done(ctx, r.Done()); err != nil {
 			return err
 		}
 	}

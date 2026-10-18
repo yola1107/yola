@@ -19,6 +19,7 @@ import (
 func TestStartServerUsesNativeApplication(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
+	t.Cleanup(func() { _ = listener.Close() })
 	server, err := node.NewServer(node.Listener(listener), node.Registration(new(lifecycleRegistrar)))
 	require.NoError(t, err)
 	observed := &observedApplicationServer{Server: server, identity: make(chan kratos.AppInfo, 1)}
@@ -34,6 +35,7 @@ func TestStartServerRegistersAndStopsNativeApplication(t *testing.T) {
 	t.Run("application", func(t *testing.T) {
 		listener, err := net.Listen("tcp", "127.0.0.1:0")
 		require.NoError(t, err)
+		t.Cleanup(func() { _ = listener.Close() })
 		server, err := node.NewServer(node.Listener(listener), node.Registration(registrar))
 		require.NoError(t, err)
 		startServer(t, server, "game", "node-a", nodeReady(t, listener.Addr().String()))
@@ -49,6 +51,7 @@ func TestStartServerFailureCleanup(t *testing.T) {
 	if os.Getenv("YOLA_PUSHBENCH_START_FAILURE") != "" {
 		listener, err := net.Listen("tcp", "127.0.0.1:0")
 		require.NoError(t, err)
+		t.Cleanup(func() { _ = listener.Close() })
 		address := listener.Addr().String()
 		registrar := new(rejectedRegistrar)
 		server, err := node.NewServer(node.Listener(listener), node.Registration(registrar))

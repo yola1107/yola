@@ -17,7 +17,63 @@ import (
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
+	clientv3 "go.etcd.io/etcd/client/v3"
+	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 )
+
+func TestRegistrationLeaseLossStopsNode(t *testing.T) {
+	address := os.Getenv("YOLA_ETCD_INTEGRATION")
+	if address == "" {
+		t.Skip("set YOLA_ETCD_INTEGRATION to a disposable etcd instance")
+	}
+	for _, tc := range []struct {
+		name     string
+		stateful bool
+	}{
+		{name: "stateless"},
+		{name: "stateful", stateful: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			prefix := "/node-lease-test/" + uuid.NewString()
+			directory, err := etcd.NewNodeRegistry(etcd.WithEndpoints(address), etcd.WithPrefix(prefix))
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, directory.Close()) })
+			observer, err := clientv3.New(clientv3.Config{Endpoints: []string{address}, DialTimeout: time.Second})
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, observer.Close()) })
+			opts := []Option{Address("127.0.0.1:0"), Registration(directory)}
+			if tc.stateful {
+				opts = append(opts, Stateful(newMemoryNodeStore()))
+			}
+			server := newTestServer(t, opts...)
+			result := runTestNode(t, server)
+			require.Eventually(t, func() bool {
+				records, lookupErr := directory.GetService(t.Context(), "game")
+				return lookupErr == nil && len(records) == 1
+			}, time.Second, time.Millisecond)
+			records, err := directory.GetService(t.Context(), "game")
+			require.NoError(t, err)
+			require.Len(t, records, 1)
+			_, health := nodeClients(t, records[0])
+			require.Eventually(t, func() bool { return healthStatus(t, health) == healthpb.HealthCheckResponse_SERVING }, time.Second, time.Millisecond)
+			registered, err := observer.Get(t.Context(), prefix+"/", clientv3.WithPrefix())
+			require.NoError(t, err)
+			require.Len(t, registered.Kvs, 1)
+			_, err = observer.Revoke(t.Context(), clientv3.LeaseID(registered.Kvs[0].Lease))
+			require.NoError(t, err)
+			select {
+			case startErr := <-result:
+				require.ErrorIs(t, startErr, errRegistrationLost)
+			case <-time.After(10 * time.Second):
+				t.Fatal("Node stayed available after registration keepalive detected lease loss")
+			}
+			assertNodeAddressReusable(t, records[0])
+			records, err = directory.GetService(t.Context(), "game")
+			require.NoError(t, err)
+			require.Empty(t, records)
+		})
+	}
+}
 
 func TestAppPreparedNodeCannotOverwriteReplacement(t *testing.T) {
 	if os.Getenv("YOLA_REDIS_INTEGRATION") == "" || os.Getenv("YOLA_ETCD_INTEGRATION") == "" {

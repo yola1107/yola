@@ -14,6 +14,8 @@ import (
 	"yola/test/ludo/internal/conf"
 
 	"github.com/google/wire"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 var _ table.Repo = (*Usecase)(nil)
@@ -21,8 +23,8 @@ var _ table.Repo = (*Usecase)(nil)
 var _ robot.Repo = (*Usecase)(nil)
 
 const (
-	defaultStatusInterval  = 60 * time.Second
-	playerNodeRenewTimeout = 3 * time.Second
+	defaultStatusInterval   = 60 * time.Second
+	_playerNodeRenewTimeout = 3 * time.Second
 )
 
 var (
@@ -173,24 +175,46 @@ func (uc *Usecase) renewNodeBindings(ctx context.Context) {
 		if p.IsRobot() || uc.pm.GetByID(p.GetPlayerID()) != p {
 			continue
 		}
-		sess := p.GetSession()
+		sess, version := p.SessionForRenewal()
 		if sess == nil {
 			continue
 		}
-		renewCtx, cancel := context.WithTimeout(ctx, playerNodeRenewTimeout)
+		renewCtx, cancel := context.WithTimeout(ctx, _playerNodeRenewTimeout)
 		err := sess.RenewNode(renewCtx)
 		cancel()
 		if ctx.Err() != nil {
 			return
 		}
-		if err != nil {
-			failed++
-			if firstErr == nil {
-				firstErr = fmt.Errorf("player %d: %w", p.GetPlayerID(), err)
-			}
+		if err == nil {
+			continue
+		}
+		if status.Code(err) == codes.Aborted {
+			err = errors.Join(err, uc.loseNodeBinding(ctx, p, version))
+		}
+		failed++
+		if firstErr == nil {
+			firstErr = fmt.Errorf("player %d: %w", p.GetPlayerID(), err)
 		}
 	}
 	if failed > 0 {
 		slog.Warn("renew player Node bindings", "failed", failed, "error", firstErr)
 	}
+}
+
+func (uc *Usecase) loseNodeBinding(ctx context.Context, p *player.Player, version uint64) error {
+	ctx, cancel := context.WithTimeout(ctx, _playerNodeRenewTimeout)
+	defer cancel()
+	var err error
+	for range 2 {
+		err = uc.tm.CallPlayer(ctx, p, func(gameTable *table.Table) error {
+			if uc.pm.GetByID(p.GetPlayerID()) != p || !p.LoseNodeBinding(version) {
+				return nil
+			}
+			return gameTable.Offline(p)
+		})
+		if !errors.Is(err, table.ErrPlayerRouteChanged) {
+			return err
+		}
+	}
+	return err
 }

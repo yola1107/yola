@@ -77,6 +77,24 @@ func startTestNode(ctx context.Context, t *testing.T, server *Server) {
 	}, time.Second, time.Millisecond)
 }
 
+// runTestNode 返回启动结果供用例断言，清理时独立等待退出，避免争用结果通道。
+func runTestNode(t *testing.T, server *Server) <-chan error {
+	t.Helper()
+	result := make(chan error, 1)
+	exited := make(chan struct{})
+	t.Cleanup(func() {
+		if err := server.Stop(context.Background()); err != nil {
+			t.Error(err)
+		}
+		receiveNodeValue(t, exited)
+	})
+	go func() {
+		defer close(exited)
+		result <- server.Start(testNodeContext())
+	}()
+	return result
+}
+
 func nodeClients(t *testing.T, record *registry.ServiceInstance) (v1.NodeClient, healthpb.HealthClient) {
 	t.Helper()
 	require.Len(t, record.Endpoints, 1)
@@ -364,12 +382,15 @@ func (*countingRegistrar) Deregister(context.Context, *registry.ServiceInstance)
 
 type lifecycleRegistrar struct {
 	mu           sync.Mutex
+	done         chan struct{}
 	record       *registry.ServiceInstance
 	entered      chan *registry.ServiceInstance
 	register     func(context.Context, *registry.ServiceInstance) error
 	deregister   func(context.Context, *registry.ServiceInstance) error
 	deregistered atomic.Int32
 }
+
+func (r *lifecycleRegistrar) Done() <-chan struct{} { return r.done }
 
 func newLifecycleRegistrar() *lifecycleRegistrar {
 	return &lifecycleRegistrar{entered: make(chan *registry.ServiceInstance, 1)}

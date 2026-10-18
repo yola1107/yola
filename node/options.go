@@ -77,6 +77,7 @@ func resolveOptions(opts ...Option) (options, error) {
 }
 
 // Registration 配置 Node 内部目录登记；Registrar 必须安全回收失败申请，并按自身租约幂等注销。
+// 租约型 Registrar 应实现 Done() <-chan struct{}：成功登记后失租或注销时关闭，Node 据此停止服务。
 func Registration(registrar registry.Registrar) Option {
 	return func(o *options) error {
 		if registrar == nil {

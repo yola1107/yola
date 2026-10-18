@@ -58,17 +58,18 @@ func TestLoginTimeoutKeepsCleanupBudget(t *testing.T) {
 				require.NoError(t, uc.tm.Close(context.Background()))
 
 				require.ErrorIs(t, err, context.DeadlineExceeded)
-				require.ErrorIs(t, err, unbindErr)
 				require.Nil(t, reply)
 				require.Equal(t, 2*time.Second, elapsed)
+				if reconnect {
+					require.Zero(t, sess.unbindCount(), "a queued reconnect must not change ownership before its table action starts")
+					require.Same(t, original, seated.GetSession())
+					return
+				}
+				require.ErrorIs(t, err, unbindErr)
 				require.NoError(t, sess.cleanupErr)
 				require.Equal(t, 2*time.Second, sess.cleanupBudget)
 				require.Equal(t, 1, sess.unbindCount())
-				if reconnect {
-					require.Same(t, original, seated.GetSession())
-				} else {
-					require.Nil(t, uc.pm.GetByID(uid))
-				}
+				require.Nil(t, uc.pm.GetByID(uid))
 			})
 		})
 	}

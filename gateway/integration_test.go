@@ -247,6 +247,7 @@ func startDistributedGateway(t *testing.T, transportName, id string, store locat
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
+	t.Cleanup(func() { _ = listener.Close() })
 	var clientTransport ClientTransport
 	if transportName == "tcp" {
 		clientTransport = tcp.NewServer(tcp.Listener(listener))

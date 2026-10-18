@@ -71,6 +71,9 @@ func (uc *Usecase) Login(ctx context.Context, sess player.Session, uid int64, to
 		if err == nil || (!errors.Is(err, table.ErrTableNotFound) && !errors.Is(err, table.ErrPlayerRouteChanged)) {
 			return reply, err
 		}
+		if uc.pm.GetByID(uid) != current {
+			return uc.enterRoom(ctx, sess, uid, token)
+		}
 	}
 	if current.GetTableID() >= player.TableIDPending || !current.TryBeginExit() {
 		return loginResponse(current, uid, codes.PlayerAlreadyInTable, "PLAYER_ALREADY_IN_TABLE"), nil
@@ -273,25 +276,30 @@ func (uc *Usecase) managedPlayer(uid int64) (*player.Player, error) {
 }
 
 func (uc *Usecase) reconnect(ctx context.Context, sess player.Session, p *player.Player) (*v1.LoginRsp, error) {
-	if err := sess.BindNode(ctx); err != nil {
-		return nil, fmt.Errorf("bind reconnecting player %d: %w", p.GetPlayerID(), err)
-	}
 	entryCtx, cancelEntry := context.WithTimeout(context.Background(), playerEnterTimeout)
 	defer cancelEntry()
+	bound := false
 	err := uc.tm.CallPlayer(entryCtx, p, func(gameTable *table.Table) error {
+		// 绑定和发布会话与失权处理串行，不能让旧续租结果清掉刚绑定的重连。
+		if err := sess.BindNode(ctx); err != nil {
+			return fmt.Errorf("bind reconnecting player %d: %w", p.GetPlayerID(), err)
+		}
+		bound = true
 		p.UpdateSession(sess)
 		gameTable.ReEnter(p)
+		p.ConfirmNodeBinding()
 		return nil
 	})
-	if err != nil {
-		cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), playerCleanupTimeout)
-		defer cancelCleanup()
-		return nil, errors.Join(
-			fmt.Errorf("re-enter player %d: %w", p.GetPlayerID(), err),
-			sess.UnbindNode(cleanupCtx),
-		)
+	if err == nil {
+		return loginResponse(p, p.GetPlayerID(), codes.Success, "ReEnter"), nil
 	}
-	return loginResponse(p, p.GetPlayerID(), codes.Success, "ReEnter"), nil
+	err = fmt.Errorf("re-enter player %d: %w", p.GetPlayerID(), err)
+	if !bound {
+		return nil, err
+	}
+	cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), playerCleanupTimeout)
+	defer cancelCleanup()
+	return nil, errors.Join(err, sess.UnbindNode(cleanupCtx))
 }
 
 func (uc *Usecase) enterRoom(ctx context.Context, sess player.Session, uid int64, token string) (*v1.LoginRsp, error) {
@@ -417,6 +425,10 @@ func (uc *Usecase) cleanupPlayers(ctx context.Context) error {
 }
 
 func (uc *Usecase) persistAndUnbindPlayer(ctx context.Context, p *player.Player) error {
+	// 失权后只回收本地驻留，不能覆盖新 owner 的存档或绑定。
+	if p.NodeBindingLost() {
+		return nil
+	}
 	uid := p.GetPlayerID()
 	if ctx == nil {
 		return fmt.Errorf("cleanup player %d: context is nil", uid)

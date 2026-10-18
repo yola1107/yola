@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-kratos/kratos/contrib/registry/etcd/v3"
@@ -67,7 +68,7 @@ type Registry struct {
 	key       string
 	leaseID   clientv3.LeaseID
 	cancel    context.CancelFunc
-	session   *concurrency.Session
+	session   atomic.Pointer[concurrency.Session]
 }
 
 // New 创建进程专用 Registry；调用方负责 Close。
@@ -118,6 +119,15 @@ func newRegistry(client *clientv3.Client, prefix string) *Registry {
 		namespace: prefix,
 		operation: make(chan struct{}, 1),
 	}
+}
+
+// Done 在成功登记的租约失效、注销或 client 关闭后关闭；登记成功前返回 nil。
+// 调用方应在 Register 成功后取得通知；本实例不会重新申请租约。
+func (r *Registry) Done() <-chan struct{} {
+	if session := r.session.Load(); session != nil {
+		return session.Done()
+	}
+	return nil
 }
 
 // Close 关闭 client 及其租约续期；未显式注销的记录等待 TTL 回收。
