@@ -15,6 +15,7 @@
 | 任务 | 读取文档 |
 | --- | --- |
 | 编写、修改或审查 Go 代码 | [Go 编码规范](docs/harness/rules/go-style.md) |
+| 执行构建、检查或测试 | [开发与验证](docs/README.md#开发与验证) |
 | 涉及模块职责、通信、并发或生命周期 | [架构契约](docs/project/architecture.md) |
 | 探索代码、开展设计或使用工程类 Skill | [领域文档约定](docs/agents/domain.md) |
 | 读取、拆解或更新任务 | [本地任务约定](docs/agents/issue-tracker.md) |

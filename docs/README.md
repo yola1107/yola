@@ -132,7 +132,26 @@ go test ./gateway
 (cd test && go test ./...)
 ```
 
-集成测试和压测的依赖、参数见[测试模块](../test/README.md)及 [Ludo 压测](../test/ludo/README.md#当前-press-入口)。测试编写遵循 [Go 测试规范](harness/rules/go-style.md#测试)：TTL、Redis 原子修改和 etcd 租约由 adapter 测试验证，示例测试验证装配参数。
+测试编写遵循 [Go 测试规范](harness/rules/go-style.md#测试)：TTL、Redis 原子修改和 etcd 租约由 adapter 测试验证，示例测试验证装配参数。
+
+#### Redis 与 etcd 集成测试
+
+真实 Redis/etcd 场景通过环境变量启用；未配置时相关测试会跳过，因此 `make check` 成功不能单独证明这些场景通过。
+
+先准备专用、可丢弃的单机 Redis 和 etcd 实例，再从仓库根目录使用 sh、bash 或 zsh 执行。以下使用本机默认端口，其他地址替换对应变量值；Redis 需要认证时，通过运行环境设置 `YOLA_REDIS_PASSWORD`。
+
+```sh
+YOLA_REDIS_INTEGRATION=127.0.0.1:6379 \
+YOLA_ETCD_INTEGRATION=127.0.0.1:2379 \
+go test -race -count=1 -timeout=180s -v \
+  ./locate/redis ./registry/etcd ./gateway ./node ./examples/env
+```
+
+该命令验证 Redis 绑定与 epoch、etcd 注册与租约、Gateway/Node 联动和示例装配，包含 Node 注册失租后的停止回收。`-count=1` 禁用测试结果缓存，`-v` 显示用例结果；确认目标场景为 `PASS`，并核对 `SKIP` 的原因。Redis Cluster 拓扑测试需要单独配置，入口见[集群测试](../locate/redis/cluster_test.go)。
+
+#### 游戏集成测试与压测
+
+`test/` module 的依赖、参数和运行命令见[测试模块](../test/README.md)及 [Ludo 压测](../test/ludo/README.md#当前-press-入口)。
 
 ### 源码导航
 
