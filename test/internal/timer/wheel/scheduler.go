@@ -34,17 +34,6 @@ const (
 	stateStopped
 )
 
-type taskEntry struct {
-	id       timer.TaskID
-	execAt   time.Time
-	interval time.Duration
-	repeated bool
-	canceled atomic.Bool
-	callback func()
-	timer    *timingwheel.Timer
-	arming   bool
-}
-
 // Option configures a Scheduler.
 type Option func(*options)
 
@@ -214,12 +203,10 @@ func (s *Scheduler) ForeverNow(interval time.Duration, callback func()) (timer.T
 func (s *Scheduler) Cancel(id timer.TaskID) bool {
 	s.mu.Lock()
 	entry, ok := s.tasks[id]
+	var scheduled *timingwheel.Timer
 	if ok {
 		entry.canceled.Store(true)
 		delete(s.tasks, id)
-	}
-	var scheduled *timingwheel.Timer
-	if ok {
 		scheduled = entry.timer
 		entry.timer = nil
 	}
@@ -455,6 +442,17 @@ func (s *Scheduler) cancelAll() []*timingwheel.Timer {
 	}
 	clear(s.tasks)
 	return scheduled
+}
+
+type taskEntry struct {
+	id       timer.TaskID
+	execAt   time.Time
+	interval time.Duration
+	repeated bool
+	canceled atomic.Bool
+	callback func()
+	timer    *timingwheel.Timer
+	arming   bool
 }
 
 func nextExecution(previous time.Time, interval time.Duration, now time.Time) time.Time {

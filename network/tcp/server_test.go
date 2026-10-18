@@ -10,44 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"yola/api/protocol/v1"
 	"yola/network"
 )
-
-type blockingListener struct {
-	accepting chan struct{}
-	release   chan struct{}
-	once      atomic.Bool
-}
-
-func eventually(timeout time.Duration, condition func() bool) bool {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if condition() {
-			return true
-		}
-		time.Sleep(time.Millisecond)
-	}
-	return condition()
-}
-
-func newBlockingListener() *blockingListener {
-	return &blockingListener{accepting: make(chan struct{}), release: make(chan struct{})}
-}
-
-func (l *blockingListener) Accept() (net.Conn, error) {
-	if l.once.CompareAndSwap(false, true) {
-		close(l.accepting)
-	}
-	<-l.release
-	return nil, net.ErrClosed
-}
-
-func (*blockingListener) Close() error { return nil }
-
-func (*blockingListener) Addr() net.Addr { return &net.TCPAddr{IP: net.ParseIP("127.0.0.1")} }
-
-func (l *blockingListener) forceClose() { close(l.release) }
 
 func TestServerStopRespectsContextWhileAcceptIsBlocked(t *testing.T) {
 	lis := newBlockingListener()
@@ -91,29 +55,17 @@ func TestServerStopPrefersCompletedServe(t *testing.T) {
 }
 
 func TestServerStopClosesActiveConnection(t *testing.T) {
-	s := newTCPServer(t, tcpTestHandler{}, Address("127.0.0.1:0"))
-	if _, err := s.Endpoint(); err != nil {
-		t.Fatalf("Endpoint() error = %v", err)
-	}
-	errCh := make(chan error, 1)
-	go func() { errCh <- s.Start(context.Background()) }()
-	if !eventually(time.Second, func() bool {
-		s.lifecycleMu.Lock()
-		defer s.lifecycleMu.Unlock()
-		return s.cancel != nil
-	}) {
-		t.Fatal("server did not start")
-	}
-	conn := dialTCPTest(t, s.lis.Addr().String())
+	handler := tcpTestHandler{opened: make(chan network.Connection, 1)}
+	s := newTCPServer(t, handler, Address("127.0.0.1:0"))
+	endpoint := serveTCPTestServer(t, s)
+	conn := dialTCPTest(t, endpoint)
+	waitTCPValue(t, handler.opened)
 	if err := s.Stop(context.Background()); err != nil {
 		t.Fatalf("Stop() error = %v", err)
 	}
 	_ = conn.SetReadDeadline(time.Now().Add(time.Second))
 	if _, err := conn.Read(make([]byte, 1)); err == nil {
 		t.Fatal("connection remained open after Stop")
-	}
-	if err := <-errCh; err != nil {
-		t.Fatalf("Start() error = %v", err)
 	}
 	if err := s.Stop(context.Background()); err != nil {
 		t.Fatalf("second Stop() error = %v", err)
@@ -128,7 +80,8 @@ func TestEndpointUsesConfiguredListener(t *testing.T) {
 	}{
 		{name: "TCP", scheme: "tcp"},
 		{name: "TLS", scheme: "tcps", options: []ServerOption{TLSConfig(&tls.Config{
-			MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{{}},
+			MinVersion:   tls.VersionTLS12,
+			Certificates: []tls.Certificate{{}},
 		})}},
 	}
 	for _, test := range tests {
@@ -388,27 +341,21 @@ func TestServerTopLevelTLSConfigIsCloned(t *testing.T) {
 
 func TestServerSetHandlerAllowsDeferredInjection(t *testing.T) {
 	s := NewServer(Address("127.0.0.1:0"))
+	handler := tcpTestHandler{opened: make(chan network.Connection, 1)}
 	if err := s.SetHandler(nil); err == nil {
 		t.Fatal("SetHandler succeeded with nil handler")
 	}
-	if err := s.SetHandler(tcpTestHandler{}); err != nil {
+	if err := s.SetHandler(handler); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.SetHandler(tcpTestHandler{}); err == nil || err.Error() != "tcp: connection handler is already set" {
 		t.Fatalf("second SetHandler() error = %v, want already set", err)
 	}
-	done := make(chan error, 1)
-	go func() { done <- s.Start(context.Background()) }()
-	endpoint, err := s.Endpoint()
-	if err != nil {
-		t.Fatal(err)
-	}
-	conn := dialTCPTest(t, endpoint.Host)
+	endpoint := serveTCPTestServer(t, s)
+	conn := dialTCPTest(t, endpoint)
+	waitTCPValue(t, handler.opened)
 	_ = conn.Close()
 	if err := s.Stop(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
 	if err := s.SetHandler(tcpTestHandler{}); err == nil {
@@ -425,7 +372,7 @@ func TestServerEnforcesConnectionLimits(t *testing.T) {
 		{name: "per IP", options: []ServerOption{MaxConnLimit(2), MaxConnPerIP(1)}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			h := &lifecycleHandler{opened: make(chan struct{}, 2)}
+			h := tcpTestHandler{opened: make(chan network.Connection, 2)}
 			options := append([]ServerOption{Address("127.0.0.1:0")}, test.options...)
 			server := newTCPServer(t, h, options...)
 			endpoint := serveTCPTestServer(t, server)
@@ -446,25 +393,40 @@ func TestServerEnforcesConnectionLimits(t *testing.T) {
 			if !eventually(time.Second, func() bool { return tcpServerConnectionCount(server) == 0 }) {
 				t.Fatal("connection slot was not released")
 			}
-			third := dialTCPTest(t, endpoint)
-			defer third.Close()
+			dialTCPTest(t, endpoint)
 			waitTCPValue(t, h.opened)
 		})
 	}
 }
 
-type lifecycleHandler struct {
-	openErr error
-	opened  chan struct{}
+type blockingListener struct {
+	accepting chan struct{}
+	release   chan struct{}
+	once      atomic.Bool
 }
 
-func (h *lifecycleHandler) Open(context.Context, network.Connection) error {
-	h.opened <- struct{}{}
-	return h.openErr
+func newBlockingListener() *blockingListener {
+	return &blockingListener{accepting: make(chan struct{}), release: make(chan struct{})}
 }
 
-func (*lifecycleHandler) Handle(_ context.Context, _ network.Connection, message *v1.Proto) (*v1.Proto, error) {
-	return message, nil
+func (l *blockingListener) Accept() (net.Conn, error) {
+	if l.once.CompareAndSwap(false, true) {
+		close(l.accepting)
+	}
+	<-l.release
+	return nil, net.ErrClosed
 }
 
-func (*lifecycleHandler) Close(context.Context, network.Connection) {}
+func (*blockingListener) Close() error   { return nil }
+func (*blockingListener) Addr() net.Addr { return &net.TCPAddr{IP: net.ParseIP("127.0.0.1")} }
+func (l *blockingListener) forceClose()  { close(l.release) }
+func eventually(timeout time.Duration, condition func() bool) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if condition() {
+			return true
+		}
+		time.Sleep(time.Millisecond)
+	}
+	return condition()
+}

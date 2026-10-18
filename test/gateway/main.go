@@ -39,7 +39,7 @@ func main() {
 	appCtx, cancelApp := context.WithCancel(context.Background())
 	defer cancelApp()
 
-	registry, err := etcd.New(
+	registry, err := etcd.NewNodeRegistry(
 		etcd.WithEndpoints(cfg.etcdEndpoints),
 		etcd.WithPrefix(cfg.etcdPrefix),
 	)
@@ -111,7 +111,6 @@ func main() {
 		kratos.Name(Name),
 		kratos.Logger(logger),
 		kratos.StopTimeout(stopTimeout),
-		kratos.BeforeStart(gate.BeforeStart),
 		kratos.AfterStart(func(ctx context.Context) error {
 			go runBroadcastProbe(ctx, logger, gate, eventBus)
 			return nil
@@ -120,7 +119,6 @@ func main() {
 			return eventBus.Close()
 		}),
 		kratos.Server(gate),
-		kratos.Registrar(registry),
 	)
 	if err = app.Run(); err != nil {
 		panic(err)

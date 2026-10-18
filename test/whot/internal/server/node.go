@@ -8,10 +8,18 @@ import (
 	"yola/test/whot/internal/conf"
 	"yola/test/whot/internal/service"
 
+	"github.com/go-kratos/kratos/v3/registry"
 	"github.com/redis/go-redis/v9"
 )
 
-func NewNodeServer(redisClient redis.UniversalClient, game *service.Service, serverConfig *conf.Server, dataConfig *conf.Data) (*node.Server, error) {
+func NewNodeServer(
+	redisClient redis.UniversalClient,
+	registrar registry.Registrar,
+	game *service.Service,
+	serverConfig *conf.Server,
+	dataConfig *conf.Data,
+) (*node.Server, error) {
+
 	if game == nil {
 		return nil, errors.New("whot service is required")
 	}
@@ -20,11 +28,14 @@ func NewNodeServer(redisClient redis.UniversalClient, game *service.Service, ser
 	if timeout <= 0 {
 		return nil, errors.New("node timeout must be positive")
 	}
+	locator := locateredis.New(redisClient)
 	options := []node.Option{
+		node.Registration(registrar),
 		node.Address(config.GetAddr()),
 		node.AdvertiseHost(dataConfig.GetAdvertiseHost()),
 		node.HandlerTimeout(timeout),
-		node.Locator(locateredis.New(redisClient)),
+		node.Stateful(locator),
+		node.GateDirectory(locator),
 		node.Drain(game.Drain),
 	}
 	if network := config.GetNetwork(); network != "" {

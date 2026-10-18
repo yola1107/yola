@@ -13,36 +13,26 @@ import (
 
 func TestOptionSetters(t *testing.T) {
 	ctx := context.Background()
-	t.Run("context", func(t *testing.T) {
-		var configured options
-		WithContext(ctx)(&configured)
-		require.Equal(t, ctx, configured.ctx)
-	})
-	t.Run("URL", func(t *testing.T) {
-		var configured options
-		WithURL("nats://127.0.0.1:4222")(&configured)
-		require.Equal(t, "nats://127.0.0.1:4222", configured.url)
-	})
-	t.Run("timeout", func(t *testing.T) {
-		var configured options
-		WithTimeout(3 * time.Second)(&configured)
-		require.Equal(t, 3*time.Second, configured.timeout)
-	})
-	t.Run("queue capacity", func(t *testing.T) {
-		var configured options
-		WithQueueCapacity(32)(&configured)
-		require.Equal(t, 32, configured.queueCapacity)
-	})
-	t.Run("maximum payload size", func(t *testing.T) {
-		var configured options
-		WithMaxPayloadBytes(4096)(&configured)
-		require.Equal(t, 4096, configured.maxPayloadBytes)
-	})
-	t.Run("user info", func(t *testing.T) {
-		var configured options
-		WithUserInfo("test-user", "test-password")(&configured)
-		require.Equal(t, []string{"test-user", "test-password"}, []string{configured.username, configured.password})
-	})
+	var configured options
+	for _, option := range []Option{
+		WithContext(ctx),
+		WithURL("nats://127.0.0.1:4222"),
+		WithTimeout(3 * time.Second),
+		WithQueueCapacity(32),
+		WithMaxPayloadBytes(4096),
+		WithUserInfo("test-user", "test-password"),
+	} {
+		option(&configured)
+	}
+	require.Equal(t, options{
+		ctx:             ctx,
+		url:             "nats://127.0.0.1:4222",
+		timeout:         3 * time.Second,
+		queueCapacity:   32,
+		maxPayloadBytes: 4096,
+		username:        "test-user",
+		password:        "test-password",
+	}, configured)
 }
 
 func TestRedactedURL(t *testing.T) {

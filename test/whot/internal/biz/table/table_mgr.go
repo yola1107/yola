@@ -32,6 +32,10 @@ const (
 	defaultTableMailboxWorkers = 16
 )
 
+type ClientPusher interface {
+	PushToUID(ctx context.Context, uid string, command int32, msg proto.Message) error
+}
+
 type Manager struct {
 	tables    []*Table
 	mailboxes *mailbox.Group
@@ -40,10 +44,6 @@ type Manager struct {
 
 	pusherMu sync.RWMutex
 	pusher   ClientPusher
-}
-
-type ClientPusher interface {
-	PushToUID(ctx context.Context, uid string, command int32, msg proto.Message) error
 }
 
 func NewManager(room *conf.Room, repo Repo) *Manager {
@@ -255,23 +255,6 @@ func (m *Manager) CallPlayer(ctx context.Context, p *player.Player, action func(
 	})
 }
 
-func CheckRoomLimit(p *player.Player, game *conf.Room_Game) (int32, string) {
-	money, vip := p.GetAllMoney(), p.GetVipGrade()
-	if money < game.MinMoney {
-		return codes.MoneyBelowMinLimit, "MONEY_BELOW_MIN_LIMIT"
-	}
-	if game.MaxMoney != -1 && money > game.MaxMoney {
-		return codes.MoneyOverMaxLimit, "MONEY_OVER_MAX_LIMIT"
-	}
-	if money < game.BaseMoney {
-		return codes.MoneyBelowBaseLimit, "MONEY_BELOW_BASE_LIMIT"
-	}
-	if vip < game.VipLimit {
-		return codes.VIPLimit, "VIP_LIMIT"
-	}
-	return codes.Success, ""
-}
-
 func (m *Manager) table(tableID int32) *Table {
 	if tableID <= 0 || tableID > int32(len(m.tables)) {
 		return nil
@@ -412,6 +395,23 @@ func (m *Manager) restorePlayer(gameTable *Table, p *player.Player) error {
 		return errors.New("restore player to original table")
 	}
 	return nil
+}
+
+func CheckRoomLimit(p *player.Player, game *conf.Room_Game) (int32, string) {
+	money, vip := p.GetAllMoney(), p.GetVipGrade()
+	if money < game.MinMoney {
+		return codes.MoneyBelowMinLimit, "MONEY_BELOW_MIN_LIMIT"
+	}
+	if game.MaxMoney != -1 && money > game.MaxMoney {
+		return codes.MoneyOverMaxLimit, "MONEY_OVER_MAX_LIMIT"
+	}
+	if money < game.BaseMoney {
+		return codes.MoneyBelowBaseLimit, "MONEY_BELOW_BASE_LIMIT"
+	}
+	if vip < game.VipLimit {
+		return codes.VIPLimit, "VIP_LIMIT"
+	}
+	return codes.Success, ""
 }
 
 func seatMigratingPlayer(gameTable *Table, p *player.Player) (bool, error) {

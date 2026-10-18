@@ -3,12 +3,14 @@ package table
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"testing/synctest"
 	"time"
 
 	"yola/test/internal/mailbox"
 	"yola/test/whot/internal/biz/player"
+	"yola/test/whot/internal/conf"
 )
 
 func TestManagerLimitsConcurrentTableJobs(t *testing.T) {
@@ -25,14 +27,20 @@ func TestManagerLimitsConcurrentTableJobs(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
-				room := testRoomConfig()
-				room.Table.TableNum = tc.tableCount
+				room := &conf.Room{
+					Table:    &conf.Room_Table{TableNum: tc.tableCount, ChairNum: 4},
+					Game:     &conf.Room_Game{MaxMoney: -1, BaseMoney: 1},
+					Robot:    &conf.Room_Robot{},
+					LogCache: &conf.Room_LogCache{},
+				}
 				manager := NewManager(room, new(managerTestRepo))
 				started := make(chan struct{}, tc.tableCount)
 				release := make(chan struct{})
 				t.Cleanup(func() {
 					close(release)
-					if err := manager.Close(context.Background()); err != nil {
+					ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+					defer cancel()
+					if err := manager.Close(ctx); err != nil {
 						t.Error(err)
 					}
 				})
@@ -62,15 +70,24 @@ func TestManagerCloseCanRetryAfterTimeout(t *testing.T) {
 	if err := manager.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := manager.Close(ctx); err != nil {
+			t.Error(err)
+		}
+	})
 	started := make(chan struct{})
 	release := make(chan struct{})
+	unblock := sync.OnceFunc(func() { close(release) })
+	defer unblock()
 	if err := manager.mailboxes.Executor(0).TryPost(func() {
 		close(started)
 		<-release
 	}); err != nil {
 		t.Fatal(err)
 	}
-	<-started
+	receiveWithin(t, started)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
@@ -81,21 +98,29 @@ func TestManagerCloseCanRetryAfterTimeout(t *testing.T) {
 		t.Fatalf("TryPost after Close() error = %v, want %v", err, mailbox.ErrStopped)
 	}
 
-	close(release)
-	if err := manager.Close(context.Background()); err != nil {
+	unblock()
+	retryCtx, retryCancel := context.WithTimeout(context.Background(), time.Second)
+	defer retryCancel()
+	if err := manager.Close(retryCtx); err != nil {
 		t.Fatalf("retry Close() error = %v", err)
 	}
 }
 
 func TestManagerCallPlayerRechecksCapturedRoute(t *testing.T) {
-	room := testRoomConfig()
-	room.Table.TableNum = 2
+	room := &conf.Room{
+		Table:    &conf.Room_Table{TableNum: 2, ChairNum: 4},
+		Game:     &conf.Room_Game{MaxMoney: -1, BaseMoney: 1},
+		Robot:    &conf.Room_Robot{},
+		LogCache: &conf.Room_LogCache{},
+	}
 	manager := newManager(room, new(managerTestRepo), 1, 4, 1)
 	if err := manager.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		if err := manager.Close(context.Background()); err != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := manager.Close(ctx); err != nil {
 			t.Error(err)
 		}
 	})
@@ -111,13 +136,15 @@ func TestManagerCallPlayerRechecksCapturedRoute(t *testing.T) {
 
 	started := make(chan struct{})
 	release := make(chan struct{})
+	unblock := sync.OnceFunc(func() { close(release) })
+	defer unblock()
 	if err := manager.mailboxes.Executor(0).TryPost(func() {
 		close(started)
 		<-release
 	}); err != nil {
 		t.Fatal(err)
 	}
-	<-started
+	receiveWithin(t, started)
 	actionRan := make(chan struct{})
 	callDone := make(chan error, 1)
 	go func() {
@@ -128,8 +155,8 @@ func TestManagerCallPlayerRechecksCapturedRoute(t *testing.T) {
 	}()
 	waitForTableTest(t, func() bool { return manager.mailboxes.Executor(0).Stats().Free == 3 })
 	p.SetTableID(2)
-	close(release)
-	if err := <-callDone; !errors.Is(err, ErrPlayerRouteChanged) {
+	unblock()
+	if err := receiveWithin(t, callDone); !errors.Is(err, ErrPlayerRouteChanged) {
 		t.Fatalf("CallPlayer() error = %v, want %v", err, ErrPlayerRouteChanged)
 	}
 	select {
@@ -140,8 +167,12 @@ func TestManagerCallPlayerRechecksCapturedRoute(t *testing.T) {
 }
 
 func TestManagerSwitchMovesPlayerAcrossTableMailboxes(t *testing.T) {
-	room := testRoomConfig()
-	room.Table.TableNum = 2
+	room := &conf.Room{
+		Table:    &conf.Room_Table{TableNum: 2, ChairNum: 4},
+		Game:     &conf.Room_Game{MaxMoney: -1, BaseMoney: 1},
+		Robot:    &conf.Room_Robot{},
+		LogCache: &conf.Room_LogCache{},
+	}
 	manager := newManager(room, new(managerTestRepo), 2, 4, 1)
 	if err := manager.Start(context.Background()); err != nil {
 		t.Fatal(err)
@@ -170,20 +201,13 @@ func TestManagerSwitchMovesPlayerAcrossTableMailboxes(t *testing.T) {
 	}
 }
 
-func waitForTableTest(t *testing.T, condition func() bool) {
-	t.Helper()
-	deadline := time.Now().Add(time.Second)
-	for !condition() {
-		if time.Now().After(deadline) {
-			t.Fatal("timed out waiting for table condition")
-		}
-		time.Sleep(time.Millisecond)
-	}
-}
-
 func TestManagerTableHasStrictBounds(t *testing.T) {
-	room := testRoomConfig()
-	room.Table.TableNum = 2
+	room := &conf.Room{
+		Table:    &conf.Room_Table{TableNum: 2, ChairNum: 4},
+		Game:     &conf.Room_Game{MaxMoney: -1, BaseMoney: 1},
+		Robot:    &conf.Room_Robot{},
+		LogCache: &conf.Room_LogCache{},
+	}
 	manager := NewManager(room, new(managerTestRepo))
 	defer func() { _ = manager.Close(context.Background()) }()
 
@@ -195,8 +219,31 @@ func TestManagerTableHasStrictBounds(t *testing.T) {
 	}
 }
 
+func waitForTableTest(t *testing.T, condition func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for !condition() {
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for table condition")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func receiveWithin[T any](t *testing.T, values <-chan T) T {
+	t.Helper()
+	select {
+	case value := <-values:
+		return value
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for table test synchronization")
+		var zero T
+		return zero
+	}
+}
+
+var _ Repo = (*managerTestRepo)(nil)
+
 type managerTestRepo struct{}
 
 func (*managerTestRepo) LogoutGame(*player.Player, int32, string) error { return nil }
-
-var _ Repo = (*managerTestRepo)(nil)

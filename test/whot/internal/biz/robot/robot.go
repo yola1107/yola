@@ -60,6 +60,38 @@ func (m *Manager) Run(ctx context.Context) {
 	}
 }
 
+// Leave 机器人离开桌子，放回空闲池
+func (m *Manager) Leave(uid int64) bool {
+	val, ok := m.all.Load(uid)
+	if !ok {
+		return false
+	}
+	p, ok := val.(*player.Player)
+	if !ok {
+		m.all.Delete(uid)
+		m.free.Delete(uid)
+		return false
+	}
+	// 已经在空闲池
+	if _, alreadyFree := m.free.Load(uid); alreadyFree {
+		return true
+	}
+	m.reset(p)
+	m.free.Store(uid, p)
+	return true
+}
+
+// Monitor 返回当前机器人总数、空闲数和游戏中数量
+func (m *Manager) Monitor() Monitor {
+	all := m.countAll()
+	free := m.countFree()
+	return Monitor{
+		Num:   all,
+		Free:  free,
+		Gamed: all - free,
+	}
+}
+
 // load 批量加载机器人，保持机器人数量符合配置
 func (m *Manager) load() {
 	cfg := m.rc.Robot
@@ -149,27 +181,6 @@ func (m *Manager) login(ctx context.Context) {
 	}
 }
 
-// Leave 机器人离开桌子，放回空闲池
-func (m *Manager) Leave(uid int64) bool {
-	val, ok := m.all.Load(uid)
-	if !ok {
-		return false
-	}
-	p, ok := val.(*player.Player)
-	if !ok {
-		m.all.Delete(uid)
-		m.free.Delete(uid)
-		return false
-	}
-	// 已经在空闲池
-	if _, alreadyFree := m.free.Load(uid); alreadyFree {
-		return true
-	}
-	m.reset(p)
-	m.free.Store(uid, p)
-	return true
-}
-
 // Reset 重置机器人状态（比如金额）
 func (m *Manager) reset(p *player.Player) {
 	minMoney := max(m.rc.Robot.MinMoney, m.rc.Game.MinMoney)
@@ -180,17 +191,6 @@ func (m *Manager) reset(p *player.Player) {
 	money := p.GetBaseData().Money
 	if money < minMoney || money > maxMoney {
 		p.GetBaseData().Money = float64(int64(xgo.RandFloat(minMoney, maxMoney)))
-	}
-}
-
-// Monitor 返回当前机器人总数、空闲数和游戏中数量
-func (m *Manager) Monitor() Monitor {
-	all := m.countAll()
-	free := m.countFree()
-	return Monitor{
-		Num:   all,
-		Free:  free,
-		Gamed: all - free,
 	}
 }
 

@@ -4,9 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"net/url"
-	"os"
+	"time"
 
 	"yola/instance"
 	"yola/internal/contextwait"
@@ -15,16 +14,243 @@ import (
 	"github.com/go-kratos/kratos/v3"
 	"github.com/go-kratos/kratos/v3/registry"
 	"google.golang.org/grpc"
+	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 )
 
-// Endpoint 返回发布到 Kratos 注册器的内部 endpoint。
-func (s *Server) Endpoint() (*url.URL, error) {
+var errNodeStopped = errors.New("node: server is stopping or stopped")
+
+// Start 拥有内部监听、epoch 和目录登记；全部就绪后才开放请求。
+func (s *Server) Start(ctx context.Context) error {
+	ctx = normalizeContext(ctx)
+	s.lifecycleMu.Lock()
+	if s.requests.isClosed() {
+		s.lifecycleMu.Unlock()
+		return errNodeStopped
+	}
+	if s.state != _stNew {
+		state := s.state
+		s.lifecycleMu.Unlock()
+		if state == _stStarted {
+			return errors.New("node: server is already started")
+		}
+		return errors.New("node: server is already starting")
+	}
+	startupCtx, cancel := context.WithCancel(ctx)
+	s.startupCancel = cancel
+	s.lifecycleCtx = context.WithoutCancel(ctx)
+	s.startupDone = make(chan struct{})
+	s.state = _stStarting
+	s.lifecycleMu.Unlock()
+
+	serveResult, err := s.start(startupCtx, ctx)
+	cancel()
+	close(s.startupDone)
+	if err != nil {
+		return s.stopAfterFailure(ctx, errors.Join(context.Cause(s.fatalCtx), err), s.cleanupTimeout)
+	}
+	select {
+	case <-s.fatalCtx.Done():
+		return s.stopAfterFailure(ctx, context.Cause(s.fatalCtx), s.shutdownTimeout)
+	case serveErr := <-serveResult:
+		if fatalErr := context.Cause(s.fatalCtx); fatalErr != nil {
+			return s.stopAfterFailure(ctx, fatalErr, s.shutdownTimeout)
+		}
+		if !s.requests.isClosed() {
+			if serveErr == nil {
+				serveErr = errors.New("node: gRPC server stopped unexpectedly")
+			}
+			return s.stopAfterFailure(ctx, serveErr, s.shutdownTimeout)
+		}
+		if errors.Is(serveErr, grpc.ErrServerStopped) {
+			return nil
+		}
+		return serveErr
+	}
+}
+
+// Stop 只触发一次回收；调用者超时不改变回收进程和其他调用者的等待结果。
+func (s *Server) Stop(ctx context.Context) error {
+	ctx = normalizeContext(ctx)
+	s.startCleanup(ctx, s.shutdownTimeout)
+	return s.waitCleanup(ctx)
+}
+
+func (s *Server) failLifecycle(err error) {
+	s.beginStopping()
+	s.deliveries.close()
+	s.fatalCancel(err)
+	s.lifecycleMu.Lock()
+	timeout := s.shutdownTimeout
+	if s.state != _stStarted {
+		timeout = s.cleanupTimeout
+	}
+	s.lifecycleMu.Unlock()
+	s.startCleanup(context.Background(), timeout)
+}
+
+func (s *Server) start(ctx, serveCtx context.Context) (<-chan error, error) {
+	app, ok := kratos.FromContext(ctx)
+	if !ok {
+		return nil, errors.New("node: application context is required")
+	}
+	if !locate.ValidServiceName(app.Name()) || app.ID() == "" {
+		return nil, errors.New("node: invalid application identity")
+	}
+	endpoint, err := s.resolveGRPCEndpoint(ctx)
+	if err != nil {
+		return nil, err
+	}
+	identity, lease, err := s.claimNodeIdentity(ctx, app)
+	// 即使申请迟到，固定凭据也交给唯一回收 owner。
+	s.lease.Store(lease)
+	if err != nil {
+		return nil, err
+	}
+	if err = s.startupError(ctx); err != nil {
+		return nil, err
+	}
+	s.identity.Store(&identity)
+	if ready := lease.start(s.failLifecycle); ready != nil {
+		select {
+		case err = <-ready:
+		case <-ctx.Done():
+			err = ctx.Err()
+		}
+	}
+	if err == nil {
+		err = lease.valid()
+	}
+	if err != nil {
+		return nil, err
+	}
+	if err = s.startupError(ctx); err != nil {
+		return nil, err
+	}
+	serveResult := make(chan error, 1)
+	go func() { serveResult <- s.grpcServer.Start(serveCtx) }()
+	select {
+	case <-s.grpcListener.Accepting():
+	case serveErr := <-serveResult:
+		if serveErr == nil {
+			serveErr = errors.New("node: gRPC server stopped during startup")
+		}
+		return nil, serveErr
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	if err = s.startupError(ctx); err != nil {
+		return nil, err
+	}
+	record := s.registrationRecord(app, endpoint)
+	if err = s.registrar.Register(ctx, record); err != nil {
+		return nil, err
+	}
 	s.lifecycleMu.Lock()
 	defer s.lifecycleMu.Unlock()
+	s.registration = record
 	if s.requests.isClosed() {
-		return nil, errors.New("node: server is stopping or stopped")
+		return nil, errNodeStopped
 	}
-	return s.resolveGRPCEndpoint(context.Background())
+	if err = ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err = lease.valid(); err != nil {
+		return nil, err
+	}
+	s.state = _stStarted
+	s.deliveries.open()
+	s.requests.open()
+	s.healthServer.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
+	return serveResult, nil
+}
+
+func (s *Server) startCleanup(base context.Context, timeout time.Duration) {
+	s.beginStopping()
+	s.cleanupOnce.Do(func() {
+		s.lifecycleMu.Lock()
+		if s.lifecycleCtx != nil {
+			base = s.lifecycleCtx
+		}
+		s.lifecycleMu.Unlock()
+		go func() {
+			s.cleanupErr = s.cleanup(base, timeout)
+			close(s.cleanupDone)
+		}()
+	})
+}
+
+func (s *Server) cleanup(base context.Context, timeout time.Duration) error {
+	base = context.WithoutCancel(base)
+	ctx, cancel := context.WithTimeout(base, timeout)
+	defer cancel()
+	s.lifecycleMu.Lock()
+	startupDone := s.startupDone
+	s.lifecycleMu.Unlock()
+	// 为在途启动保留一部分预算，不能让它耗尽网络与业务回收的时间。
+	var startupErr error
+	if startupDone != nil {
+		waitCtx, waitCancel := context.WithTimeout(ctx, timeout/4)
+		startupErr = contextwait.Done(waitCtx, startupDone)
+		waitCancel()
+	}
+	record := s.registeredInstance()
+	registrationErr := s.deregister(ctx, record, timeout/4)
+	requestErr := s.requests.stopAndWait(ctx)
+	var drainErr error
+	var lateDrain <-chan error
+	if requestErr == nil && s.drain != nil {
+		result := make(chan error, 1)
+		go func() { result <- s.drain(ctx) }()
+		select {
+		case drainErr = <-result:
+		case <-ctx.Done():
+			drainErr = ctx.Err()
+			lateDrain = result
+		}
+	}
+	// Drain 停止绑定与推送生产者后，再关闭副作用准入。
+	deliveryErr := s.deliveries.stopAndWait(ctx)
+	drained := requestErr == nil && drainErr == nil && deliveryErr == nil
+	lease := s.lease.Load()
+	var renewalErr error
+	if !drained || startupErr != nil {
+		renewalErr = lease.stopRenewal(ctx)
+	}
+	networkErr := errors.Join(s.grpcServer.Stop(ctx), s.grpcListener.Close(), s.gateways.Close())
+	s.identity.Store(nil)
+	var epochErr error
+	if drained && startupErr == nil {
+		epochErr = lease.release(ctx)
+	}
+	cleanupErr := errors.Join(startupErr, registrationErr, requestErr, drainErr, deliveryErr, renewalErr, networkErr, epochErr)
+	if startupErr != nil {
+		// 创建者交接的迟到资源先回收，不能被尚未返回的 Drain 阻塞。
+		<-startupDone
+		lateCtx, lateCancel := context.WithTimeout(base, timeout)
+		if lateRecord := s.registeredInstance(); lateRecord != record {
+			cleanupErr = errors.Join(cleanupErr, s.deregister(lateCtx, lateRecord, timeout/4))
+		}
+		if drained {
+			epochErr = s.lease.Load().release(lateCtx)
+		} else {
+			epochErr = s.lease.Load().stopRenewal(lateCtx)
+		}
+		lateCancel()
+		s.identity.Store(nil)
+		cleanupErr = errors.Join(cleanupErr, epochErr)
+	}
+	// 已知网络和续租已关闭；迟到的 Drain 仍由本轮回收汇合，不能重复执行。
+	if lateDrain != nil {
+		cleanupErr = errors.Join(cleanupErr, <-lateDrain)
+	}
+	return cleanupErr
+}
+
+func (s *Server) startupError(ctx context.Context) error {
+	if s.requests.isClosed() {
+		return errNodeStopped
+	}
+	return ctx.Err()
 }
 
 func (s *Server) resolveGRPCEndpoint(ctx context.Context) (*url.URL, error) {
@@ -33,241 +259,17 @@ func (s *Server) resolveGRPCEndpoint(ctx context.Context) (*url.URL, error) {
 	}
 	endpoint, err := s.grpcServer.Endpoint()
 	if err != nil {
-		return nil, errors.Join(
-			fmt.Errorf("node: resolve gRPC endpoint: %w", err),
-			s.closeGRPCListener(),
-		)
+		return nil, fmt.Errorf("node: resolve gRPC endpoint: %w", err)
 	}
 	return endpoint, nil
 }
 
-func (s *Server) closeGRPCListener() error {
-	if err := s.grpcListener.Close(); err != nil {
-		return fmt.Errorf("node: close gRPC listener: %w", err)
-	}
-	return nil
-}
-
-// Start 在首次续租核验后开放 BeforeStart 准备的服务。
-func (s *Server) Start(ctx context.Context) error {
-	s.lifecycleMu.Lock()
-	if s.requests.isClosed() {
-		s.lifecycleMu.Unlock()
-		return errors.New("node: server is stopping or stopped")
-	}
-	switch s.state {
-	case _stStarted:
-		s.lifecycleMu.Unlock()
-		return errors.New("node: server is already started")
-	case _stPrepared:
-	default:
-		s.lifecycleMu.Unlock()
-		return errors.New("node: server is not prepared")
-	}
-	ready := s.lease.Load().start(s.failLifecycle)
-	s.state = _stStarted
-	s.lifecycleMu.Unlock()
-	var startErr error
-	if ready != nil {
-		select {
-		case startErr = <-ready:
-		case <-ctx.Done():
-			startErr = ctx.Err()
-		}
-	}
-	if startErr == nil {
-		startErr = s.lease.Load().valid()
-	}
-	s.publishReady(startErr)
-	if startErr != nil {
-		if errors.Is(startErr, context.Canceled) && s.requests.isClosed() && context.Cause(s.fatalCtx) == nil {
-			return nil
-		}
-		return errors.Join(startErr, s.rollbackStart(ctx))
-	}
-
-	result := make(chan error, 1)
-	go func() { result <- s.grpcServer.Start(ctx) }()
-	select {
-	case <-s.fatalCtx.Done():
-		return context.Cause(s.fatalCtx)
-	case err := <-result:
-		if fatalErr := context.Cause(s.fatalCtx); fatalErr != nil {
-			return fatalErr
-		}
-		if errors.Is(err, grpc.ErrServerStopped) {
-			return nil
-		}
-		if err != nil {
-			return errors.Join(err, s.rollbackStart(ctx))
-		}
-		return nil
-	}
-}
-
-// Stop 排空请求、业务、绑定写入和投递，仅在全部完成后主动释放 epoch。
-func (s *Server) Stop(ctx context.Context) error {
-	ctx = normalizeContext(ctx)
-	var firstStop bool
-	var epochErr error
-	s.stopOnce.Do(func() {
-		firstStop = true
-		s.stopErr, epochErr = s.shutdown(ctx)
-	})
-	if !firstStop {
-		epochErr = s.lease.Load().retryRelease(ctx)
-	}
-	return errors.Join(s.stopErr, epochErr)
-}
-
-func (s *Server) shutdown(ctx context.Context) (error, error) {
-	if preparationDone := s.beginStopping(); preparationDone != nil {
-		if err := contextwait.Done(ctx, preparationDone); err != nil {
-			return err, nil
-		}
-	}
-
-	requestErr := s.requests.stopAndWait(ctx)
-	var drainErr error
-	if requestErr == nil && s.drain != nil {
-		drainErr = s.drain(ctx)
-	}
-	// 业务 Drain 负责停止绑定与推送生产者，出站副作用在此之前仍可接纳。
-	deliveryErr := s.deliveries.stopAndWait(ctx)
-	canRelease := requestErr == nil && drainErr == nil && deliveryErr == nil
-	var renewalErr error
-	if !canRelease {
-		renewalErr = s.lease.Load().stopRenewal(ctx)
-	}
-	grpcErr := errors.Join(s.grpcServer.Stop(ctx), s.closeGRPCListener())
-	var epochErr error
-	if canRelease {
-		epochErr = s.releaseEpoch(ctx)
-	}
-	slog.InfoContext(ctx, "node stopping", "pid", os.Getpid())
-	return errors.Join(requestErr, drainErr, deliveryErr, renewalErr, grpcErr, s.gateways.Close()), epochErr
-}
-
-// BeforeStart 校验应用身份与 Locator，并按需申请 Node epoch。
-func (s *Server) BeforeStart(ctx context.Context) (err error) {
-	s.lifecycleMu.Lock()
-	if s.requests.isClosed() {
-		s.lifecycleMu.Unlock()
-		return errors.New("node: server is stopping or stopped")
-	}
-	switch s.state {
-	case _stPreparing:
-		s.lifecycleMu.Unlock()
-		return errors.New("node: server is already preparing or prepared")
-	case _stPrepared, _stStarted:
-		s.requests.close()
-		s.lifecycleMu.Unlock()
-		return errors.New("node: server is already preparing or prepared")
-	}
-	preparationDone := make(chan struct{})
-	s.state = _stPreparing
-	s.preparationDone = preparationDone
-	s.lifecycleMu.Unlock()
-	var committed bool
-	var lease *epochLease
-	defer func() {
-		if !committed {
-			err = s.rollbackPreparation(ctx, lease, err)
-		}
-		close(preparationDone)
-	}()
-
-	app, ok := kratos.FromContext(ctx)
-	if !ok {
-		return errors.New("node: application context is required")
-	}
-	if !locate.ValidServiceName(app.Name()) || app.ID() == "" {
-		return errors.New("node: invalid application identity")
-	}
-	if _, endpointErr := s.resolveGRPCEndpoint(ctx); endpointErr != nil {
-		return endpointErr
-	}
-	identity, lease, err := s.claimNodeIdentity(ctx, app)
-	if err != nil {
-		return err
-	}
-	s.lifecycleMu.Lock()
-	if s.state != _stPreparing || s.requests.isClosed() {
-		s.lifecycleMu.Unlock()
-		return errors.New("node: server is stopping or stopped")
-	}
-	s.lease.Store(lease)
-	s.identity.Store(&identity)
-	s.state = _stPrepared
-	committed = true
-	handlerCount := len(s.handlers)
-	s.lifecycleMu.Unlock()
-	slog.InfoContext(ctx, "node prepared",
-		"service", app.Name(),
-		"version", app.Version(),
-		"node_id", app.ID(),
-		"pid", os.Getpid(),
-		"sticky", lease != nil,
-		"handlers", handlerCount,
-		"push_timeout", s.pushTimeout.String(),
-		"cleanup_timeout", s.cleanupTimeout.String(),
-	)
-	return nil
-}
-
-func (s *Server) rollbackPreparation(ctx context.Context, lease *epochLease, cause error) error {
-	s.beginStopping()
-	cause = errors.Join(cause, s.closeGRPCListener())
-	if lease == nil {
-		return cause
-	}
-	s.lifecycleMu.Lock()
-	s.lease.Store(lease)
-	s.lifecycleMu.Unlock()
-	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(normalizeContext(ctx)), s.cleanupTimeout)
-	defer cancel()
-	if err := lease.release(cleanupCtx); err != nil {
-		return errors.Join(cause, fmt.Errorf("node: roll back epoch: %w", err))
-	}
-	return cause
-}
-
-// rollbackStart 使用独立的有界 context，按完整 Stop 顺序清理启动失败。
-func (s *Server) rollbackStart(ctx context.Context) error {
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(normalizeContext(ctx)), s.cleanupTimeout)
-	defer cancel()
-	return s.Stop(ctx)
-}
-
-func (s *Server) failLifecycle(err error) {
-	s.publishReady(err)
-	s.deliveries.close()
-	s.beginStopping()
-	s.fatalCancel(err)
-}
-
-func (s *Server) beginStopping() <-chan struct{} {
-	s.requests.close()
-	s.publishReady(errors.New("node: server is stopping or stopped"))
-	s.lifecycleMu.Lock()
-	preparationDone := s.preparationDone
-	s.lifecycleMu.Unlock()
-	return preparationDone
-}
-
 func (s *Server) claimNodeIdentity(ctx context.Context, app kratos.AppInfo) (nodeIdentity, *epochLease, error) {
-	sticky, err := instance.IsSticky(app.Metadata())
-	if err != nil {
-		return nodeIdentity{}, nil, fmt.Errorf("node: %w", err)
-	}
-	if sticky != (s.locator != nil) {
-		return nodeIdentity{}, nil, errors.New("node: sticky metadata and Node locator mismatch")
-	}
 	identity := nodeIdentity{serviceName: app.Name(), nodeID: app.ID()}
 	if s.locator == nil {
 		return identity, nil, nil
 	}
-	if err = s.locator.Ping(ctx); err != nil {
+	if err := s.locator.Ping(ctx); err != nil {
 		return nodeIdentity{}, nil, err
 	}
 	lease, err := claimEpoch(ctx, s.locator, identity)
@@ -277,65 +279,63 @@ func (s *Server) claimNodeIdentity(ctx context.Context, app kratos.AppInfo) (nod
 	return lease.identity, lease, nil
 }
 
-// releaseEpoch 先撤下服务身份，再停止续租并释放独立保存的凭据。
-func (s *Server) releaseEpoch(ctx context.Context) error {
-	lease := s.lease.Load()
+func (s *Server) registrationRecord(app kratos.AppInfo, endpoint *url.URL) *registry.ServiceInstance {
+	var metadata map[string]string
+	if s.locator != nil {
+		metadata = instance.StickyMetadata()
+	}
+	return &registry.ServiceInstance{
+		ID:        app.ID(),
+		Name:      app.Name(),
+		Version:   app.Version(),
+		Metadata:  metadata,
+		Endpoints: []string{endpoint.String()},
+	}
+}
+
+func (s *Server) beginStopping() {
 	s.lifecycleMu.Lock()
-	s.identity.Store(nil)
-	s.lifecycleMu.Unlock()
-	return lease.release(normalizeContext(ctx))
+	defer s.lifecycleMu.Unlock()
+	s.requests.close()
+	s.healthServer.SetServingStatus("", healthpb.HealthCheckResponse_NOT_SERVING)
+	if s.startupCancel != nil {
+		s.startupCancel()
+	}
 }
 
-// Registrar 适配 Kratos v3.0.0 的启动时序，在 Node 就绪后才调用注册器。
-// 注册器仍须自行保证跨进程的记录所有权，例如 yola/registry/etcd。
-func (s *Server) Registrar(registrar registry.Registrar) registry.Registrar {
-	return &readyRegistrar{Registrar: registrar, server: s}
+func (s *Server) registeredInstance() *registry.ServiceInstance {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+	return s.registration
 }
 
-type readyRegistrar struct {
-	registry.Registrar
-
-	server *Server
-}
-
-func (r *readyRegistrar) Register(ctx context.Context, service *registry.ServiceInstance) error {
-	s := r.server
+func (s *Server) deregister(ctx context.Context, record *registry.ServiceInstance, timeout time.Duration) error {
+	if record == nil {
+		return nil
+	}
+	// 注销失败不能耗尽请求、Drain、网络与 epoch 的回收预算。
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	result := make(chan error, 1)
+	go func() { result <- s.registrar.Deregister(ctx, record) }()
 	select {
-	case <-s.ready:
+	case err := <-result:
+		return err
 	case <-ctx.Done():
-		// Start 失败会取消 Kratos 注册 context，保留已发布的原始启动错误。
-		select {
-		case <-s.ready:
-			if s.readyErr != nil {
-				return s.readyErr
-			}
-		default:
-		}
 		return ctx.Err()
 	}
-	if s.readyErr != nil {
-		return s.readyErr
-	}
-	if !s.requests.admit() {
-		return errors.New("node: server is stopping or stopped")
-	}
-	defer s.requests.done()
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if err := s.lease.Load().valid(); err != nil {
-		return err
-	}
-	identity := s.currentIdentity()
-	if service == nil || service.Name != identity.serviceName || service.ID != identity.nodeID {
-		return errors.New("node: registration identity does not match")
-	}
-	return r.Registrar.Register(ctx, service)
 }
 
-func (s *Server) publishReady(err error) {
-	s.readyOnce.Do(func() {
-		s.readyErr = err
-		close(s.ready)
-	})
+func (s *Server) stopAfterFailure(ctx context.Context, cause error, timeout time.Duration) error {
+	s.startCleanup(ctx, timeout)
+	waitCtx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	return errors.Join(cause, s.waitCleanup(waitCtx))
+}
+
+func (s *Server) waitCleanup(ctx context.Context) error {
+	if err := contextwait.Done(ctx, s.cleanupDone); err != nil {
+		return err
+	}
+	return s.cleanupErr
 }

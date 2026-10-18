@@ -3,7 +3,6 @@ package gateway
 import (
 	"context"
 	"errors"
-	"net"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -11,27 +10,19 @@ import (
 	clusterv1 "yola/api/cluster/v1"
 	protocolv1 "yola/api/protocol/v1"
 	"yola/locate"
+	"yola/network"
 
+	kgrpc "github.com/go-kratos/kratos/v3/transport/grpc"
 	"github.com/stretchr/testify/require"
-	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/types/known/emptypb"
 )
-
-type epochCountingLocator struct {
-	locate.Locator
-	epochLookups atomic.Int32
-}
-
-func (l *epochCountingLocator) LocateNodeEpoch(ctx context.Context, serviceName, nodeID string) (string, error) {
-	l.epochLookups.Add(1)
-	return l.Locator.LocateNodeEpoch(ctx, serviceName, nodeID)
-}
 
 func TestStickyRoutesUseEpochOnlyForForward(t *testing.T) {
 	store := &epochCountingLocator{Locator: testLocator(t)}
-	nodeA := startNamedBackendNode(t, "node-a")
+	disconnects := make(chan *clusterv1.DisconnectRequest, 1)
+	service := &forwardServer{disconnects: disconnects}
+	nodeA := startBackendNode(t, service)
 	gate := newTestServer(t,
 		Locator(store),
 		Discovery(staticDiscovery{"game": {serviceInstance("game", "node-a", nodeA)}}),
@@ -49,26 +40,19 @@ func TestStickyRoutesUseEpochOnlyForForward(t *testing.T) {
 	bindTestPlayerNode(t, store.Locator, "game", "player-a", "node-a")
 
 	ctx := context.Background()
-	_, nodeID, epoch, err := gate.resolveForwardRoute(ctx, binding)
-	require.NoError(t, err)
-	require.Equal(t, "node-a", nodeID)
-	require.NotEmpty(t, epoch)
+	message := &protocolv1.Proto{Op: protocolv1.OpRequest, Cmd: 1}
+	gate.forward(ctx, activeSession(newTestConnection(binding.ConnID), binding), message)
+	require.Equal(t, int32(codes.OK), message.Code)
+	require.Equal(t, "node-a", service.request.NodeId)
+	require.NotEmpty(t, service.request.NodeEpoch)
 	require.Equal(t, int32(1), store.epochLookups.Load())
 
 	store.epochLookups.Store(0)
-	_, nodeID, err = gate.resolveNodeRoute(ctx, binding)
-	require.NoError(t, err)
-	require.Equal(t, "node-a", nodeID)
+	gate.notifyDisconnect(ctx, binding)
+	disconnect := receiveWithin(t, disconnects)
+	require.Equal(t, binding.UID, disconnect.GetRoute().GetUid())
+	require.Equal(t, binding.BindingToken, disconnect.GetRoute().GetBindingToken())
 	require.Zero(t, store.epochLookups.Load())
-}
-
-type failingEpochLocator struct {
-	locate.Locator
-	err error
-}
-
-func (l *failingEpochLocator) LocateNodeEpoch(context.Context, string, string) (string, error) {
-	return "", l.err
 }
 
 func TestForwardStatusCode(t *testing.T) {
@@ -102,13 +86,13 @@ func TestForwardReturnsLocatorStatusInProtocolReply(t *testing.T) {
 	}{
 		{name: "invalid epoch", err: locate.ErrInvalidNodeEpoch, want: codes.Internal},
 		{name: "epoch missing", err: locate.ErrNodeEpochNotFound, want: codes.Aborted},
+		{name: "RPC error during route lookup", err: status.Error(codes.ResourceExhausted, "request rejected"), want: codes.Unavailable},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			store := &failingEpochLocator{Locator: testLocator(t), err: test.err}
-			nodeEndpoint := startNamedBackendNode(t, "node-a")
 			gate := newTestServer(t,
 				Locator(store),
-				Discovery(staticDiscovery{"game": {serviceInstance("game", "node-a", nodeEndpoint)}}),
+				Discovery(staticDiscovery{"game": {serviceInstance("game", "node-a", "grpc://127.0.0.1:1")}}),
 			)
 			initTestGateway(t, gate)
 			binding := testBinding()
@@ -138,12 +122,12 @@ func TestForwardNodeLookupHonorsRequestContext(t *testing.T) {
 		}, code: codes.Canceled},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			store := &blockingNodeLocator{Locator: testLocator(t)}
 			backendPool := newBackends(staticDiscovery{"game": {
 				serviceInstance("game", "node-a", "grpc://127.0.0.1:1"),
-			}}, nil, 20*time.Millisecond)
+			}}, nil, 20*time.Millisecond, store)
 			t.Cleanup(backendPool.close)
 			gateway := &Server{
-				locator:    &blockingNodeLocator{Locator: testLocator(t)},
 				backends:   backendPool,
 				rpcTimeout: 20 * time.Millisecond,
 			}
@@ -174,24 +158,28 @@ func TestForwardRejectsExpiredBinding(t *testing.T) {
 }
 
 func TestForwardCarriesRouteAndMapsNodeError(t *testing.T) {
-	service := &forwardServer{err: status.Error(codes.Aborted, "request rejected")}
-	gateway := newForwardTestGateway(t, service)
-	conn := newTestConnection("conn-a")
-	binding := testBinding()
-	sess := activeSession(conn, binding)
-	var request *protocolv1.Proto
-	require.Eventually(t, func() bool {
-		request = &protocolv1.Proto{Op: protocolv1.OpRequest, Cmd: 7, Body: []byte("request")}
-		gateway.forward(context.Background(), sess, request)
-		return request.Code == int32(codes.Aborted)
-	}, time.Second, time.Millisecond)
+	for _, code := range []codes.Code{codes.Aborted, codes.ResourceExhausted} {
+		t.Run(code.String(), func(t *testing.T) {
+			service := &forwardServer{err: status.Error(code, "request rejected")}
+			gateway := newForwardTestGateway(t, service)
+			conn := newTestConnection("conn-a")
+			binding := testBinding()
+			sess := activeSession(conn, binding)
+			var request *protocolv1.Proto
+			require.Eventually(t, func() bool {
+				request = &protocolv1.Proto{Op: protocolv1.OpRequest, Cmd: 7, Body: []byte("request")}
+				gateway.forward(context.Background(), sess, request)
+				return request.Code == int32(code)
+			}, time.Second, time.Millisecond)
 
-	require.Equal(t, int32(codes.Aborted), request.Code)
-	require.False(t, isClosed(conn.closed)())
-	require.NotNil(t, service.request)
-	require.Equal(t, binding.ServiceName, service.request.GetRoute().GetServiceName())
-	require.Equal(t, binding.BindingToken, service.request.GetRoute().GetBindingToken())
-	require.Equal(t, binding.GateEndpoint, service.request.GetRoute().GetGateEndpoint())
+			require.Equal(t, int32(code), request.Code)
+			require.False(t, isClosed(conn.closed)())
+			require.NotNil(t, service.request)
+			require.Equal(t, binding.ServiceName, service.request.GetRoute().GetServiceName())
+			require.Equal(t, binding.BindingToken, service.request.GetRoute().GetBindingToken())
+			require.Equal(t, binding.GateEndpoint, service.request.GetRoute().GetGateEndpoint())
+		})
+	}
 }
 
 func TestCloseNotifiesNodeDisconnect(t *testing.T) {
@@ -223,30 +211,6 @@ func TestForwardMapsOversizedReplyToResourceExhausted(t *testing.T) {
 	require.Equal(t, protocolv1.OpResponse, request.Op)
 	require.Equal(t, int32(codes.ResourceExhausted), request.Code)
 	require.Empty(t, request.Body)
-}
-
-func newForwardTestGateway(t *testing.T, service *forwardServer) *Server {
-	t.Helper()
-	lis, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-	server := grpc.NewServer()
-	clusterv1.RegisterNodeServer(server, service)
-	go func() { _ = server.Serve(lis) }()
-	t.Cleanup(server.Stop)
-	backendPool := newBackends(staticDiscovery{"game": {
-		serviceInstance("game", "node-a", "grpc://"+lis.Addr().String()),
-	}}, nil, time.Second)
-	t.Cleanup(backendPool.close)
-	return &Server{locator: testLocator(t), backends: backendPool, rpcTimeout: time.Second}
-}
-
-type blockingNodeLocator struct {
-	locate.Locator
-}
-
-func (l *blockingNodeLocator) LocateNode(ctx context.Context, _, _ string) (string, error) {
-	<-ctx.Done()
-	return "", ctx.Err()
 }
 
 func TestGatewayRoutesBoundPlayerToExactNode(t *testing.T) {
@@ -305,6 +269,117 @@ func TestGatewayStatelessServiceSkipsNodeLookup(t *testing.T) {
 	require.Zero(t, store.nodeLookups.Load())
 }
 
+func TestSessionRoute(t *testing.T) {
+	now := time.Now()
+	binding := testBinding()
+	tests := []struct {
+		name     string
+		binding  locate.GateBinding
+		deadline time.Time
+		want     bool
+	}{
+		{name: "current lease", binding: binding, deadline: now.Add(time.Minute), want: true},
+		{name: "expired lease", binding: binding, deadline: now.Add(-time.Millisecond)},
+		{name: "missing binding", deadline: now.Add(time.Minute)},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			sess := &session{
+				conn:          newTestConnection(binding.ConnID),
+				binding:       test.binding,
+				leaseDeadline: test.deadline,
+			}
+
+			got, valid := sess.route(now)
+
+			require.Equal(t, test.binding, got)
+			require.Equal(t, test.want, valid)
+		})
+	}
+}
+
+func TestForwardBudgetUsesShortestDeadlineAcrossGRPC(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		transport time.Duration
+		rpc       time.Duration
+		node      time.Duration
+		parent    time.Duration
+		limit     time.Duration
+	}{
+		{name: "transport", transport: 250 * time.Millisecond, rpc: time.Second, node: time.Second, limit: 250 * time.Millisecond},
+		{name: "forward", transport: time.Second, rpc: 200 * time.Millisecond, node: time.Second, limit: 200 * time.Millisecond},
+		{name: "node", transport: time.Second, rpc: time.Second, node: 150 * time.Millisecond, limit: 150 * time.Millisecond},
+		{name: "parent", transport: time.Second, rpc: time.Second, node: time.Second, parent: 100 * time.Millisecond, limit: 100 * time.Millisecond},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			backend := &deadlineBackendNode{budgets: make(chan time.Duration, 1)}
+			endpoint := startBackendNodeWithOptions(t, "grpc", backend, kgrpc.Timeout(test.node))
+			gate := newTestGateway(t, testLocator(t), endpoint, RPCTimeout(test.rpc))
+			t.Cleanup(func() { require.NoError(t, gate.Stop(context.Background())) })
+			client, err := backendClient(context.Background(), gate.backends, "game")
+			require.NoError(t, err)
+			_, err = client.Forward(context.Background(), &clusterv1.ForwardRequest{})
+			require.NoError(t, err)
+			conn := newTestConnection("conn-a")
+			gate.sessions.byConnID[conn.ConnID()] = activeSession(conn, testBinding())
+			ctx := context.Background()
+			if test.parent > 0 {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithTimeout(ctx, test.parent)
+				defer cancel()
+			}
+			invoke := network.NewInvoker(gate, conn, test.transport)
+			reply, err := invoke(ctx, &protocolv1.Proto{Op: protocolv1.OpRequest, Cmd: 1})
+			require.NoError(t, err)
+			require.Equal(t, protocolv1.OpResponse, reply.Op)
+			require.Equal(t, int32(codes.DeadlineExceeded), reply.Code)
+			remaining := receiveWithin(t, backend.budgets)
+			require.Greater(t, remaining, test.limit/2)
+			require.LessOrEqual(t, remaining, test.limit+5*time.Millisecond)
+		})
+	}
+}
+
+type epochCountingLocator struct {
+	locate.Locator
+	epochLookups atomic.Int32
+}
+
+func (l *epochCountingLocator) LocateNodeEpoch(ctx context.Context, serviceName, nodeID string) (string, error) {
+	l.epochLookups.Add(1)
+	return l.Locator.LocateNodeEpoch(ctx, serviceName, nodeID)
+}
+
+type failingEpochLocator struct {
+	locate.Locator
+	err error
+}
+
+func (l *failingEpochLocator) LocateNodeEpoch(context.Context, string, string) (string, error) {
+	return "", l.err
+}
+
+func newForwardTestGateway(t *testing.T, service *forwardServer) *Server {
+	t.Helper()
+	endpoint := startBackendNode(t, service)
+	store := testLocator(t)
+	backendPool := newBackends(staticDiscovery{"game": {
+		serviceInstance("game", "node-a", endpoint),
+	}}, nil, time.Second, store)
+	t.Cleanup(backendPool.close)
+	return &Server{backends: backendPool, rpcTimeout: time.Second}
+}
+
+type blockingNodeLocator struct {
+	locate.Locator
+}
+
+func (l *blockingNodeLocator) LocateNode(ctx context.Context, _, _ string) (string, error) {
+	<-ctx.Done()
+	return "", ctx.Err()
+}
+
 type nodeLookupCountingLocator struct {
 	locate.Locator
 	nodeLookups atomic.Int32
@@ -315,64 +390,17 @@ func (l *nodeLookupCountingLocator) LocateNode(ctx context.Context, serviceName,
 	return l.Locator.LocateNode(ctx, serviceName, uid)
 }
 
-func newDisconnectTrackingServer(t *testing.T) (*Server, locate.Locator, *testConnection, locate.GateBinding, <-chan *clusterv1.DisconnectRequest) {
-	t.Helper()
-	lis, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-	server := grpc.NewServer()
-	disconnects := make(chan *clusterv1.DisconnectRequest, 1)
-	service := &forwardServer{disconnects: disconnects}
-	clusterv1.RegisterNodeServer(server, service)
-	go func() { _ = server.Serve(lis) }()
-	t.Cleanup(server.Stop)
-
-	store := testLocator(t)
-	backendPool := newBackends(staticDiscovery{"game": {
-		serviceInstance("game", "node-a", "grpc://"+lis.Addr().String()),
-	}}, nil, time.Second)
-	t.Cleanup(backendPool.close)
-	binding := testBinding()
-	gateway := &Server{
-		identity:       identity{id: binding.GateID, endpoint: binding.GateEndpoint},
-		locator:        store,
-		backends:       backendPool,
-		rpcTimeout:     time.Second,
-		cleanupTimeout: time.Second,
-		sessions:       &sessionRegistry{byConnID: make(map[string]*session)},
-	}
-	conn := newTestConnection("conn-a")
-	_, _, err = store.BindGate(context.Background(), binding, time.Minute)
-	require.NoError(t, err)
-	require.True(t, gateway.sessions.add(conn, time.Minute))
-	sess := gateway.sessions.get(conn.ConnID())
-	require.NotNil(t, sess)
-	require.True(t, sess.finishAuthentication(locate.GateLease{Binding: binding, TTL: time.Minute}, time.Now()))
-	return gateway, store, conn, binding, disconnects
-}
-
-type forwardServer struct {
+type deadlineBackendNode struct {
 	clusterv1.UnimplementedNodeServer
-	request     *clusterv1.ForwardRequest
-	body        []byte
-	err         error
-	disconnects chan *clusterv1.DisconnectRequest
+	budgets chan time.Duration
 }
 
-func (s *forwardServer) Forward(_ context.Context, in *clusterv1.ForwardRequest) (*clusterv1.ForwardReply, error) {
-	s.request = in
-	if s.err != nil {
-		return nil, s.err
+func (n *deadlineBackendNode) Forward(ctx context.Context, request *clusterv1.ForwardRequest) (*clusterv1.ForwardReply, error) {
+	if request.Command == 0 {
+		return &clusterv1.ForwardReply{}, nil
 	}
-	body := s.body
-	if body == nil {
-		body = []byte("reply")
-	}
-	return &clusterv1.ForwardReply{Body: body}, nil
-}
-
-func (s *forwardServer) Disconnect(_ context.Context, in *clusterv1.DisconnectRequest) (*emptypb.Empty, error) {
-	if s.disconnects != nil {
-		s.disconnects <- in
-	}
-	return &emptypb.Empty{}, nil
+	deadline, _ := ctx.Deadline()
+	n.budgets <- time.Until(deadline)
+	<-ctx.Done()
+	return nil, status.FromContextError(ctx.Err()).Err()
 }

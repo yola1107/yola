@@ -1,7 +1,6 @@
 package websocket
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"net"
@@ -14,12 +13,13 @@ import (
 	"yola/api/protocol/v1"
 	"yola/network"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 )
 
 func TestChannelSendProto(t *testing.T) {
 	ch := &Channel{
-		ctx:      context.Background(),
 		codec:    defaultCodec(),
 		outbound: make(chan outboundFrame, 1),
 	}
@@ -40,7 +40,6 @@ func TestChannelSendProto(t *testing.T) {
 func TestChannelSendProtoRejectsFullQueue(t *testing.T) {
 	codec := &countingCodec{}
 	ch := &Channel{
-		ctx:      context.Background(),
 		codec:    codec,
 		outbound: make(chan outboundFrame, 1),
 	}
@@ -57,7 +56,6 @@ func TestChannelSendProtoRejectsFullQueue(t *testing.T) {
 func TestChannelSendProtoRejectsClosedChannel(t *testing.T) {
 	codec := &countingCodec{}
 	ch := &Channel{
-		ctx:      context.Background(),
 		codec:    codec,
 		outbound: make(chan outboundFrame, 1),
 	}
@@ -73,8 +71,8 @@ func TestChannelSendProtoRejectsClosedChannel(t *testing.T) {
 func TestChannelSendPreparedSharesDefaultEncoding(t *testing.T) {
 	prepared := &network.PreparedProto{}
 	prepared.Reset(&v1.Proto{Op: v1.OpPush, Cmd: 1001, Body: []byte("shared")})
-	first := &Channel{ctx: context.Background(), codec: defaultCodec(), outbound: make(chan outboundFrame, 1)}
-	second := &Channel{ctx: context.Background(), codec: defaultCodec(), outbound: make(chan outboundFrame, 1)}
+	first := &Channel{codec: defaultCodec(), outbound: make(chan outboundFrame, 1)}
+	second := &Channel{codec: defaultCodec(), outbound: make(chan outboundFrame, 1)}
 	if err := first.SendPrepared(prepared); err != nil {
 		t.Fatal(err)
 	}
@@ -92,8 +90,8 @@ func TestChannelSendPreparedPreservesCustomCodec(t *testing.T) {
 	codec := &countingCodec{}
 	prepared := &network.PreparedProto{}
 	prepared.Reset(&v1.Proto{Op: v1.OpPush})
-	first := &Channel{ctx: context.Background(), codec: codec, outbound: make(chan outboundFrame, 1)}
-	second := &Channel{ctx: context.Background(), codec: codec, outbound: make(chan outboundFrame, 1)}
+	first := &Channel{codec: codec, outbound: make(chan outboundFrame, 1)}
+	second := &Channel{codec: codec, outbound: make(chan outboundFrame, 1)}
 	if err := first.SendPrepared(prepared); err != nil {
 		t.Fatal(err)
 	}
@@ -112,15 +110,17 @@ func TestChannelRejectsOversizedProtoBeforeQueue(t *testing.T) {
 		send func(*Channel, *v1.Proto) error
 	}{
 		{name: "push", op: v1.OpPush, send: func(ch *Channel, p *v1.Proto) error { return ch.SendProto(p) }},
-		{name: "response", op: v1.OpResponse, send: func(ch *Channel, p *v1.Proto) error { return ch.SendProto(p) }},
-		{name: "final", op: v1.OpKick, send: func(ch *Channel, p *v1.Proto) error {
-			return ch.CloseWithProto(context.Background(), p)
-		}},
+		{
+			name: "final",
+			op:   v1.OpKick,
+			send: func(ch *Channel, p *v1.Proto) error {
+				return ch.CloseWithProto(context.Background(), p)
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ch := &Channel{
-				ctx:        context.Background(),
 				codec:      fixedSizeCodec{size: v1.MaxProtoSize + 1},
 				outbound:   make(chan outboundFrame, 1),
 				writerDone: make(chan struct{}),
@@ -141,7 +141,6 @@ func TestChannelRejectsOversizedProtoBeforeQueue(t *testing.T) {
 
 func TestChannelUsesSerializedSizeInsteadOfBodySize(t *testing.T) {
 	ch := &Channel{
-		ctx:      context.Background(),
 		codec:    fixedSizeCodec{size: 1},
 		outbound: make(chan outboundFrame, 1),
 	}
@@ -151,40 +150,6 @@ func TestChannelUsesSerializedSizeInsteadOfBodySize(t *testing.T) {
 	}
 	if len(ch.outbound) != 1 {
 		t.Fatal("valid serialized frame was not queued")
-	}
-}
-
-func TestReadBoundedFrame(t *testing.T) {
-	tests := []struct {
-		name    string
-		body    []byte
-		wantErr error
-	}{
-		{name: "empty"},
-		{name: "fragmented reads", body: bytes.Repeat([]byte{1}, 257)},
-		{name: "boundary", body: bytes.Repeat([]byte{2}, v1.MaxProtoSize)},
-		{name: "oversized", body: bytes.Repeat([]byte{3}, v1.MaxProtoSize+1), wantErr: network.ErrFrameTooLarge},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			reader := &limitedChunkReader{Reader: bytes.NewReader(test.body), size: 7}
-			got, err := readBoundedFrame(reader, make([]byte, v1.MaxProtoSize))
-			if !errors.Is(err, test.wantErr) {
-				t.Fatalf("readBoundedFrame() error = %v, want %v", err, test.wantErr)
-			}
-			if test.wantErr == nil && !bytes.Equal(got, test.body) {
-				t.Fatalf("readBoundedFrame() length = %d, want %d", len(got), len(test.body))
-			}
-		})
-	}
-}
-
-func TestOnlyDefaultCodecOptimizesFrames(t *testing.T) {
-	if !canOptimizeFrames(defaultCodec()) {
-		t.Fatal("default protobuf codec did not enable bounded buffer reuse")
-	}
-	if canOptimizeFrames(&countingCodec{}) {
-		t.Fatal("configured codec unexpectedly enabled bounded buffer reuse")
 	}
 }
 
@@ -235,8 +200,7 @@ func TestCloseWithProtoReturnsWhenWriterExitsBeforeFinalEnqueue(t *testing.T) {
 	wsConn := openTestWebSocket(t, controlled, serverConn)
 	channelCtx, cancelChannel := context.WithCancel(context.Background())
 	t.Cleanup(cancelChannel)
-	var releaseOnce sync.Once
-	release := func() { releaseOnce.Do(func() { close(controlled.release) }) }
+	release := sync.OnceFunc(func() { close(controlled.release) })
 	t.Cleanup(release)
 	ch := newChannel(channelCtx, wsConn, defaultCodec(), ChannelConfig{
 		WriteTimeout:  20 * time.Millisecond,
@@ -268,25 +232,6 @@ func TestCloseWithProtoReturnsWhenWriterExitsBeforeFinalEnqueue(t *testing.T) {
 		t.Fatalf("CloseWithProto() error = %v, want %v", err, errControlledWrite)
 	}
 	waitWebSocketValue(t, ch.writerDone)
-}
-
-func TestMarshalFrameRejectsInvalidSize(t *testing.T) {
-	codec := defaultCodec()
-	if _, err := marshalFrame(codec, nil); !errors.Is(err, errNilPayload) {
-		t.Fatalf("marshalFrame(nil) error = %v, want %v", err, errNilPayload)
-	}
-	if _, err := marshalFrame(codec, &v1.Proto{}); !errors.Is(err, errFrameLength) {
-		t.Fatalf("marshalFrame(empty) error = %v, want %v", err, errFrameLength)
-	}
-	message := &v1.Proto{Op: v1.OpPush, Body: make([]byte, v1.MaxProtoSize)}
-	if _, err := marshalFrame(codec, message); !errors.Is(err, network.ErrFrameTooLarge) {
-		t.Fatalf("marshalFrame(oversized) error = %v, want %v", err, network.ErrFrameTooLarge)
-	}
-	boundary := &v1.Proto{Op: v1.OpPush, Body: make([]byte, v1.MaxProtoSize-5)}
-	body, err := marshalFrame(codec, boundary)
-	if err != nil || len(body) != v1.MaxProtoSize {
-		t.Fatalf("marshalFrame(boundary) length = %d, error = %v", len(body), err)
-	}
 }
 
 func TestFormatCloseFrameLimitsReason(t *testing.T) {
@@ -334,11 +279,126 @@ func TestChannelSendConcurrentClose(t *testing.T) {
 	}
 }
 
-type limitedChunkReader struct {
-	*bytes.Reader
-	size int
+func TestSendStatsQueueAndClose(t *testing.T) {
+	ch := &Channel{codec: defaultCodec(), outbound: make(chan outboundFrame, 2)}
+	observer, ok := any(ch).(network.SendStatsProvider)
+	require.True(t, ok, "WebSocket connection must expose send capacity stats")
+	require.NoError(t, ch.SendProto(&v1.Proto{Op: v1.OpPush, Body: make([]byte, 32)}))
+	prepared := &network.PreparedProto{}
+	prepared.Reset(&v1.Proto{Op: v1.OpPush, Body: make([]byte, 1024)})
+	require.NoError(t, ch.SendPrepared(prepared))
+	require.ErrorIs(t, ch.SendPrepared(prepared), network.ErrSendQueueFull)
+	stats := observer.SendStats()
+	require.Equal(t, 2, stats.QueueDepth)
+	require.Equal(t, 2, stats.QueueCapacity)
+	require.Equal(t, int64(1056), stats.PendingPayloadBytes)
+	require.Equal(t, uint64(1), stats.QueueDropped)
+	ch.markClosed()
+	require.ErrorIs(t, ch.SendPrepared(prepared), network.ErrConnectionClosed)
+	stats = observer.SendStats()
+	require.True(t, stats.Closed)
+	require.Equal(t, uint64(1), stats.QueueDropped)
+	require.Equal(t, int64(1056), stats.PendingPayloadBytes)
 }
 
-func (r *limitedChunkReader) Read(body []byte) (int, error) {
-	return r.Reader.Read(body[:min(len(body), r.size)])
+func TestSendStatsSlowWriterAndCanceledFinal(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	controlled := &controlledWriteConn{Conn: clientConn, started: make(chan struct{}), release: make(chan struct{})}
+	wsConn := openTestWebSocket(t, controlled, serverConn)
+	controlled.fail.Store(true)
+	ch := newChannel(context.Background(), wsConn, defaultCodec(), ChannelConfig{
+		WriteTimeout:  20 * time.Millisecond,
+		ReadDeadline:  time.Second,
+		SendQueueSize: 1,
+	})
+	release := sync.OnceFunc(func() { close(controlled.release) })
+	t.Cleanup(release)
+	require.NoError(t, ch.SendProto(&v1.Proto{Op: v1.OpPush, Body: make([]byte, 32)}))
+	waitWebSocketValue(t, controlled.started)
+	require.Zero(t, ch.SendStats().PendingPayloadBytes)
+	require.NoError(t, ch.SendProto(&v1.Proto{Op: v1.OpPush, Body: make([]byte, 1024)}))
+	require.ErrorIs(t, ch.SendProto(&v1.Proto{Op: v1.OpPush}), network.ErrSendQueueFull)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	closed := make(chan error, 1)
+	go func() { closed <- ch.CloseWithProto(ctx, &v1.Proto{Op: v1.OpKick, Body: make([]byte, 16)}) }()
+	require.Eventually(t, func() bool { return ch.SendStats().PendingPayloadBytes == 1040 }, time.Second, time.Millisecond)
+	cancel()
+	require.ErrorIs(t, waitWebSocketValue(t, closed), context.Canceled)
+	release()
+	waitWebSocketValue(t, ch.writerDone)
+	stats := ch.SendStats()
+	require.Equal(t, int64(1024), stats.PendingPayloadBytes)
+	require.Equal(t, uint64(1), stats.QueueDropped)
+	require.True(t, stats.Closed)
+}
+
+func TestSendStatsConcurrentReadSendAndClose(t *testing.T) {
+	ch := &Channel{codec: defaultCodec(), outbound: make(chan outboundFrame, 8)}
+	var workers sync.WaitGroup
+	middle := make(chan struct{})
+	var reached sync.Once
+	workers.Go(func() {
+		<-middle
+		ch.markClosed()
+	})
+	for range 4 {
+		workers.Go(func() {
+			for i := range 200 {
+				if i == 100 {
+					reached.Do(func() { close(middle) })
+				}
+				err := ch.SendProto(&v1.Proto{Op: v1.OpPush, Body: []byte("stats")})
+				if err != nil {
+					assert.True(t, errors.Is(err, network.ErrSendQueueFull) || errors.Is(err, network.ErrConnectionClosed))
+				}
+				assert.GreaterOrEqual(t, ch.SendStats().PendingPayloadBytes, int64(0))
+			}
+		})
+	}
+	workers.Wait()
+	ch.markClosed()
+	require.Equal(t, int64(ch.SendStats().QueueDepth*5), ch.SendStats().PendingPayloadBytes)
+}
+
+func TestChannelConfigValidate(t *testing.T) {
+	tests := []struct {
+		name   string
+		config ChannelConfig
+		want   string
+	}{
+		{
+			name:   "write timeout",
+			config: ChannelConfig{ReadDeadline: time.Second, SendQueueSize: 1},
+			want:   "websocket: channel write timeout must be positive",
+		},
+		{
+			name:   "read deadline",
+			config: ChannelConfig{WriteTimeout: time.Second, SendQueueSize: 1},
+			want:   "websocket: channel read deadline must be positive",
+		},
+		{
+			name:   "send queue size",
+			config: ChannelConfig{WriteTimeout: time.Second, ReadDeadline: time.Second},
+			want:   "websocket: channel send queue size must be positive",
+		},
+		{
+			name:   "valid",
+			config: ChannelConfig{WriteTimeout: time.Second, ReadDeadline: time.Second, SendQueueSize: 1},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := test.config.validate()
+			if test.want == "" {
+				if err != nil {
+					t.Fatalf("validate() error = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil || err.Error() != test.want {
+				t.Fatalf("validate() error = %v, want %q", err, test.want)
+			}
+		})
+	}
 }

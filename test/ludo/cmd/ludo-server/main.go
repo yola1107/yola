@@ -13,7 +13,6 @@ import (
 	"github.com/go-kratos/kratos/v3"
 	"github.com/go-kratos/kratos/v3/config"
 	"github.com/go-kratos/kratos/v3/config/file"
-	"github.com/go-kratos/kratos/v3/registry"
 	_ "go.uber.org/automaxprocs"
 )
 
@@ -29,31 +28,6 @@ const stopTimeout = 10 * time.Second
 func init() {
 	flag.StringVar(&flagconf, "conf", "ludo/configs", "config path, eg: -conf config.yaml")
 	flag.StringVar(&id, "id", Name, "service instance ID")
-}
-
-func newApp(instanceID string, logger *slog.Logger, server *node.Server, registrar registry.Registrar) (*kratos.App, func()) {
-	appCtx, cancelApp := context.WithCancel(context.Background())
-	app := kratos.New(
-		kratos.Context(appCtx),
-		kratos.ID(instanceID),
-		kratos.Name(Name),
-		kratos.Version(Version),
-		kratos.Metadata(server.Metadata()),
-		kratos.Logger(logger),
-		kratos.StopTimeout(stopTimeout),
-		kratos.BeforeStart(server.BeforeStart),
-		kratos.Server(server),
-		kratos.Registrar(server.Registrar(registrar)),
-	)
-	return app, func() {
-		// Run 的早退不会等待 Server；Wire 必须先停止 Node，再释放其外部依赖。
-		cancelApp()
-		cleanupCtx, cancel := context.WithTimeout(kratos.NewContext(context.Background(), app), stopTimeout)
-		defer cancel()
-		if stopErr := server.Stop(cleanupCtx); stopErr != nil {
-			logger.Error("stop Ludo Node", "error", stopErr)
-		}
-	}
 }
 
 func main() {
@@ -85,5 +59,27 @@ func main() {
 	defer cleanup()
 	if err := app.Run(); err != nil {
 		panic(err)
+	}
+}
+
+func newApp(instanceID string, logger *slog.Logger, server *node.Server) (*kratos.App, func()) {
+	appCtx, cancelApp := context.WithCancel(context.Background())
+	app := kratos.New(
+		kratos.Context(appCtx),
+		kratos.ID(instanceID),
+		kratos.Name(Name),
+		kratos.Version(Version),
+		kratos.Logger(logger),
+		kratos.StopTimeout(stopTimeout),
+		kratos.Server(server),
+	)
+	return app, func() {
+		// Run 的早退不会等待 Server；Wire 必须先停止 Node，再释放其外部依赖。
+		cancelApp()
+		cleanupCtx, cancel := context.WithTimeout(kratos.NewContext(context.Background(), app), stopTimeout)
+		defer cancel()
+		if stopErr := server.Stop(cleanupCtx); stopErr != nil {
+			logger.Error("stop Ludo Node", "error", stopErr)
+		}
 	}
 }

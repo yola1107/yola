@@ -307,27 +307,6 @@ func (t *Table) canOutCard(curr int32, hand []int32, card int32) bool {
 	return false
 }
 
-func canPlayCardOn(currCard, card int32, pending *v1.Pending) bool {
-	suit, number := Suit(currCard), Number(currCard)
-	s, n := Suit(card), Number(card)
-
-	// 没有 pending 情况等价于普通出牌
-	if pending == nil {
-		return IsWhotCard(card) || s == suit || n == number
-	}
-
-	switch pending.Effect {
-	case v1.CARD_EFFECT_PICK_TWO, v1.CARD_EFFECT_SUSPEND:
-		return !IsWhotCard(card) && n == number
-
-	case v1.CARD_EFFECT_MARKET, v1.CARD_EFFECT_WHOT:
-		return false
-
-	default: // CARD_EFFECT_NORMAL, HOLD_ON 等
-		return IsWhotCard(card) || s == suit || n == number
-	}
-}
-
 func (t *Table) canDrawCard(p *player.Player) bool {
 	if t.pending == nil {
 		return true
@@ -342,4 +321,19 @@ func (t *Table) canDrawCard(p *player.Player) bool {
 	default:
 		return false
 	}
+}
+
+func canPlayCardOn(currCard, card int32, pending *v1.Pending) bool {
+	suit, number := Suit(currCard), Number(currCard)
+	s, n := Suit(card), Number(card)
+
+	if pending != nil {
+		switch pending.Effect {
+		case v1.CARD_EFFECT_PICK_TWO, v1.CARD_EFFECT_SUSPEND:
+			return !IsWhotCard(card) && n == number
+		case v1.CARD_EFFECT_MARKET, v1.CARD_EFFECT_WHOT:
+			return false
+		}
+	}
+	return IsWhotCard(card) || s == suit || n == number
 }

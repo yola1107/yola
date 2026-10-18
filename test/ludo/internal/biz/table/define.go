@@ -48,14 +48,15 @@ func (s StageID) String() string {
 }
 
 func (s StageID) Timeout() int64 {
-	if timeout, ok := stageTimeouts[s]; ok {
-		if conf.FastMode && (s == StDice || s == StMove) {
-			return fastModeMoveTimeoutSeconds
-		}
-		return timeout
+	timeout, ok := stageTimeouts[s]
+	if !ok {
+		slog.Warn("unknown stage", "stage", int32(s), "fallback_timeout_seconds", 0)
+		return 0
 	}
-	slog.Warn("unknown stage", "stage", int32(s), "fallback_timeout_seconds", 0)
-	return 0
+	if conf.FastMode && (s == StDice || s == StMove) {
+		return fastModeMoveTimeoutSeconds
+	}
+	return timeout
 }
 
 // Stage 封装当前阶段及其定时信息。

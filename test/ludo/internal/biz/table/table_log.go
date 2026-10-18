@@ -39,18 +39,6 @@ func newTableLog(instanceID string, c *conf.Room_LogCache) *Log {
 	return logger
 }
 
-func tableLogPath(instanceID string) string {
-	directory := strings.TrimSpace(os.Getenv(tableLogDirectoryEnv))
-	if directory == "" {
-		directory = "logs"
-	}
-	escapedInstanceID := url.PathEscape(strings.TrimSpace(instanceID))
-	if escapedInstanceID == "" {
-		escapedInstanceID = "unknown"
-	}
-	return filepath.Join(directory, "log_cache", conf.Name, "instance-"+escapedInstanceID, "tables.log")
-}
-
 func (l *Log) forTable(tableID int32) *Log {
 	return &Log{tableID: tableID, sink: l.sink}
 }
@@ -75,10 +63,6 @@ func (l *Log) write(message string, args ...any) {
 }
 
 func (l *Log) enabled() bool { return l != nil && l.sink != nil }
-
-func debugLogEnabled() bool {
-	return slog.Default().Enabled(context.Background(), slog.LevelDebug)
-}
 
 func (l *Log) writePlayer(p *player.Player, message string, args ...any) {
 	if !l.enabled() {
@@ -134,11 +118,9 @@ func (l *Log) Move(p *player.Player, step *model.Step, arrived, timeout bool) {
 		return
 	}
 	pieceID, diceValue := int32(0), int32(0)
+	var eat []int32
 	if step != nil {
 		pieceID, diceValue = step.ID, step.X
-	}
-	eat := []int32(nil)
-	if step != nil && len(step.Killed) > 0 {
 		for _, killed := range step.Killed {
 			eat = append(eat, killed.ID)
 		}
@@ -151,6 +133,27 @@ func (l *Log) Move(p *player.Player, step *model.Step, arrived, timeout bool) {
 		pieceID, diceValue, arrived, eatDescription, xgo.ToJSON(step), timeout)
 }
 
+func (l *Log) end(message string) {
+	l.write("[GameEnd] %s", message)
+	l.write("\r\n\r\n\r\n")
+}
+
+func tableLogPath(instanceID string) string {
+	directory := strings.TrimSpace(os.Getenv(tableLogDirectoryEnv))
+	if directory == "" {
+		directory = "logs"
+	}
+	escapedInstanceID := url.PathEscape(strings.TrimSpace(instanceID))
+	if escapedInstanceID == "" {
+		escapedInstanceID = "unknown"
+	}
+	return filepath.Join(directory, "log_cache", conf.Name, "instance-"+escapedInstanceID, "tables.log")
+}
+
+func debugLogEnabled() bool {
+	return slog.Default().Enabled(context.Background(), slog.LevelDebug)
+}
+
 func logPlayers(players []*player.Player) string {
 	logs := []string{""}
 	for _, p := range players {
@@ -159,9 +162,4 @@ func logPlayers(players []*player.Player) string {
 		}
 	}
 	return strings.Join(logs, "\r\n")
-}
-
-func (l *Log) end(message string) {
-	l.write("[GameEnd] %s", message)
-	l.write("\r\n\r\n\r\n")
 }

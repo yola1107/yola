@@ -48,7 +48,7 @@ func NewRedisClient(config *conf.Data) (redis.UniversalClient, func(), error) {
 }
 
 func NewRegistry(config *conf.Data) (*etcd.Registry, func(), error) {
-	registry, err := etcd.New(
+	registry, err := etcd.NewNodeRegistry(
 		etcd.WithEndpoints(config.Registry.Endpoints...),
 		etcd.WithPrefix(config.Registry.Prefix),
 		etcd.WithDialTimeout(config.Registry.DialTimeout.AsDuration()),

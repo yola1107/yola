@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"sort"
+	"slices"
 	"sync/atomic"
 
 	"yola/test/internal/xgo"
@@ -71,13 +71,6 @@ func (p *Player) ExitReset(nextTableID int32) {
 func (p *Player) Desc() string {
 	return fmt.Sprintf("(%d %d T:%d St:%d ai:%d Hand:%v)",
 		p.GetPlayerID(), p.GetChairID(), p.GetTableID(), p.GetStatus(), bool2Int(p.isRobot), p.GetCards())
-}
-
-func bool2Int(v bool) int {
-	if v {
-		return 1
-	}
-	return 0
 }
 
 func (p *Player) SetTableID(tableID int32) {
@@ -169,9 +162,7 @@ func (p *Player) refreshCards() {
 	if len(p.gameData.cards) == 0 {
 		return
 	}
-	sort.Slice(p.gameData.cards, func(i, j int) bool {
-		return p.gameData.cards[i] < p.gameData.cards[j]
-	})
+	slices.Sort(p.gameData.cards)
 }
 
 func (p *Player) GetHandScore() int32 {
@@ -198,4 +189,11 @@ func (p *Player) Settle(totalBet float64) float64 {
 	}
 
 	return profit
+}
+
+func bool2Int(v bool) int {
+	if v {
+		return 1
+	}
+	return 0
 }

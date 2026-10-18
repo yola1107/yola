@@ -2,6 +2,8 @@ package gateway
 
 import (
 	"context"
+	"fmt"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -9,11 +11,16 @@ import (
 	"time"
 
 	"yola/api/protocol/v1"
+	"yola/locate"
 	"yola/network"
 
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 )
+
+var _ network.PreparedConnection = (*preparedTestConnection)(nil)
+
+var _ network.Connection = (*blockingConnection)(nil)
 
 func TestBroadcastChecksLeaseAtEachSend(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
@@ -31,7 +38,8 @@ func TestBroadcastChecksLeaseAtEachSend(t *testing.T) {
 		go func() {
 			defer close(done)
 			(&broadcaster{}).sendBatch(context.Background(), fanoutBatch{
-				message: &prepared, sessions: []*session{firstSession, secondSession},
+				message:  &prepared,
+				sessions: []*session{firstSession, secondSession},
 			})
 		}()
 		<-first.started
@@ -73,7 +81,9 @@ func TestBroadcastSendsToEveryAuthenticatedSession(t *testing.T) {
 		select {
 		case message := <-conn.pushes:
 			require.True(t, proto.Equal(&v1.Proto{
-				Op: v1.OpPush, Cmd: 42, Body: []byte("announcement"),
+				Op:   v1.OpPush,
+				Cmd:  42,
+				Body: []byte("announcement"),
 			}, message))
 		case <-time.After(time.Second):
 			t.Fatalf("broadcast did not reach %s", conn.ConnID())
@@ -107,24 +117,14 @@ func TestBroadcastUsesPreparedConnectionWhenAvailable(t *testing.T) {
 	require.Equal(t, int32(1), conn.calls.Load())
 }
 
-type preparedTestConnection struct {
-	*testConnection
-	calls atomic.Int32
-}
-
-var _ network.PreparedConnection = (*preparedTestConnection)(nil)
-
-func (c *preparedTestConnection) SendPrepared(message *network.PreparedProto) error {
-	c.calls.Add(1)
-	return c.SendProto(message.Message())
-}
-
 func TestBroadcastQueueIsBounded(t *testing.T) {
 	conn := newBlockingConnection("conn-a")
 	binding := testBinding()
 	sessions := &sessionRegistry{byConnID: map[string]*session{
 		conn.ConnID(): {
-			conn: conn, binding: binding, leaseDeadline: time.Now().Add(time.Minute),
+			conn:          conn,
+			binding:       binding,
+			leaseDeadline: time.Now().Add(time.Minute),
 		},
 	}}
 	server := &Server{broadcaster: newBroadcaster(sessions, 1, 1)}
@@ -173,7 +173,9 @@ func TestBroadcastStopTimeoutCanBeWaitedAgain(t *testing.T) {
 	binding.ConnID = conn.ConnID()
 	sessions := &sessionRegistry{byConnID: map[string]*session{
 		conn.ConnID(): {
-			conn: conn, binding: binding, leaseDeadline: time.Now().Add(time.Minute),
+			conn:          conn,
+			binding:       binding,
+			leaseDeadline: time.Now().Add(time.Minute),
 		},
 	}}
 	broadcaster := newBroadcaster(sessions, 1, 1)
@@ -219,6 +221,104 @@ func TestBroadcastRejectsUnavailableAndOversizedMessages(t *testing.T) {
 	require.ErrorIs(t, server.Broadcast(1, make([]byte, v1.MaxProtoSize)), network.ErrFrameTooLarge)
 }
 
+func TestBroadcastStatsSeparateSendRejection(t *testing.T) {
+	conn := newTestConnection("full")
+	conn.sendErr = network.ErrSendQueueFull
+	sessions := &sessionRegistry{byConnID: map[string]*session{
+		conn.ConnID(): activeSession(conn, testBinding()),
+	}}
+	server := &Server{broadcaster: newBroadcaster(sessions, 1, 1)}
+	require.NoError(t, server.broadcaster.start())
+	t.Cleanup(func() { require.NoError(t, server.broadcaster.stop(context.Background())) })
+	require.NoError(t, server.Broadcast(1, []byte("full")))
+	require.Eventually(t, func() bool { return server.BroadcastStats().Completed == 1 }, time.Second, time.Millisecond)
+	stats := server.BroadcastStats()
+	require.Equal(t, uint64(1), stats.Accepted)
+	require.Equal(t, uint64(1), stats.SendDropped)
+	require.Zero(t, stats.QueueDropped)
+	var readers sync.WaitGroup
+	for range 4 {
+		readers.Go(func() {
+			for range 100 {
+				server.BroadcastStats()
+			}
+		})
+	}
+	require.NoError(t, server.broadcaster.stop(context.Background()))
+	readers.Wait()
+	require.Equal(t, stats, server.BroadcastStats())
+}
+
+func BenchmarkBroadcast(b *testing.B) {
+	for _, sessionCount := range []int{1_000, 10_000, 100_000} {
+		b.Run(fmt.Sprintf("sessions=%d", sessionCount), func(b *testing.B) {
+			sessions := newBenchmarkSessions(sessionCount)
+			broadcaster, running := startBenchmarkFanout(b, sessions)
+			message := &v1.Proto{Op: v1.OpPush, Cmd: 1, Body: make([]byte, 256)}
+			if !broadcaster.fanout(running, message) {
+				b.Fatal("fanout stopped during warmup")
+			}
+
+			b.ReportAllocs()
+			b.ResetTimer()
+			for range b.N {
+				if !broadcaster.fanout(running, message) {
+					b.Fatal("fanout stopped")
+				}
+			}
+			b.StopTimer()
+		})
+	}
+}
+
+func BenchmarkBroadcastAdmission(b *testing.B) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	running := &broadcastRun{ctx: ctx, pushes: make(chan *v1.Proto, 1)}
+	server := &Server{broadcaster: &broadcaster{active: running}}
+	payload := make([]byte, 256)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		if err := server.Broadcast(42, payload); err != nil {
+			b.Fatal(err)
+		}
+		runtime.KeepAlive(<-running.pushes)
+	}
+}
+
+func BenchmarkBroadcastWebSocketEncoding(b *testing.B) {
+	for _, payloadSize := range []int{256, 4_000} {
+		b.Run(fmt.Sprintf("payload=%d", payloadSize), func(b *testing.B) {
+			sessions := newEncodingBenchmarkSessions(100_000)
+			broadcaster, running := startBenchmarkFanout(b, sessions)
+			message := &v1.Proto{Op: v1.OpPush, Cmd: 1, Body: make([]byte, payloadSize)}
+			running.sessions = sessions.snapshot(nil)
+			clear(running.sessions)
+			running.sessions = running.sessions[:0]
+
+			b.ReportAllocs()
+			b.ResetTimer()
+			for range b.N {
+				if !broadcaster.fanout(running, message) {
+					b.Fatal("fanout stopped")
+				}
+			}
+			b.StopTimer()
+		})
+	}
+}
+
+type preparedTestConnection struct {
+	*testConnection
+	calls atomic.Int32
+}
+
+func (c *preparedTestConnection) SendPrepared(message *network.PreparedProto) error {
+	c.calls.Add(1)
+	return c.SendProto(message.Message())
+}
+
 type blockingConnection struct {
 	connID    string
 	started   chan struct{}
@@ -231,11 +331,14 @@ type blockingConnection struct {
 
 func newBlockingConnection(connID string) *blockingConnection {
 	return &blockingConnection{
-		connID: connID, started: make(chan struct{}), release: make(chan struct{}),
+		connID:  connID,
+		started: make(chan struct{}),
+		release: make(chan struct{}),
 	}
 }
 
-func (c *blockingConnection) ConnID() string     { return c.connID }
+func (c *blockingConnection) ConnID() string { return c.connID }
+
 func (c *blockingConnection) RemoteAddr() string { return "127.0.0.1:5000" }
 
 func (c *blockingConnection) SendProto(message *v1.Proto) error {
@@ -265,35 +368,91 @@ func (c *blockingConnection) snapshotCommands() []int32 {
 	return append([]int32(nil), c.commands...)
 }
 
-var _ network.Connection = (*blockingConnection)(nil)
-
-func TestBroadcastStatsSeparateSendRejection(t *testing.T) {
-	conn := &queueFullConnection{newTestConnection("full")}
-	sessions := &sessionRegistry{byConnID: map[string]*session{
-		conn.ConnID(): activeSession(conn, testBinding()),
-	}}
-	server := &Server{broadcaster: newBroadcaster(sessions, 1, 1)}
-	require.NoError(t, server.broadcaster.start())
-	t.Cleanup(func() { require.NoError(t, server.broadcaster.stop(context.Background())) })
-	require.NoError(t, server.Broadcast(1, []byte("full")))
-	require.Eventually(t, func() bool { return server.BroadcastStats().Completed == 1 }, time.Second, time.Millisecond)
-	stats := server.BroadcastStats()
-	require.Equal(t, uint64(1), stats.Accepted)
-	require.Equal(t, uint64(1), stats.SendDropped)
-	require.Zero(t, stats.QueueDropped)
-	var readers sync.WaitGroup
-	for range 4 {
-		readers.Go(func() {
-			for range 100 {
-				server.BroadcastStats()
-			}
-		})
+func startBenchmarkFanout(b *testing.B, sessions *sessionRegistry) (*broadcaster, *broadcastRun) {
+	b.Helper()
+	workers := max(1, runtime.GOMAXPROCS(0))
+	broadcaster := newBroadcaster(sessions, workers, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	running := &broadcastRun{
+		ctx:       ctx,
+		cancel:    cancel,
+		batches:   make(chan fanoutBatch, workers),
+		batchDone: make(chan struct{}, workers),
 	}
-	require.NoError(t, server.broadcaster.stop(context.Background()))
-	readers.Wait()
-	require.Equal(t, stats, server.BroadcastStats())
+	b.Cleanup(func() {
+		running.cancel()
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := waitGroupContext(ctx, &running.wg); err != nil {
+			b.Errorf("stop benchmark fanout: %v", err)
+		}
+	})
+	running.wg.Add(workers)
+	for range workers {
+		go broadcaster.fanoutWorker(running)
+	}
+	return broadcaster, running
 }
 
-type queueFullConnection struct{ *testConnection }
+func newBenchmarkSessions(count int) *sessionRegistry {
+	sessions := &sessionRegistry{byConnID: make(map[string]*session, count)}
+	for index := range count {
+		connID := fmt.Sprintf("conn-%d", index)
+		binding := locate.GateBinding{
+			ServiceName:  "game",
+			UID:          connID,
+			BindingToken: connID,
+			GateID:       "gate-a",
+			GateEndpoint: "grpc://127.0.0.1:9000",
+			ConnID:       connID,
+		}
+		sessions.byConnID[connID] = &session{
+			conn:          benchmarkConnection{connID: connID},
+			binding:       binding,
+			leaseDeadline: time.Now().Add(time.Hour),
+		}
+	}
+	return sessions
+}
 
-func (*queueFullConnection) SendProto(*v1.Proto) error { return network.ErrSendQueueFull }
+func newEncodingBenchmarkSessions(count int) *sessionRegistry {
+	sessions := newBenchmarkSessions(count)
+	for connID, sess := range sessions.byConnID {
+		sess.conn = encodingBenchmarkConnection{connID: connID}
+	}
+	return sessions
+}
+
+type benchmarkConnection struct {
+	connID string
+}
+
+func (c benchmarkConnection) ConnID() string                                { return c.connID }
+func (benchmarkConnection) RemoteAddr() string                              { return "127.0.0.1:5000" }
+func (benchmarkConnection) SendProto(*v1.Proto) error                       { return nil }
+func (benchmarkConnection) CloseWithProto(context.Context, *v1.Proto) error { return nil }
+func (benchmarkConnection) Close() error                                    { return nil }
+
+type encodingBenchmarkConnection struct {
+	connID string
+}
+
+func (c encodingBenchmarkConnection) ConnID() string   { return c.connID }
+func (encodingBenchmarkConnection) RemoteAddr() string { return "127.0.0.1:5000" }
+func (encodingBenchmarkConnection) SendProto(message *v1.Proto) error {
+	encoded, err := proto.Marshal(message)
+	runtime.KeepAlive(encoded)
+	return err
+}
+
+func (encodingBenchmarkConnection) SendPrepared(message *network.PreparedProto) error {
+	encoded, err := message.Marshal()
+	runtime.KeepAlive(encoded)
+	return err
+}
+
+func (encodingBenchmarkConnection) CloseWithProto(context.Context, *v1.Proto) error {
+	return nil
+}
+
+func (encodingBenchmarkConnection) Close() error { return nil }

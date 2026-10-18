@@ -6,12 +6,6 @@ import (
 	"testing"
 )
 
-type testListener struct{ address *net.TCPAddr }
-
-func (l testListener) Accept() (net.Conn, error) { return nil, net.ErrClosed }
-func (testListener) Close() error                { return nil }
-func (l testListener) Addr() net.Addr            { return l.address }
-
 func TestExtractHostPriorityAndIPv6(t *testing.T) {
 	listener := testListener{address: &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 3101}}
 	tests := []struct {
@@ -106,3 +100,9 @@ func TestSelectInterfaceIP(t *testing.T) {
 		})
 	}
 }
+
+type testListener struct{ address *net.TCPAddr }
+
+func (l testListener) Accept() (net.Conn, error) { return nil, net.ErrClosed }
+func (testListener) Close() error                { return nil }
+func (l testListener) Addr() net.Addr            { return l.address }

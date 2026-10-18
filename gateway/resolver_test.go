@@ -16,7 +16,7 @@ func TestBackendsSelectorClearsEmptySnapshotAndRecovers(t *testing.T) {
 	endpoint := startTestNode(t)
 	node := serviceInstance("game", "node-a", endpoint)
 	discovery := newBackendTestDiscovery(node)
-	services := newBackends(discovery, nil, time.Second)
+	services := newBackends(discovery, nil, time.Second, nil)
 	t.Cleanup(services.close)
 	client, err := backendClient(context.Background(), services, "game")
 	require.NoError(t, err)
@@ -41,7 +41,7 @@ func TestBackendsRetryWatchCreation(t *testing.T) {
 	node := serviceInstance("game", "node-a", endpoint)
 	discovery := newBackendTestDiscovery(node)
 	discovery.failNextWatches(1)
-	services := newBackends(discovery, nil, time.Second)
+	services := newBackends(discovery, nil, time.Second, nil)
 	t.Cleanup(services.close)
 	client, err := backendClient(context.Background(), services, "game")
 	require.NoError(t, err)
@@ -72,28 +72,14 @@ func TestBackendsCloseCancelsWatchCreation(t *testing.T) {
 		started: make(chan struct{}),
 		stopped: make(chan struct{}),
 	}
-	services := newBackends(discovery, nil, time.Second)
+	services := newBackends(discovery, nil, time.Second, nil)
 	_, err := backendClient(context.Background(), services, "game")
 	require.NoError(t, err)
-	require.Eventually(t, func() bool {
-		select {
-		case <-discovery.started:
-			return true
-		default:
-			return false
-		}
-	}, time.Second, time.Millisecond)
+	require.Eventually(t, isClosed(discovery.started), time.Second, time.Millisecond)
 
 	services.close()
 	services.close()
-	require.Eventually(t, func() bool {
-		select {
-		case <-discovery.stopped:
-			return true
-		default:
-			return false
-		}
-	}, time.Second, time.Millisecond)
+	require.Eventually(t, isClosed(discovery.stopped), time.Second, time.Millisecond)
 }
 
 func TestBackendResolverFiltersNodes(t *testing.T) {
@@ -122,7 +108,10 @@ func TestBackendResolverFiltersNodes(t *testing.T) {
 	secureClient := &backendResolverClient{}
 	secureState := &backendState{}
 	secureResolver := &backendResolver{
-		serviceName: "game", client: secureClient, secure: true, state: secureState,
+		serviceName: "game",
+		client:      secureClient,
+		secure:      true,
+		state:       secureState,
 	}
 	secureResolver.update([]*registry.ServiceInstance{secure})
 	require.Len(t, secureClient.states, 1)
@@ -213,7 +202,10 @@ func TestBackendResolverReportsEndpointSecurityMismatch(t *testing.T) {
 			client := &backendResolverClient{}
 			state := &backendState{}
 			resolver := &backendResolver{
-				serviceName: "game", client: client, secure: test.secure, state: state,
+				serviceName: "game",
+				client:      client,
+				secure:      test.secure,
+				state:       state,
 			}
 
 			resolver.update([]*registry.ServiceInstance{
@@ -235,6 +227,33 @@ func TestBackendResolverRejectsInconsistentServiceSnapshots(t *testing.T) {
 		instances func() []*registry.ServiceInstance
 		want      string
 	}{
+		{
+			name: "missing grpc endpoint",
+			instances: func() []*registry.ServiceInstance {
+				service := serviceInstance("game", "node-a", "grpc://127.0.0.1:9001")
+				service.Endpoints = nil
+				return []*registry.ServiceInstance{service}
+			},
+			want: "exactly one gRPC endpoint",
+		},
+		{
+			name: "multiple grpc endpoints",
+			instances: func() []*registry.ServiceInstance {
+				service := serviceInstance("game", "node-a", "grpc://127.0.0.1:9001")
+				service.Endpoints = append(service.Endpoints, "grpc://127.0.0.1:9002")
+				return []*registry.ServiceInstance{service}
+			},
+			want: "exactly one gRPC endpoint",
+		},
+		{
+			name: "grpc mixed with http",
+			instances: func() []*registry.ServiceInstance {
+				service := serviceInstance("game", "node-a", "grpc://127.0.0.1:9001")
+				service.Endpoints = append(service.Endpoints, "http://127.0.0.1:8080")
+				return []*registry.ServiceInstance{service}
+			},
+			want: "exactly one gRPC endpoint",
+		},
 		{
 			name: "conflicting sticky metadata",
 			instances: func() []*registry.ServiceInstance {
@@ -298,8 +317,29 @@ type blockingWatchDiscovery struct {
 	stopped chan struct{}
 }
 
+func (*blockingWatchDiscovery) GetService(context.Context, string) ([]*registry.ServiceInstance, error) {
+	return []*registry.ServiceInstance{
+		serviceInstance("game", "node-a", "grpc://127.0.0.1:9001"),
+	}, nil
+}
+
+func (d *blockingWatchDiscovery) Watch(ctx context.Context, _ string) (registry.Watcher, error) {
+	close(d.started)
+	<-ctx.Done()
+	close(d.stopped)
+	return nil, ctx.Err()
+}
+
 type watchErrorDiscovery struct {
 	err error
+}
+
+func (d watchErrorDiscovery) GetService(context.Context, string) ([]*registry.ServiceInstance, error) {
+	return nil, d.err
+}
+
+func (d watchErrorDiscovery) Watch(context.Context, string) (registry.Watcher, error) {
+	return nil, d.err
 }
 
 type backendResolverClient struct {
@@ -315,25 +355,4 @@ func (c *backendResolverClient) UpdateState(state resolver.State) error {
 
 func (c *backendResolverClient) ReportError(err error) {
 	c.errs = append(c.errs, err)
-}
-
-func (*blockingWatchDiscovery) GetService(context.Context, string) ([]*registry.ServiceInstance, error) {
-	return []*registry.ServiceInstance{
-		serviceInstance("game", "node-a", "grpc://127.0.0.1:9001"),
-	}, nil
-}
-
-func (d watchErrorDiscovery) GetService(context.Context, string) ([]*registry.ServiceInstance, error) {
-	return nil, d.err
-}
-
-func (d watchErrorDiscovery) Watch(context.Context, string) (registry.Watcher, error) {
-	return nil, d.err
-}
-
-func (d *blockingWatchDiscovery) Watch(ctx context.Context, _ string) (registry.Watcher, error) {
-	close(d.started)
-	<-ctx.Done()
-	close(d.stopped)
-	return nil, ctx.Err()
 }

@@ -110,46 +110,12 @@ func (b *Board) Clear() {
 
 // Move 单步移动，返回步骤信息
 func (b *Board) Move(pieceID, steps int32) *Step {
-	return b.moveOne(pieceID, steps)
-}
-
-// CanMove 判断指定颜色棋子是否可以移动指定步数，返回能否移动及错误码
-func (b *Board) CanMove(color, pieceID, x int32) (bool, int32) {
-	// 校验持方与移动棋子的持方一致
 	p := b.GetPieceByID(pieceID)
-	if p == nil {
-		return false, ErrInvalidPieceIdx
-	}
-	if p.color != color {
-		return false, ErrInvalidPieceColor
-	}
-	// 校验是否真的可以移动
-	if ok, code, _ := calcNextPos(p.pos, p.color, x); !ok {
-		return false, code
-	}
-	return true, MoveOK
-}
-
-// canMoveOne 判断单个棋子是否能移动指定步数
-func (b *Board) canMoveOne(id, x int32) (bool, int32) {
-	p := b.GetPieceByID(id)
-	if p == nil {
-		return false, ErrInvalidPieceIdx
-	}
-	if ok, code, _ := calcNextPos(p.pos, p.color, x); !ok {
-		return false, code
-	}
-	return true, MoveOK
-}
-
-// moveOne 执行单个棋子移动，返回该步详细信息
-func (b *Board) moveOne(id, x int32) *Step {
-	p := b.GetPieceByID(id)
 	if p == nil {
 		return nil
 	}
-	from, to := p.move(x)
-	step := &Step{ID: id, From: from, To: to, X: x, Color: p.color, Killed: nil}
+	from, to := p.move(steps)
+	step := &Step{ID: pieceID, From: from, To: to, X: steps, Color: p.color, Killed: nil}
 	if from != to {
 		killed := p.canKillAt(b.pieces, to)
 		for _, v := range killed {
@@ -172,28 +138,19 @@ func (b *Board) moveOne(id, x int32) *Step {
 	return step
 }
 
-// backOne 撤销最后一步移动，恢复棋子及被击杀棋子状态
-func (b *Board) backOne() *Step {
-	if len(b.steps) == 0 {
-		return nil
+// CanMove 判断指定颜色棋子是否可以移动指定步数，返回能否移动及错误码
+func (b *Board) CanMove(color, pieceID, x int32) (bool, int32) {
+	// 校验持方与移动棋子的持方一致
+	p := b.GetPieceByID(pieceID)
+	if p == nil {
+		return false, ErrInvalidPieceIdx
 	}
-	step := b.steps[len(b.steps)-1]
-
-	// 撤销移动
-	if p := b.GetPieceByID(step.ID); p != nil {
-		p.setPos(step.From)
+	if p.color != color {
+		return false, ErrInvalidPieceColor
 	}
-
-	// 撤销击杀
-	for _, killed := range step.Killed {
-		if p := b.GetPieceByID(killed.ID); p != nil {
-			p.setPos(killed.From)
-		}
-	}
-
-	// 移除最后一步
-	b.steps = b.steps[:len(b.steps)-1]
-	return step
+	// 校验是否真的可以移动
+	ok, code, _ := calcNextPos(p.pos, p.color, x)
+	return ok, code
 }
 
 // CalcCanMoveDice 是否可移动
@@ -222,4 +179,38 @@ func (b *Board) CalcAllMovable(color int32, dices []int32) [][]int32 {
 		}
 	}
 	return all
+}
+
+// canMoveOne 判断单个棋子是否能移动指定步数
+func (b *Board) canMoveOne(id, x int32) (bool, int32) {
+	p := b.GetPieceByID(id)
+	if p == nil {
+		return false, ErrInvalidPieceIdx
+	}
+	ok, code, _ := calcNextPos(p.pos, p.color, x)
+	return ok, code
+}
+
+// backOne 撤销最后一步移动，恢复棋子及被击杀棋子状态
+func (b *Board) backOne() *Step {
+	if len(b.steps) == 0 {
+		return nil
+	}
+	step := b.steps[len(b.steps)-1]
+
+	// 撤销移动
+	if p := b.GetPieceByID(step.ID); p != nil {
+		p.setPos(step.From)
+	}
+
+	// 撤销击杀
+	for _, killed := range step.Killed {
+		if p := b.GetPieceByID(killed.ID); p != nil {
+			p.setPos(killed.From)
+		}
+	}
+
+	// 移除最后一步
+	b.steps = b.steps[:len(b.steps)-1]
+	return step
 }

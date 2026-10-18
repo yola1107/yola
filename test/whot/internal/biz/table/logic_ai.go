@@ -22,12 +22,11 @@ const (
 )
 
 const (
-	shortHandLimit         = 3
-	safeOpponentHandSize   = 2
-	winningWhotScore       = 100
-	shortHandWhotScore     = 40
-	defaultWhotScore       = -300
-	urgentWinningWhotScore = 200
+	shortHandLimit       = 3
+	safeOpponentHandSize = 2
+	winningWhotScore     = 100
+	shortHandWhotScore   = 40
+	defaultWhotScore     = -300
 )
 
 // RobotLogic 封装机器人在桌上的行为逻辑
@@ -190,7 +189,7 @@ func (r *RobotLogic) ActivePlayer(p *player.Player, msg proto.Message) {
 func selectBestAction(p *player.Player, ops []*v1.ActionOption, currCard int32, opponentHandSize int) *v1.PlayerActionReq {
 	hand := p.GetCards()
 	for _, op := range ops {
-		switch op.Action {
+		switch action := op.Action; action {
 		case v1.ACTION_DECLARE_SUIT:
 			return &v1.PlayerActionReq{
 				UserId:      p.GetPlayerID(),
@@ -205,15 +204,10 @@ func selectBestAction(p *player.Player, ops []*v1.ActionOption, currCard int32, 
 					OutCard: best,
 				}
 			}
-		case v1.ACTION_DRAW_CARD:
+		case v1.ACTION_DRAW_CARD, v1.ACTION_SKIP_TURN:
 			return &v1.PlayerActionReq{
 				UserId: p.GetPlayerID(),
-				Action: v1.ACTION_DRAW_CARD,
-			}
-		case v1.ACTION_SKIP_TURN:
-			return &v1.PlayerActionReq{
-				UserId: p.GetPlayerID(),
-				Action: v1.ACTION_SKIP_TURN,
+				Action: action,
 			}
 		}
 	}
@@ -317,10 +311,6 @@ func evaluateCardScoreV2(card int32, currSuit v1.SUIT, currNum int32, hand []int
 
 	// 强化对手只剩1张牌时的权重
 	if opponentHandSize == 1 {
-		// 王牌优先极高
-		if IsWhotCard(card) {
-			return urgentWinningWhotScore
-		}
 		// 如果能匹配当前牌（阻断对手），大幅加分
 		if cardSuit == currSuit || cardNumber == currNum {
 			score += 50
@@ -335,18 +325,14 @@ func evaluateCardScoreV2(card int32, currSuit v1.SUIT, currNum int32, hand []int
 	}
 
 	// 检查是否有连锁可能
-	canChain := false
 	for _, handCard := range hand {
 		if handCard == card {
 			continue
 		}
 		if Suit(handCard) == int32(cardSuit) || Number(handCard) == cardNumber {
-			canChain = true
+			score += 5
 			break
 		}
-	}
-	if canChain {
-		score += 5
 	}
 
 	// 手牌少时强化牌型价值

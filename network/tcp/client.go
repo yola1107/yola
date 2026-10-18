@@ -114,14 +114,6 @@ func NewClient(ctx context.Context, opts ...ClientOption) (*Client, error) {
 	return c, nil
 }
 
-func dialGateway(ctx context.Context, endpoint string, c *tls.Config) (net.Conn, error) {
-	dialer := &net.Dialer{}
-	if c == nil {
-		return dialer.DialContext(ctx, "tcp", endpoint)
-	}
-	return (&tls.Dialer{NetDialer: dialer, Config: c}).DialContext(ctx, "tcp", endpoint)
-}
-
 // Request 发送请求并等待响应、取消、超时或断连。
 // 取消或超时只结束本地等待；已发送请求仍可能执行，迟到响应按序号丢弃。
 func (c *Client) Request(ctx context.Context, command int32, msg proto.Message) ([]byte, int32, error) {
@@ -152,30 +144,74 @@ func (c *Client) Close() {
 	c.shutdownWith(nil)
 }
 
-func (c *Client) heartbeatLoop() {
-	ticker := time.NewTicker(c.pingInterval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-c.done:
-			return
-		case <-ticker.C:
-			switch c.heartbeat.Tick() {
-			case heartbeat.TickPending:
-				continue
-			case heartbeat.TickTimeout:
-				slog.Warn("[tcp] heartbeat reply timed out")
-				c.Close()
-				return
-			}
-			if err := c.send(&v1.Proto{Op: v1.OpHeartbeat}); err != nil {
-				c.heartbeat.CancelQueue()
-				slog.Warn("[tcp] heartbeat send failed", "error", err)
-				c.Close()
-				return
-			}
-		}
+func dialGateway(ctx context.Context, endpoint string, c *tls.Config) (net.Conn, error) {
+	dialer := &net.Dialer{}
+	if c == nil {
+		return dialer.DialContext(ctx, "tcp", endpoint)
 	}
+	return (&tls.Dialer{NetDialer: dialer, Config: c}).DialContext(ctx, "tcp", endpoint)
+}
+
+func (o *clientOptions) authenticate(ctx context.Context, conn net.Conn, rd *bufio.Reader, wr *bufio.Writer) ([]*v1.Proto, error) {
+	authCtx, cancel := context.WithTimeout(ctx, _defaultAuthenticationTimeout)
+	deadline, _ := authCtx.Deadline()
+	if err := conn.SetDeadline(deadline); err != nil {
+		cancel()
+		return nil, err
+	}
+	// 无 deadline 的 context 取消时，通过关闭连接可跨平台中断 I/O。
+	stopInterrupt := context.AfterFunc(authCtx, func() {
+		_ = conn.Close()
+	})
+	defer func() {
+		if stopInterrupt() {
+			_ = conn.SetDeadline(time.Time{})
+		}
+		cancel()
+	}()
+	body, err := proto.Marshal(&v1.ClientAuthReq{ServiceName: o.serviceName, Token: o.token})
+	if err != nil {
+		return nil, err
+	}
+	if err := writeFrame(wr, o.codec, &v1.Proto{Op: v1.OpAuth, Body: body}); err != nil {
+		return nil, network.AuthenticationIOError(authCtx, err)
+	}
+	if err := wr.Flush(); err != nil {
+		return nil, network.AuthenticationIOError(authCtx, err)
+	}
+	return o.readAuthenticationReply(authCtx, rd)
+}
+
+func (o *clientOptions) readAuthenticationReply(authCtx context.Context, rd *bufio.Reader) ([]*v1.Proto, error) {
+	return auth.ReadReply(
+		"tcp",
+		ErrAuthenticationRejected,
+		o.callbackQueueSize,
+		func() (*v1.Proto, error) {
+			reply := &v1.Proto{}
+			if err := readFrame(rd, o.codec, reply); err != nil {
+				return nil, network.AuthenticationIOError(authCtx, err)
+			}
+			return reply, nil
+		},
+	)
+}
+
+func (c *Client) initialCallbacks(connect func(), pending []*v1.Proto) []func() {
+	callbacks := make([]func(), 0, len(pending)+callbackSlot(connect != nil))
+	if connect != nil {
+		callbacks = append(callbacks, connect)
+	}
+	for _, message := range pending {
+		handler := c.pushHandlers[message.Cmd]
+		if handler == nil {
+			slog.Warn("[tcp] push handler not found", "command", message.Cmd)
+			continue
+		}
+		body := message.Body
+		callbacks = append(callbacks, func() { handler(body) })
+	}
+	return callbacks
 }
 
 func (c *Client) readLoop(rd *bufio.Reader) {
@@ -277,6 +313,32 @@ func (c *Client) writeMessage(wr *bufio.Writer, p *v1.Proto) error {
 	return nil
 }
 
+func (c *Client) heartbeatLoop() {
+	ticker := time.NewTicker(c.pingInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-c.done:
+			return
+		case <-ticker.C:
+			switch c.heartbeat.Tick() {
+			case heartbeat.TickPending:
+				continue
+			case heartbeat.TickTimeout:
+				slog.Warn("[tcp] heartbeat reply timed out")
+				c.Close()
+				return
+			}
+			if err := c.send(&v1.Proto{Op: v1.OpHeartbeat}); err != nil {
+				c.heartbeat.CancelQueue()
+				slog.Warn("[tcp] heartbeat send failed", "error", err)
+				c.Close()
+				return
+			}
+		}
+	}
+}
+
 func (c *Client) send(p *v1.Proto) error {
 	select {
 	case <-c.done:
@@ -357,66 +419,4 @@ func callbackSlot(enabled bool) int {
 		return 1
 	}
 	return 0
-}
-
-func (c *Client) initialCallbacks(connect func(), pending []*v1.Proto) []func() {
-	callbacks := make([]func(), 0, len(pending)+callbackSlot(connect != nil))
-	if connect != nil {
-		callbacks = append(callbacks, connect)
-	}
-	for _, message := range pending {
-		handler := c.pushHandlers[message.Cmd]
-		if handler == nil {
-			slog.Warn("[tcp] push handler not found", "command", message.Cmd)
-			continue
-		}
-		body := message.Body
-		callbacks = append(callbacks, func() { handler(body) })
-	}
-	return callbacks
-}
-
-func (o *clientOptions) authenticate(ctx context.Context, conn net.Conn, rd *bufio.Reader, wr *bufio.Writer) ([]*v1.Proto, error) {
-	authCtx, cancel := context.WithTimeout(ctx, _defaultAuthenticationTimeout)
-	deadline, _ := authCtx.Deadline()
-	if err := conn.SetDeadline(deadline); err != nil {
-		cancel()
-		return nil, err
-	}
-	// 无 deadline 的 context 取消时，通过关闭连接可跨平台中断 I/O。
-	stopInterrupt := context.AfterFunc(authCtx, func() {
-		_ = conn.Close()
-	})
-	defer func() {
-		if stopInterrupt() {
-			_ = conn.SetDeadline(time.Time{})
-		}
-		cancel()
-	}()
-	body, err := proto.Marshal(&v1.ClientAuthReq{ServiceName: o.serviceName, Token: o.token})
-	if err != nil {
-		return nil, err
-	}
-	if err := writeFrame(wr, o.codec, &v1.Proto{Op: v1.OpAuth, Body: body}); err != nil {
-		return nil, network.AuthenticationIOError(authCtx, err)
-	}
-	if err := wr.Flush(); err != nil {
-		return nil, network.AuthenticationIOError(authCtx, err)
-	}
-	return o.readAuthenticationReply(authCtx, rd)
-}
-
-func (o *clientOptions) readAuthenticationReply(authCtx context.Context, rd *bufio.Reader) ([]*v1.Proto, error) {
-	return auth.ReadReply(
-		"tcp",
-		ErrAuthenticationRejected,
-		o.callbackQueueSize,
-		func() (*v1.Proto, error) {
-			reply := &v1.Proto{}
-			if err := readFrame(rd, o.codec, reply); err != nil {
-				return nil, network.AuthenticationIOError(authCtx, err)
-			}
-			return reply, nil
-		},
-	)
 }

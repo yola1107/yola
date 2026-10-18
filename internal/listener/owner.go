@@ -14,11 +14,13 @@ const (
 
 // Owner 按需绑定 listener，并独立于服务库负责关闭它。
 type Owner struct {
-	mu       sync.Mutex
-	network  string
-	address  string
-	listener net.Listener
-	closed   bool
+	mu         sync.Mutex
+	network    string
+	address    string
+	listener   net.Listener
+	closed     bool
+	accepting  chan struct{}
+	acceptOnce sync.Once
 }
 
 func New(network, address string, listener net.Listener) *Owner {
@@ -28,8 +30,16 @@ func New(network, address string, listener net.Listener) *Owner {
 	if address == "" {
 		address = _defaultAddress
 	}
-	return &Owner{network: network, address: address, listener: listener}
+	return &Owner{
+		network:   network,
+		address:   address,
+		listener:  listener,
+		accepting: make(chan struct{}),
+	}
 }
+
+// Accepting 在服务进入首次 Accept 后关闭；仅绑定地址不表示服务已启动。
+func (o *Owner) Accepting() <-chan struct{} { return o.accepting }
 
 // Prepare 只绑定一次配置地址；外部传入的 listener 视为已准备。
 func (o *Owner) Prepare(ctx context.Context) error {
@@ -58,7 +68,12 @@ func (o *Owner) Accept() (net.Conn, error) {
 		return nil, err
 	}
 	o.mu.Lock()
+	if o.closed {
+		o.mu.Unlock()
+		return nil, net.ErrClosed
+	}
 	listener := o.listener
+	o.acceptOnce.Do(func() { close(o.accepting) })
 	o.mu.Unlock()
 	return listener.Accept()
 }

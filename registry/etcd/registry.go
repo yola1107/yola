@@ -14,6 +14,46 @@ import (
 	"go.etcd.io/etcd/client/v3/concurrency"
 )
 
+const (
+	_defaultEndpoint    = "127.0.0.1:2379"
+	_defaultPrefix      = "/etcd/prefix"
+	_defaultDialTimeout = 3 * time.Second
+)
+
+type config struct {
+	endpoints   []string
+	prefix      string
+	dialTimeout time.Duration
+}
+
+type Option func(*config)
+
+// WithEndpoints 配置 etcd 地址，兼容逗号分隔的装配参数。
+func WithEndpoints(endpoints ...string) Option {
+	return func(config *config) {
+		config.endpoints = config.endpoints[:0]
+		for _, values := range endpoints {
+			for _, endpoint := range strings.Split(values, ",") {
+				endpoint = strings.TrimSpace(endpoint)
+				if endpoint == "" {
+					continue
+				}
+				config.endpoints = append(config.endpoints, endpoint)
+			}
+		}
+	}
+}
+
+// WithPrefix 配置发现 key 的 namespace，保留调用方已有的前缀。
+func WithPrefix(prefix string) Option {
+	return func(config *config) { config.prefix = prefix }
+}
+
+// WithDialTimeout 配置 etcd client 的建连预算。
+func WithDialTimeout(timeout time.Duration) Option {
+	return func(config *config) { config.dialTimeout = timeout }
+}
+
 // Registry 拥有一个 App 的 client 和注册租约，复用官方 Discovery。
 // 每个 Registry 只尝试注册一次，租约丢失后不自动重建记录。
 type Registry struct {
@@ -29,20 +69,6 @@ type Registry struct {
 	cancel    context.CancelFunc
 	session   *concurrency.Session
 }
-
-const (
-	_defaultEndpoint    = "127.0.0.1:2379"
-	_defaultPrefix      = "/etcd/prefix"
-	_defaultDialTimeout = 3 * time.Second
-)
-
-type config struct {
-	endpoints   []string
-	prefix      string
-	dialTimeout time.Duration
-}
-
-type Option func(*config)
 
 // New 创建进程专用 Registry；调用方负责 Close。
 func New(opts ...Option) (*Registry, error) {
@@ -73,37 +99,25 @@ func New(opts ...Option) (*Registry, error) {
 	return newRegistry(client, c.prefix), nil
 }
 
+// NewNodeRegistry 从环境前缀派生内部 Node 目录，供 Node 登记与 Gateway 发现共用。
+// 普通应用注册须使用独立的 New 实例，各实例分别拥有自己的注册租约。
+func NewNodeRegistry(opts ...Option) (*Registry, error) {
+	options := append([]Option(nil), opts...)
+	options = append(options, func(c *config) {
+		if c.prefix != "" {
+			c.prefix = strings.TrimRight(c.prefix, "/") + "/yola/nodes"
+		}
+	})
+	return New(options...)
+}
+
 func newRegistry(client *clientv3.Client, prefix string) *Registry {
 	return &Registry{
 		Discovery: etcd.New(client, etcd.Namespace(prefix)),
-		client:    client, namespace: prefix, operation: make(chan struct{}, 1),
+		client:    client,
+		namespace: prefix,
+		operation: make(chan struct{}, 1),
 	}
-}
-
-// WithEndpoints 配置 etcd 地址，兼容逗号分隔的装配参数。
-func WithEndpoints(endpoints ...string) Option {
-	return func(config *config) {
-		config.endpoints = config.endpoints[:0]
-		for _, values := range endpoints {
-			for _, endpoint := range strings.Split(values, ",") {
-				endpoint = strings.TrimSpace(endpoint)
-				if endpoint == "" {
-					continue
-				}
-				config.endpoints = append(config.endpoints, endpoint)
-			}
-		}
-	}
-}
-
-// WithPrefix 配置发现 key 的 namespace，保留调用方已有的前缀。
-func WithPrefix(prefix string) Option {
-	return func(config *config) { config.prefix = prefix }
-}
-
-// WithDialTimeout 配置 etcd client 的建连预算。
-func WithDialTimeout(timeout time.Duration) Option {
-	return func(config *config) { config.dialTimeout = timeout }
 }
 
 // Close 关闭 client 及其租约续期；未显式注销的记录等待 TTL 回收。

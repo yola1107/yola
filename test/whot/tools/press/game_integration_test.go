@@ -42,8 +42,9 @@ func TestConfiguredGameDelivery(t *testing.T) {
 	var bootstrap conf.Bootstrap
 	require.NoError(t, c.Scan(&bootstrap))
 	timeouts := pushbench.RequestTimeouts{
-		Transport: 3 * time.Second, Forward: 3 * time.Second,
-		Node: bootstrap.GetServer().GetGrpc().GetTimeout().AsDuration(),
+		Transport: 3 * time.Second,
+		Forward:   3 * time.Second,
+		Node:      bootstrap.GetServer().GetGrpc().GetTimeout().AsDuration(),
 	}
 	t.Log("GAME budget profile: gateway_defaults_and_node_yaml; source=../../configs/config.yaml")
 	runGameDeliveryScenarios(t, timeouts)
@@ -91,8 +92,17 @@ func runGameDelivery(t *testing.T, tableCount int, robots bool, duration time.Du
 	room := &conf.Room{
 		Table: &conf.Room_Table{TableNum: int32(tableCount), ChairNum: 4},
 		Game:  &conf.Room_Game{BaseMoney: 1, MinMoney: 100, MaxMoney: 1000000, AutoReady: true},
-		Robot: &conf.Room_Robot{Open: robots, Num: 2, MinPlayCount: 2, TableMaxCount: 2, IdBegin: uidStart + 10000,
-			MinMoney: 10000, MaxMoney: 20000, StandMinMoney: 100, StandMaxMoney: 1000000},
+		Robot: &conf.Room_Robot{
+			Open:          robots,
+			Num:           2,
+			MinPlayCount:  2,
+			TableMaxCount: 2,
+			IdBegin:       uidStart + 10000,
+			MinMoney:      10000,
+			MaxMoney:      20000,
+			StandMinMoney: 100,
+			StandMaxMoney: 1000000,
+		},
 	}
 	client := pushbench.GameRedis(t)
 	repo := data.NewPlayerRepo(data.NewData(client))
@@ -155,9 +165,15 @@ func runGameDelivery(t *testing.T, tableCount int, robots bool, duration time.Du
 			}
 			return err
 		})
-		connection, err := websocket.NewClient(runner.ctx, websocket.WithEndpoint(probe.Endpoint), websocket.WithServiceName("whot"),
-			websocket.WithToken(strconv.FormatInt(user.id, 10)), websocket.WithCodec(codec), websocket.WithPushHandler(handlers),
-			websocket.WithDisconnectFunc(user.OnDisconnect))
+		connection, err := websocket.NewClient(
+			runner.ctx,
+			websocket.WithEndpoint(probe.Endpoint),
+			websocket.WithServiceName("whot"),
+			websocket.WithToken(strconv.FormatInt(user.id, 10)),
+			websocket.WithCodec(codec),
+			websocket.WithPushHandler(handlers),
+			websocket.WithDisconnectFunc(user.OnDisconnect),
+		)
 		require.NoError(t, err)
 		user.client.Store(connection)
 		runner.users.Store(user.id, user)

@@ -4,9 +4,41 @@ import (
 	"context"
 	"net"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
+
+func TestOwnerAcceptingStartsWithAcceptLoop(t *testing.T) {
+	owner := New("tcp", "127.0.0.1:0", nil)
+	t.Cleanup(func() { require.NoError(t, owner.Close()) })
+	require.NoError(t, owner.Prepare(t.Context()))
+	select {
+	case <-owner.Accepting():
+		t.Fatal("binding a listener must not report an accept loop")
+	default:
+	}
+	result := make(chan error, 1)
+	go func() {
+		conn, err := owner.Accept()
+		if conn != nil {
+			_ = conn.Close()
+		}
+		result <- err
+	}()
+	select {
+	case <-owner.Accepting():
+	case <-time.After(time.Second):
+		t.Fatal("accept loop did not start")
+	}
+	require.NoError(t, owner.Close())
+	select {
+	case err := <-result:
+		require.ErrorIs(t, err, net.ErrClosed)
+	case <-time.After(time.Second):
+		t.Fatal("close did not stop accept")
+	}
+}
 
 func TestOwnerBindsLazilyAndReleasesAddress(t *testing.T) {
 	owner := New("tcp", "127.0.0.1:0", nil)

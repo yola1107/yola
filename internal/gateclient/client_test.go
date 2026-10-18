@@ -85,44 +85,6 @@ func TestEvictionDoesNotBlockOtherHostsAndCloseWaits(t *testing.T) {
 	require.NoError(t, receiveGateClientValue(t, closed))
 }
 
-// blockedCloseResolver 控制真实 gRPC ClientConn.Close 的完成时点。
-type blockedCloseResolver struct {
-	built, closing, release chan struct{}
-}
-
-func (r *blockedCloseResolver) Build(resolver.Target, resolver.ClientConn, resolver.BuildOptions) (resolver.Resolver, error) {
-	close(r.built)
-	return r, nil
-}
-
-func (*blockedCloseResolver) Scheme() string                        { return "blocked-close" }
-func (*blockedCloseResolver) ResolveNow(resolver.ResolveNowOptions) {}
-func (r *blockedCloseResolver) Close() {
-	close(r.closing)
-	<-r.release
-}
-
-type gatewayStub struct {
-	v1.UnimplementedGatewayServer
-	pushes        chan *v1.PushRequest
-	kicks         chan *v1.KickRequest
-	pushDeadlines chan bool
-}
-
-func (s *gatewayStub) Push(ctx context.Context, in *v1.PushRequest) (*emptypb.Empty, error) {
-	if s.pushDeadlines != nil {
-		_, hasDeadline := ctx.Deadline()
-		s.pushDeadlines <- hasDeadline
-	}
-	s.pushes <- in
-	return &emptypb.Empty{}, nil
-}
-
-func (s *gatewayStub) Kick(_ context.Context, in *v1.KickRequest) (*emptypb.Empty, error) {
-	s.kicks <- in
-	return &emptypb.Empty{}, nil
-}
-
 func TestPushAndKickUseCurrentRoute(t *testing.T) {
 	stub := &gatewayStub{
 		pushes:        make(chan *v1.PushRequest, 1),
@@ -296,6 +258,46 @@ func TestClientRejectsEndpointSecurityMismatchBeforeDial(t *testing.T) {
 	}
 }
 
+// blockedCloseResolver 控制真实 gRPC ClientConn.Close 的完成时点。
+type blockedCloseResolver struct {
+	built   chan struct{}
+	closing chan struct{}
+	release chan struct{}
+}
+
+func (r *blockedCloseResolver) Build(resolver.Target, resolver.ClientConn, resolver.BuildOptions) (resolver.Resolver, error) {
+	close(r.built)
+	return r, nil
+}
+
+func (*blockedCloseResolver) Scheme() string                        { return "blocked-close" }
+func (*blockedCloseResolver) ResolveNow(resolver.ResolveNowOptions) {}
+func (r *blockedCloseResolver) Close() {
+	close(r.closing)
+	<-r.release
+}
+
+type gatewayStub struct {
+	v1.UnimplementedGatewayServer
+	pushes        chan *v1.PushRequest
+	kicks         chan *v1.KickRequest
+	pushDeadlines chan bool
+}
+
+func (s *gatewayStub) Push(ctx context.Context, in *v1.PushRequest) (*emptypb.Empty, error) {
+	if s.pushDeadlines != nil {
+		_, hasDeadline := ctx.Deadline()
+		s.pushDeadlines <- hasDeadline
+	}
+	s.pushes <- in
+	return &emptypb.Empty{}, nil
+}
+
+func (s *gatewayStub) Kick(_ context.Context, in *v1.KickRequest) (*emptypb.Empty, error) {
+	s.kicks <- in
+	return &emptypb.Empty{}, nil
+}
+
 func startTestGateway(t *testing.T, stub *gatewayStub, opts ...grpc.ServerOption) string {
 	t.Helper()
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
@@ -321,8 +323,12 @@ func startTestGateway(t *testing.T, stub *gatewayStub, opts ...grpc.ServerOption
 
 func testBinding(endpoint string) locate.GateBinding {
 	return locate.GateBinding{
-		ServiceName: "game", UID: "player-a", BindingToken: "binding-a",
-		GateID: "gate-a", GateEndpoint: endpoint, ConnID: "conn-a",
+		ServiceName:  "game",
+		UID:          "player-a",
+		BindingToken: "binding-a",
+		GateID:       "gate-a",
+		GateEndpoint: endpoint,
+		ConnID:       "conn-a",
 	}
 }
 

@@ -21,6 +21,9 @@ var (
 	Host          = envOr("YOLA_ADVERTISE_HOST", "127.0.0.1")
 )
 
+// Registry 沿用示例类型名，实际资源由共享的 etcd Registry 管理。
+type Registry = etcd.Registry
+
 func envOr(name, fallback string) string {
 	if configured := os.Getenv(name); configured != "" {
 		return configured
@@ -30,7 +33,11 @@ func envOr(name, fallback string) string {
 
 // NewRedis 创建 Redis client 并验证配置的连接与凭据。
 func NewRedis() (*redis.Client, error) {
-	client := redis.NewClient(&redis.Options{Addr: RedisAddr, Password: RedisPassword, ContextTimeoutEnabled: true})
+	client := redis.NewClient(&redis.Options{
+		Addr:                  RedisAddr,
+		Password:              RedisPassword,
+		ContextTimeoutEnabled: true,
+	})
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	if err := client.Ping(ctx).Err(); err != nil {
@@ -45,10 +52,7 @@ func NewEventBus() (*nats.Bus, error) {
 	return nats.New(nats.WithURL(NATSURL))
 }
 
-// Registry 沿用示例类型名，实际资源由共享的 etcd Registry 管理。
-type Registry = etcd.Registry
-
-// NewRegistry 按配置创建服务注册器。
+// NewRegistry 从环境配置派生 Node 内部登记与发现目录。
 func NewRegistry() (*Registry, error) {
-	return etcd.New(etcd.WithEndpoints(EtcdAddr), etcd.WithPrefix("/microservices"))
+	return etcd.NewNodeRegistry(etcd.WithEndpoints(EtcdAddr), etcd.WithPrefix("/microservices"))
 }

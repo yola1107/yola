@@ -9,6 +9,15 @@ import (
 	"yola/test/whot/internal/conf"
 )
 
+var _ Repo = (*startRepo)(nil)
+
+type startRepo struct{}
+
+func (*startRepo) CreateRobot(*player.Raw) (*player.Player, error) {
+	return nil, nil
+}
+func (*startRepo) EnterRobots(context.Context, []*player.Player) ([]int64, error) { return nil, nil }
+
 func TestResetKeepsMoneyWithinRobotRangeWhenRoomMaximumIsUnlimited(t *testing.T) {
 	manager := &Manager{rc: &conf.Room{
 		Game:  &conf.Room_Game{MinMoney: 100, MaxMoney: -1},
@@ -38,12 +47,3 @@ func TestRunStopsWithContext(t *testing.T) {
 		t.Fatal("Run did not stop after context cancellation")
 	}
 }
-
-type startRepo struct{}
-
-func (*startRepo) CreateRobot(*player.Raw) (*player.Player, error) {
-	return nil, nil
-}
-func (*startRepo) EnterRobots(context.Context, []*player.Player) ([]int64, error) { return nil, nil }
-
-var _ Repo = (*startRepo)(nil)

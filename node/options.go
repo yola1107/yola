@@ -1,11 +1,13 @@
 package node
 
 import (
+	"context"
 	"crypto/tls"
 	"errors"
 	"fmt"
 	"net"
 	"net/url"
+	"reflect"
 	"time"
 
 	"yola/internal/grpcendpoint"
@@ -13,8 +15,20 @@ import (
 	"yola/locate"
 
 	"github.com/go-kratos/kratos/v3/middleware"
+	"github.com/go-kratos/kratos/v3/registry"
 	"github.com/go-kratos/kratos/v3/transport/grpc"
 )
+
+// Store 提供 Node 的分布式绑定、epoch 管理和健康检查。
+type Store interface {
+	locate.Pinger
+	locate.NodeLocator
+}
+
+// GateLookup 查询玩家当前的 Gateway 连接。
+type GateLookup interface {
+	LocateGate(ctx context.Context, serviceName, uid string) (locate.GateLease, error)
+}
 
 // Option 配置 Node 服务。
 type Option func(*options) error
@@ -24,6 +38,7 @@ type options struct {
 	clientTLS         *tls.Config
 	pushTimeout       time.Duration
 	cleanupTimeout    time.Duration
+	shutdownTimeout   time.Duration
 	network           string
 	address           string
 	listener          net.Listener
@@ -32,19 +47,28 @@ type options struct {
 	serverTLS         bool
 	middlewares       []middleware.Middleware
 	clientMiddlewares []middleware.Middleware
-	locator           locate.Locator
+	registrar         registry.Registrar
+	stateful          Store
+	gateDirectory     GateLookup
 	drain             DrainFunc
 }
 
 func resolveOptions(opts ...Option) (options, error) {
-	o := options{pushTimeout: 3 * time.Second, cleanupTimeout: 3 * time.Second, network: "tcp"}
+	o := options{pushTimeout: 3 * time.Second, cleanupTimeout: 3 * time.Second, shutdownTimeout: 10 * time.Second, network: "tcp"}
 	for _, opt := range opts {
 		if err := opt(&o); err != nil {
 			return options{}, err
 		}
 	}
-	if err := o.resolveEndpoint(); err != nil {
-		return options{}, err
+	endpoint, err := grpcendpoint.Resolve(o.endpoint, o.address, o.advertiseHost, o.serverTLS)
+	if err != nil {
+		return options{}, fmt.Errorf("node: %w", err)
+	}
+	if endpoint != nil {
+		o.grpcOptions = append(o.grpcOptions, grpc.Endpoint(endpoint))
+	}
+	if o.registrar == nil {
+		return options{}, errors.New("node: registration is required")
 	}
 	if o.address == "" {
 		o.address = ":0"
@@ -52,16 +76,15 @@ func resolveOptions(opts ...Option) (options, error) {
 	return o, nil
 }
 
-func (o *options) resolveEndpoint() error {
-	endpoint, err := grpcendpoint.Resolve(o.endpoint, o.address, o.advertiseHost, o.serverTLS)
-	if err != nil {
-		return fmt.Errorf("node: %w", err)
-	}
-	if endpoint == nil {
+// Registration 配置 Node 内部目录登记；Registrar 必须安全回收失败申请，并按自身租约幂等注销。
+func Registration(registrar registry.Registrar) Option {
+	return func(o *options) error {
+		if registrar == nil {
+			return errors.New("node: registration is required")
+		}
+		o.registrar = registrar
 		return nil
 	}
-	o.grpcOptions = append(o.grpcOptions, grpc.Endpoint(endpoint))
-	return nil
 }
 
 // Network 配置 Node 监听网络。
@@ -162,15 +185,26 @@ func ClientMiddleware(m ...middleware.Middleware) Option {
 	}
 }
 
-// Locator 同时配置 Node 和 Gate 定位存储。
-// 两类查询必须成对配置：sticky 路由需要 Node binding，
-// PushToUID 需要 Gate binding；仅配置一半会将错误推迟到请求期间。
-func Locator(locator locate.Locator) Option {
+// Stateful 启用 Node 绑定与 epoch；store 不能为 nil（含带类型 nil）。
+// 未配置 Stateful 时保持无状态。
+func Stateful(store Store) Option {
 	return func(o *options) error {
-		if locator == nil {
-			return errors.New("node: locator is required")
+		if isNil(store) {
+			return errors.New("node: stateful store is required")
 		}
-		o.locator = locator
+		o.stateful = store
+		return nil
+	}
+}
+
+// GateDirectory 配置 PushToUID 使用的 Gateway 查询，与 Stateful 模式相互独立。
+// directory 不能为 nil（含带类型 nil）。
+func GateDirectory(directory GateLookup) Option {
+	return func(o *options) error {
+		if isNil(directory) {
+			return errors.New("node: gate directory is required")
+		}
+		o.gateDirectory = directory
 		return nil
 	}
 }
@@ -200,7 +234,7 @@ func PushTimeout(timeout time.Duration) Option {
 	}
 }
 
-// CleanupTimeout 限制准备和启动失败后的独立回滚，不改变正常 Stop 的调用方预算。
+// CleanupTimeout 限制启动失败后的独立回滚；默认 3 秒。
 func CleanupTimeout(timeout time.Duration) Option {
 	return func(o *options) error {
 		if timeout <= 0 {
@@ -211,11 +245,36 @@ func CleanupTimeout(timeout time.Duration) Option {
 	}
 }
 
+// ShutdownTimeout 限制正常 Stop 和运行期失权后的独立排空；默认 10 秒。
+// Stop 的调用者 context 只限制等待，不改变该预算。
+func ShutdownTimeout(timeout time.Duration) Option {
+	return func(o *options) error {
+		if timeout <= 0 {
+			return errors.New("node: shutdown timeout must be positive")
+		}
+		o.shutdownTimeout = timeout
+		return nil
+	}
+}
+
 // Drain 注册业务停止屏障，在已接纳请求完成后调用。
 // 返回错误会阻止 Stop 主动释放 Node epoch。
 func Drain(fn DrainFunc) Option {
 	return func(o *options) error {
 		o.drain = fn
 		return nil
+	}
+}
+
+func isNil(value any) bool {
+	if value == nil {
+		return true
+	}
+	reflected := reflect.ValueOf(value)
+	switch reflected.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return reflected.IsNil()
+	default:
+		return false
 	}
 }

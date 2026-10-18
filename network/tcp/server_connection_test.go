@@ -23,7 +23,6 @@ import (
 func TestServerHandshakeDeadlineClosesIdleConnection(t *testing.T) {
 	endpoint := startTCPTestServer(t, tcpTestHandler{}, HandshakeTimeout(40*time.Millisecond))
 	conn := dialTCPTest(t, endpoint)
-	defer conn.Close()
 	if err := conn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
 		t.Fatal(err)
 	}
@@ -36,13 +35,11 @@ func TestServerHandshakeDeadlineIncludesOpen(t *testing.T) {
 	started := make(chan struct{}, 1)
 	release := make(chan struct{})
 	finished := make(chan error, 1)
-	var releaseOnce sync.Once
-	releaseOpen := func() { releaseOnce.Do(func() { close(release) }) }
+	releaseOpen := sync.OnceFunc(func() { close(release) })
 	t.Cleanup(releaseOpen)
 	endpoint := startTCPTestServer(t, blockingOpenHandler{started: started, release: release, finished: finished},
 		HandshakeTimeout(40*time.Millisecond))
 	conn := dialTCPTest(t, endpoint)
-	defer conn.Close()
 	<-started
 	if err := conn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
 		t.Fatal(err)
@@ -123,7 +120,6 @@ func TestServerHeartbeatExtendsReadDeadline(t *testing.T) {
 	endpoint := startTCPTestServer(t, tcpTestHandler{},
 		HandshakeTimeout(100*time.Millisecond), HeartbeatTimeout(400*time.Millisecond))
 	conn := dialTCPTest(t, endpoint)
-	defer conn.Close()
 	reader := bufio.NewReader(conn)
 	writer := bufio.NewWriter(conn)
 	roundTripTCPProto(t, reader, writer, &v1.Proto{Op: v1.OpHeartbeat})
@@ -180,12 +176,11 @@ func TestServerRejectsAcceptedConnectionAfterStop(t *testing.T) {
 		accepting: make(chan struct{}),
 		release:   release,
 	}
-	h := &acceptedConnectionHandler{opened: make(chan struct{}, 1)}
+	h := tcpTestHandler{opened: make(chan network.Connection, 1)}
 	s := newTCPServer(t, h, Listener(lis))
 	serverDone := make(chan error, 1)
 	go func() { serverDone <- s.Start(context.Background()) }()
-	clientConn := dialTCPTest(t, baseListener.Addr().String())
-	t.Cleanup(func() { _ = clientConn.Close() })
+	dialTCPTest(t, baseListener.Addr().String())
 	waitTCPValue(t, lis.accepting)
 
 	stopCtx, cancel := context.WithCancel(context.Background())
@@ -209,75 +204,38 @@ func TestServerRejectsAcceptedConnectionAfterStop(t *testing.T) {
 
 func TestOpenPanicDoesNotLeakConnection(t *testing.T) {
 	h := panicOpenHandler{opened: make(chan struct{})}
-	s := newTCPServer(t, h, Address("127.0.0.1:0"))
-	endpoint, err := s.Endpoint()
-	if err != nil {
-		t.Fatal(err)
-	}
-	done := make(chan error, 1)
-	go func() { done <- s.Start(context.Background()) }()
-	conn := dialTCPTest(t, endpoint.Host)
-	defer conn.Close()
-	<-h.opened
+	endpoint := startTCPTestServer(t, h)
+	conn := dialTCPTest(t, endpoint)
+	waitTCPValue(t, h.opened)
 	if err := conn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := conn.Read(make([]byte, 1)); err == nil {
 		t.Fatal("connection remained open after Open panic")
 	}
-	if err := s.Stop(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if err := <-done; err != nil {
-		t.Fatal(err)
-	}
 }
 
 func TestDisconnectCleanupDoesNotBlock(t *testing.T) {
 	h := &connectionLifecycleHandler{opened: make(chan struct{}, 2)}
-	s := newTCPServer(t, h, Address("127.0.0.1:0"))
-	endpoint, err := s.Endpoint()
-	if err != nil {
-		t.Fatal(err)
-	}
-	done := make(chan error, 1)
-	go func() { done <- s.Start(context.Background()) }()
+	endpoint := startTCPTestServer(t, h)
 	for range 2 {
-		conn := dialTCPTest(t, endpoint.Host)
-		<-h.opened
+		conn := dialTCPTest(t, endpoint)
+		waitTCPValue(t, h.opened)
 		_ = conn.Close()
 	}
-	deadline := time.Now().Add(time.Second)
-	for h.closed.Load() != 2 && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
-	}
-	if h.closed.Load() != 2 {
+	if !eventually(time.Second, func() bool { return h.closed.Load() == 2 }) {
 		t.Fatalf("closed callbacks = %d, want 2", h.closed.Load())
-	}
-	if err := s.Stop(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if err := <-done; err != nil {
-		t.Fatal(err)
 	}
 }
 
 func TestOpenFailureDoesNotCallClose(t *testing.T) {
 	h := &connectionLifecycleHandler{openErr: errors.New("rejected"), opened: make(chan struct{}, 1)}
 	s := newTCPServer(t, h, Address("127.0.0.1:0"))
-	endpoint, err := s.Endpoint()
-	if err != nil {
-		t.Fatal(err)
-	}
-	done := make(chan error, 1)
-	go func() { done <- s.Start(context.Background()) }()
-	conn := dialTCPTest(t, endpoint.Host)
-	<-h.opened
+	endpoint := serveTCPTestServer(t, s)
+	conn := dialTCPTest(t, endpoint)
+	waitTCPValue(t, h.opened)
 	_ = conn.Close()
 	if err := s.Stop(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
 	if h.closed.Load() != 0 {
@@ -425,21 +383,6 @@ func (h *messageTimeoutHandler) Handle(ctx context.Context, _ network.Connection
 }
 
 func (*messageTimeoutHandler) Close(context.Context, network.Connection) {}
-
-type acceptedConnectionHandler struct {
-	opened chan struct{}
-}
-
-func (h *acceptedConnectionHandler) Open(context.Context, network.Connection) error {
-	h.opened <- struct{}{}
-	return nil
-}
-
-func (*acceptedConnectionHandler) Handle(_ context.Context, _ network.Connection, message *v1.Proto) (*v1.Proto, error) {
-	return message, nil
-}
-
-func (*acceptedConnectionHandler) Close(context.Context, network.Connection) {}
 
 type delayedTCPListener struct {
 	net.Listener

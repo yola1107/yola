@@ -17,6 +17,23 @@ var (
 	ErrTransportSecurity = errors.New("gRPC endpoint transport security mismatch")
 )
 
+// Resolve 返回显式 endpoint，或从对外 host 推导 endpoint。
+func Resolve(endpoint *url.URL, listenAddress, advertiseHost string, secure bool) (*url.URL, error) {
+	if endpoint != nil {
+		if err := Validate(endpoint, secure); err != nil {
+			return nil, err
+		}
+		return endpoint, nil
+	}
+	if advertiseHost == "" {
+		return nil, nil
+	}
+	if listenAddress == "" {
+		return nil, errors.New("address is required when advertise host is set")
+	}
+	return Advertise(listenAddress, advertiseHost, secure)
+}
+
 func Advertise(listenAddress, advertiseHost string, secure bool) (*url.URL, error) {
 	listenHost, port, err := net.SplitHostPort(listenAddress)
 	if err != nil {
@@ -43,21 +60,16 @@ func Advertise(listenAddress, advertiseHost string, secure bool) (*url.URL, erro
 	return endpoint, nil
 }
 
-// Resolve 返回显式 endpoint，或从对外 host 推导 endpoint。
-func Resolve(endpoint *url.URL, listenAddress, advertiseHost string, secure bool) (*url.URL, error) {
-	if endpoint != nil {
-		if err := Validate(endpoint, secure); err != nil {
-			return nil, err
-		}
-		return endpoint, nil
+// Host 解析对外 endpoint，返回已校验的 host:port。
+func Host(raw string, secure bool) (string, error) {
+	endpoint, err := url.Parse(raw)
+	if err != nil {
+		return "", invalidError("parse gRPC endpoint %q: %v", raw, err)
 	}
-	if advertiseHost == "" {
-		return nil, nil
+	if err := Validate(endpoint, secure); err != nil {
+		return "", err
 	}
-	if listenAddress == "" {
-		return nil, errors.New("address is required when advertise host is set")
-	}
-	return Advertise(listenAddress, advertiseHost, secure)
+	return endpoint.Host, nil
 }
 
 func Validate(endpoint *url.URL, secure bool) error {
@@ -72,18 +84,6 @@ func Validate(endpoint *url.URL, secure bool) error {
 		return transportError(wantScheme)
 	}
 	return validate(endpoint)
-}
-
-// Host 解析对外 endpoint，返回已校验的 host:port。
-func Host(raw string, secure bool) (string, error) {
-	endpoint, err := url.Parse(raw)
-	if err != nil {
-		return "", invalidError("parse gRPC endpoint %q: %v", raw, err)
-	}
-	if err := Validate(endpoint, secure); err != nil {
-		return "", err
-	}
-	return endpoint.Host, nil
 }
 
 func validate(endpoint *url.URL) error {

@@ -22,7 +22,10 @@ var _ table.Repo = (*Usecase)(nil)
 // 实现robot.Repo接口
 var _ robot.Repo = (*Usecase)(nil)
 
-const defaultStatusInterval = 120 * time.Second
+const (
+	defaultStatusInterval  = 120 * time.Second
+	playerNodeRenewTimeout = 3 * time.Second
+)
 
 var (
 	ErrPlayerNotFound     = errors.New("player not found")
@@ -147,7 +150,40 @@ func (uc *Usecase) runStatus(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			uc.renewNodeBindings(ctx)
 			uc.logStatus()
 		}
+	}
+}
+
+func (uc *Usecase) renewNodeBindings(ctx context.Context) {
+	var failed int
+	var firstErr error
+	for _, p := range uc.pm.All() {
+		if ctx.Err() != nil {
+			return
+		}
+		if p.IsRobot() || uc.pm.GetByID(p.GetPlayerID()) != p {
+			continue
+		}
+		sess := p.GetSession()
+		if sess == nil {
+			continue
+		}
+		renewCtx, cancel := context.WithTimeout(ctx, playerNodeRenewTimeout)
+		err := sess.RenewNode(renewCtx)
+		cancel()
+		if ctx.Err() != nil {
+			return
+		}
+		if err != nil {
+			failed++
+			if firstErr == nil {
+				firstErr = fmt.Errorf("player %d: %w", p.GetPlayerID(), err)
+			}
+		}
+	}
+	if failed > 0 {
+		slog.Warn("renew player Node bindings", "failed", failed, "error", firstErr)
 	}
 }

@@ -88,7 +88,9 @@ func (m *measurements) report(b testing.TB) {
 					name = "gateway_rpc"
 				}
 				summary := measurementSummary{
-					Stage: name, Calls: point.Count, MeanUS: point.Sum * 1e6 / float64(point.Count),
+					Stage:    name,
+					Calls:    point.Count,
+					MeanUS:   point.Sum * 1e6 / float64(point.Count),
 					P50Upper: percentileUpperBound(point, 0.50) * 1e6,
 					P95Upper: percentileUpperBound(point, 0.95) * 1e6,
 					P99Upper: percentileUpperBound(point, 0.99) * 1e6,

@@ -95,16 +95,6 @@ func (s *Server) BeforeStart(_ context.Context) error {
 	return s.prepare()
 }
 
-func (s *Server) prepare() error {
-	if s.handler == nil {
-		return errors.New("tcp: connection handler is required")
-	}
-	if err := s.validateConfig(); err != nil {
-		return err
-	}
-	return s.listenAndEndpoint()
-}
-
 // Start 启动 TCP 服务。
 func (s *Server) Start(ctx context.Context) error {
 	s.lifecycleMu.Lock()
@@ -162,6 +152,58 @@ func (s *Server) Stop(ctx context.Context) error {
 	return nil
 }
 
+// Endpoint 返回服务 endpoint。
+func (s *Server) Endpoint() (*url.URL, error) {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+	if s.stopped {
+		return nil, errors.New("tcp: server is stopped")
+	}
+	if err := s.validateConfig(); err != nil {
+		return nil, err
+	}
+	if err := s.listenAndEndpoint(); err != nil {
+		return nil, err
+	}
+	endpoint := *s.endpoint
+	return &endpoint, nil
+}
+
+func (s *Server) prepare() error {
+	if s.handler == nil {
+		return errors.New("tcp: connection handler is required")
+	}
+	if err := s.validateConfig(); err != nil {
+		return err
+	}
+	return s.listenAndEndpoint()
+}
+
+// listenAndEndpoint 准备 listener 和 endpoint。
+func (s *Server) listenAndEndpoint() error {
+	created := false
+	if s.lis == nil {
+		lis, err := net.Listen(s.config.network, s.config.address)
+		if err != nil {
+			return err
+		}
+		s.lis = lis
+		created = true
+	}
+	if s.endpoint == nil {
+		addr, err := host.Extract(s.config.address, s.config.advertiseHost, s.lis)
+		if err != nil {
+			if created {
+				_ = s.lis.Close()
+				s.lis = nil
+			}
+			return err
+		}
+		s.endpoint = &url.URL{Scheme: s.config.endpointScheme(), Host: addr}
+	}
+	return nil
+}
+
 func (s *Server) finishServing() {
 	s.lifecycleMu.Lock()
 	s.stopped = true
@@ -188,46 +230,4 @@ func (s *Server) closeConnections() {
 	for _, conn := range connections {
 		_ = conn.Close()
 	}
-}
-
-// Endpoint 返回服务 endpoint。
-func (s *Server) Endpoint() (*url.URL, error) {
-	s.lifecycleMu.Lock()
-	defer s.lifecycleMu.Unlock()
-	if s.stopped {
-		return nil, errors.New("tcp: server is stopped")
-	}
-	if err := s.validateConfig(); err != nil {
-		return nil, err
-	}
-	if err := s.listenAndEndpoint(); err != nil {
-		return nil, err
-	}
-	endpoint := *s.endpoint
-	return &endpoint, nil
-}
-
-// listenAndEndpoint 准备 listener 和 endpoint。
-func (s *Server) listenAndEndpoint() error {
-	created := false
-	if s.lis == nil {
-		lis, err := net.Listen(s.config.network, s.config.address)
-		if err != nil {
-			return err
-		}
-		s.lis = lis
-		created = true
-	}
-	if s.endpoint == nil {
-		addr, err := host.Extract(s.config.address, s.config.advertiseHost, s.lis)
-		if err != nil {
-			if created {
-				_ = s.lis.Close()
-				s.lis = nil
-			}
-			return err
-		}
-		s.endpoint = &url.URL{Scheme: s.config.endpointScheme(), Host: addr}
-	}
-	return nil
 }

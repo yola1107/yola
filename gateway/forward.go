@@ -3,16 +3,12 @@ package gateway
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"time"
 
-	clusterv1 "yola/api/cluster/v1"
 	protocolv1 "yola/api/protocol/v1"
-	"yola/internal/clusterroute"
 	"yola/locate"
 
-	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -26,7 +22,7 @@ func (s *Server) forward(ctx context.Context, sess *session, msg *protocolv1.Pro
 	}
 	rpcCtx, cancel := context.WithTimeout(ctx, s.rpcTimeout)
 	defer cancel()
-	client, nodeID, nodeEpoch, err := s.resolveForwardRoute(rpcCtx, binding)
+	route, err := s.backends.resolveForward(rpcCtx, binding)
 	if err != nil {
 		code := forwardStatusCode(err)
 		switch code {
@@ -38,13 +34,7 @@ func (s *Server) forward(ctx context.Context, sess *session, msg *protocolv1.Pro
 		msg.Op, msg.Code, msg.Body = protocolv1.OpResponse, int32(code), nil
 		return
 	}
-	reply, err := client.Forward(withNodeID(rpcCtx, nodeID), &clusterv1.ForwardRequest{
-		Route:     clusterroute.FromBinding(binding),
-		Command:   msg.Cmd,
-		Body:      msg.Body,
-		NodeId:    nodeID,
-		NodeEpoch: nodeEpoch,
-	}, grpc.WaitForReady(nodeID != ""))
+	reply, err := route.forward(rpcCtx, msg.Cmd, msg.Body)
 	if err != nil {
 		code := status.Code(err)
 		if code != codes.Canceled && code != codes.Aborted {
@@ -59,53 +49,8 @@ func (s *Server) forward(ctx context.Context, sess *session, msg *protocolv1.Pro
 	}
 }
 
-// resolveForwardRoute 为已绑定的粘性 Forward 补充 epoch 校验凭据。
-func (s *Server) resolveForwardRoute(ctx context.Context, binding locate.GateBinding) (clusterv1.NodeClient, string, string, error) {
-	client, nodeID, err := s.resolveNodeRoute(ctx, binding)
-	if err != nil || nodeID == "" {
-		return client, nodeID, "", err
-	}
-	epoch, err := s.locator.LocateNodeEpoch(ctx, binding.ServiceName, nodeID)
-	if err != nil {
-		return nil, "", "", err
-	}
-	return client, nodeID, epoch, nil
-}
-
-// resolveNodeRoute 选择服务 backend，并取得已有粘性绑定的 NodeID。
-func (s *Server) resolveNodeRoute(ctx context.Context, binding locate.GateBinding) (clusterv1.NodeClient, string, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, "", err
-	}
-	nodeBackend, err := s.backends.get(ctx, binding.ServiceName)
-	if err != nil {
-		return nil, "", err
-	}
-	snapshot := nodeBackend.state.load()
-	if !snapshot.available {
-		return nil, "", fmt.Errorf("gateway: node service %q is unavailable", binding.ServiceName)
-	}
-	if !snapshot.sticky {
-		return nodeBackend.client, "", nil
-	}
-	nodeID, err := s.locator.LocateNode(ctx, binding.ServiceName, binding.UID)
-	if errors.Is(err, locate.ErrNodeNotFound) {
-		return nodeBackend.client, "", nil
-	}
-	if err != nil {
-		return nil, "", err
-	}
-	if !locate.ValidNodeLocation(binding.ServiceName, binding.UID, nodeID) {
-		return nil, "", locate.ErrInvalidNodeBinding
-	}
-	if _, exists := snapshot.hostByNodeID[nodeID]; !exists {
-		return nil, "", fmt.Errorf("gateway: node %q is unavailable", nodeID)
-	}
-	return nodeBackend.client, nodeID, nil
-}
-
 func (s *Server) notifyDisconnect(ctx context.Context, binding locate.GateBinding) {
-	client, nodeID, err := s.resolveNodeRoute(ctx, binding)
+	route, err := s.backends.resolveNode(ctx, binding)
 	if err != nil {
 		slog.WarnContext(ctx, "disconnect notify unavailable",
 			"uid", binding.UID,
@@ -116,16 +61,14 @@ func (s *Server) notifyDisconnect(ctx context.Context, binding locate.GateBindin
 		)
 		return
 	}
-	_, err = client.Disconnect(withNodeID(ctx, nodeID), &clusterv1.DisconnectRequest{
-		Route: clusterroute.FromBinding(binding),
-	}, grpc.WaitForReady(nodeID != ""))
+	err = route.disconnect(ctx)
 	if err != nil {
 		slog.WarnContext(ctx, "disconnect notify failed",
 			"uid", binding.UID,
 			"conn_id", binding.ConnID,
 			"service", binding.ServiceName,
 			"gate_id", binding.GateID,
-			"node_id", nodeID,
+			"node_id", route.nodeID,
 			"error", err,
 		)
 	}

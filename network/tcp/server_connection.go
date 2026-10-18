@@ -20,6 +20,8 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+var _ network.Connection = tcpConnection{}
+
 func (s *Server) acceptTCP(ctx context.Context, lis net.Listener) error {
 	for {
 		conn, err := lis.Accept()
@@ -70,57 +72,6 @@ func (s *Server) serveAcceptedTCP(ctx context.Context, conn net.Conn, connID, re
 		}
 	}()
 	s.serveTCP(ctx, conn, connID)
-}
-
-func configureTCPConnection(conn *net.TCPConn) error {
-	if err := conn.SetKeepAlive(false); err != nil {
-		return fmt.Errorf("disable keepalive: %w", err)
-	}
-	if err := conn.SetReadBuffer(_defaultSocketBufferSize); err != nil {
-		return fmt.Errorf("set read buffer: %w", err)
-	}
-	if err := conn.SetWriteBuffer(_defaultSocketBufferSize); err != nil {
-		return fmt.Errorf("set write buffer: %w", err)
-	}
-	return nil
-}
-
-func (s *Server) trackConnection(conn net.Conn) bool {
-	remoteIP, _, _ := net.SplitHostPort(conn.RemoteAddr().String())
-	// 生命周期锁保证准入先于停机；serveTCP 添加 writer 时，连接仍计入在途数量。
-	s.lifecycleMu.Lock()
-	defer s.lifecycleMu.Unlock()
-	if s.stopped || int32(len(s.conns)) >= s.config.maxConnLimit ||
-		s.connectionsPerIP[remoteIP] >= s.config.maxConnPerIP {
-		return false
-	}
-	s.conns[conn] = remoteIP
-	s.connectionsPerIP[remoteIP]++
-	s.connWG.Add(1)
-	return true
-}
-
-func (s *Server) untrackConnection(conn net.Conn) {
-	s.lifecycleMu.Lock()
-	defer s.lifecycleMu.Unlock()
-	remoteIP := s.conns[conn]
-	delete(s.conns, conn)
-	if s.connectionsPerIP[remoteIP] == 1 {
-		delete(s.connectionsPerIP, remoteIP)
-	} else {
-		s.connectionsPerIP[remoteIP]--
-	}
-}
-
-func underlyingTCPConn(conn net.Conn) *net.TCPConn {
-	if tcpConn, ok := conn.(*net.TCPConn); ok {
-		return tcpConn
-	}
-	if tlsConn, ok := conn.(*tls.Conn); ok {
-		tcpConn, _ := tlsConn.NetConn().(*net.TCPConn)
-		return tcpConn
-	}
-	return nil
 }
 
 func (s *Server) serveTCP(baseCtx context.Context, conn net.Conn, connID string) {
@@ -240,45 +191,6 @@ func (s *Server) readTCPMessages(ctx context.Context, clientConn tcpConnection, 
 	}
 }
 
-type tcpConnection struct {
-	remoteAddr string
-	conn       net.Conn
-	ch         *channel
-}
-
-func (c tcpConnection) ConnID() string { return c.ch.connID }
-
-func (c tcpConnection) RemoteAddr() string { return c.remoteAddr }
-
-func (c tcpConnection) SendProto(p *v1.Proto) error { return c.ch.push(p) }
-
-// SendStats 返回连接发送队列的只读快照。
-func (c tcpConnection) SendStats() network.SendStats {
-	return network.SendStats{
-		QueueDepth:          len(c.ch.outbound),
-		QueueCapacity:       cap(c.ch.outbound),
-		PendingPayloadBytes: c.ch.pendingPayloadBytes.Load(),
-		QueueDropped:        c.ch.queueDropped.Load(),
-		Closed:              c.ch.isClosed(),
-	}
-}
-
-func (c tcpConnection) CloseWithProto(ctx context.Context, p *v1.Proto) error {
-	err := c.ch.closeWithProto(ctx, p)
-	if !c.ch.isClosed() {
-		return err
-	}
-	_ = c.conn.Close()
-	return err
-}
-
-func (c tcpConnection) Close() error {
-	c.ch.close()
-	return c.conn.Close()
-}
-
-var _ network.Connection = tcpConnection{}
-
 func (s *Server) dispatchTCP(conn net.Conn, wr *bufio.Writer, ch *channel) {
 	var err error
 	defer func() { ch.finishWriter(err) }()
@@ -312,4 +224,90 @@ func (s *Server) writeTCPEvent(conn net.Conn, wr *bufio.Writer, message *v1.Prot
 		return err
 	}
 	return wr.Flush()
+}
+
+func (s *Server) trackConnection(conn net.Conn) bool {
+	remoteIP, _, _ := net.SplitHostPort(conn.RemoteAddr().String())
+	// 生命周期锁保证准入先于停机；serveTCP 添加 writer 时，连接仍计入在途数量。
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+	if s.stopped || int32(len(s.conns)) >= s.config.maxConnLimit ||
+		s.connectionsPerIP[remoteIP] >= s.config.maxConnPerIP {
+		return false
+	}
+	s.conns[conn] = remoteIP
+	s.connectionsPerIP[remoteIP]++
+	s.connWG.Add(1)
+	return true
+}
+
+func (s *Server) untrackConnection(conn net.Conn) {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+	remoteIP := s.conns[conn]
+	delete(s.conns, conn)
+	if s.connectionsPerIP[remoteIP] == 1 {
+		delete(s.connectionsPerIP, remoteIP)
+	} else {
+		s.connectionsPerIP[remoteIP]--
+	}
+}
+
+type tcpConnection struct {
+	remoteAddr string
+	conn       net.Conn
+	ch         *channel
+}
+
+func (c tcpConnection) ConnID() string              { return c.ch.connID }
+func (c tcpConnection) RemoteAddr() string          { return c.remoteAddr }
+func (c tcpConnection) SendProto(p *v1.Proto) error { return c.ch.push(p) }
+
+// SendStats 返回连接发送队列的只读快照。
+func (c tcpConnection) SendStats() network.SendStats {
+	return network.SendStats{
+		QueueDepth:          len(c.ch.outbound),
+		QueueCapacity:       cap(c.ch.outbound),
+		PendingPayloadBytes: c.ch.pendingPayloadBytes.Load(),
+		QueueDropped:        c.ch.queueDropped.Load(),
+		Closed:              c.ch.isClosed(),
+	}
+}
+
+func (c tcpConnection) CloseWithProto(ctx context.Context, p *v1.Proto) error {
+	err := c.ch.closeWithProto(ctx, p)
+	if c.ch.isClosed() {
+		_ = c.conn.Close()
+	}
+	return err
+}
+
+func (c tcpConnection) Close() error {
+	c.ch.close()
+	return c.conn.Close()
+}
+
+func configureTCPConnection(conn *net.TCPConn) error {
+	if err := conn.SetKeepAlive(false); err != nil {
+		return fmt.Errorf("disable keepalive: %w", err)
+	}
+	if err := conn.SetReadBuffer(_defaultSocketBufferSize); err != nil {
+		return fmt.Errorf("set read buffer: %w", err)
+	}
+	if err := conn.SetWriteBuffer(_defaultSocketBufferSize); err != nil {
+		return fmt.Errorf("set write buffer: %w", err)
+	}
+	return nil
+}
+
+func underlyingTCPConn(conn net.Conn) *net.TCPConn {
+	switch conn := conn.(type) {
+	case *net.TCPConn:
+		return conn
+	case *tls.Conn:
+		tcpConn, _ := conn.NetConn().(*net.TCPConn)
+		return tcpConn
+	default:
+		return nil
+	}
 }

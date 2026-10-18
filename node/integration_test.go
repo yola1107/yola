@@ -34,64 +34,52 @@ func TestAppPreparedNodeCannotOverwriteReplacement(t *testing.T) {
 	service := "yola-i47-" + uuid.NewString()
 	oldRegistry := integrationNodeRegistry(t)
 	newRegistry := integrationNodeRegistry(t)
-	old := newTestServer(t, Address("127.0.0.1:0"), Locator(store))
-	replacement := newTestServer(t, Address("127.0.0.1:0"), Locator(store))
-	appCtx, cancelApp := context.WithCancel(context.Background())
 	prepared := make(chan struct{})
 	resume := make(chan struct{})
 	resumeOld := sync.OnceFunc(func() { close(resume) })
-
-	oldApp := kratos.New(
-		kratos.Context(appCtx), kratos.ID("node-a"), kratos.Name(service), kratos.Metadata(old.Metadata()),
-		kratos.BeforeStart(old.BeforeStart), kratos.BeforeStart(func(context.Context) error {
-			close(prepared)
-			<-resume
-			return nil
-		}),
-		kratos.Server(old),
-		kratos.Registrar(old.Registrar(oldRegistry)),
-		kratos.StopTimeout(time.Second),
-	)
-	newRegistered := make(chan struct{})
-	newApp := kratos.New(
-		kratos.Context(appCtx), kratos.ID("node-a"), kratos.Name(service), kratos.Metadata(replacement.Metadata()),
-		kratos.BeforeStart(replacement.BeforeStart), kratos.Server(replacement), kratos.Registrar(replacement.Registrar(newRegistry)),
-		kratos.AfterStart(func(context.Context) error { close(newRegistered); return nil }),
-		kratos.StopTimeout(time.Second),
-	)
+	oldStore := &controlledEpochLocator{Store: store}
+	oldStore.setRenew(func(ctx context.Context) error {
+		close(prepared)
+		<-resume
+		epoch, err := store.LocateNodeEpoch(ctx, service, "node-a")
+		if err != nil {
+			return err
+		}
+		return store.RenewNodeEpoch(ctx, service, "node-a", epoch+"-old", DefaultNodeEpochTTL)
+	})
+	old := newTestServer(t, Address("127.0.0.1:0"), Stateful(oldStore), Registration(oldRegistry))
+	replacement := newTestServer(t, Address("127.0.0.1:0"), Stateful(store), Registration(newRegistry))
+	ctx := kratos.NewContext(context.Background(), nodeTestAppInfo{id: "node-a", name: service})
 	t.Cleanup(func() {
 		resumeOld()
-		cancelApp()
-		require.NoError(t, old.Stop(context.Background()))
-		require.NoError(t, replacement.Stop(context.Background()))
+		_ = old.Stop(context.Background())
+		_ = replacement.Stop(context.Background())
 	})
 	oldDone := make(chan error, 1)
-	go func() { oldDone <- oldApp.Run() }()
-	waitNodeSignal(t, prepared)
+	go func() { oldDone <- old.Start(ctx) }()
+	receiveNodeValue(t, prepared)
 	key := "locate:node:epoch:{" + base64.RawURLEncoding.EncodeToString([]byte(service)) + "}:" + base64.RawURLEncoding.EncodeToString([]byte("node-a"))
 	require.NoError(t, redisClient.PExpire(context.Background(), key, time.Millisecond).Err())
 	require.Eventually(t, func() bool {
 		_, err := store.LocateNodeEpoch(context.Background(), service, "node-a")
 		return errors.Is(err, locate.ErrNodeEpochNotFound)
 	}, time.Second, time.Millisecond)
-	newDone := make(chan error, 1)
-	go func() { newDone <- newApp.Run() }()
-	waitNodeSignal(t, newRegistered)
-	newEpoch := replacement.currentIdentity().epoch
-	newEndpoint, err := replacement.Endpoint()
+	startTestNode(ctx, t, replacement)
+	instances, err := newRegistry.GetService(context.Background(), service)
+	require.NoError(t, err)
+	require.Len(t, instances, 1)
+	wantEndpoint := instances[0].Endpoints[0]
+	wantEpoch, err := store.LocateNodeEpoch(context.Background(), service, "node-a")
 	require.NoError(t, err)
 	resumeOld()
 	require.ErrorIs(t, receiveNodeValue(t, oldDone), locate.ErrNodeEpochConflict)
 	currentEpoch, err := store.LocateNodeEpoch(context.Background(), service, "node-a")
 	require.NoError(t, err)
-	require.Equal(t, newEpoch, currentEpoch)
-	instances, err := newRegistry.GetService(context.Background(), service)
+	require.Equal(t, wantEpoch, currentEpoch)
+	instances, err = newRegistry.GetService(context.Background(), service)
 	require.NoError(t, err)
 	require.Len(t, instances, 1)
-	gotEndpoints := instances[0].Endpoints
-	cancelApp()
-	require.NoError(t, receiveNodeValue(t, newDone))
-	require.Equal(t, []string{newEndpoint.String()}, gotEndpoints, "old preparation overwrote the replacement registration")
+	require.Equal(t, []string{wantEndpoint}, instances[0].Endpoints)
 }
 
 func integrationNodeRegistry(t *testing.T) *etcd.Registry {

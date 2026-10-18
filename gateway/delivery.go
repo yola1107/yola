@@ -39,7 +39,9 @@ func (s *pushService) Push(_ context.Context, in *clusterv1.PushRequest) (*empty
 		return nil, status.Error(codes.InvalidArgument, "invalid push request")
 	}
 	err := s.server.push(clusterroute.ToBinding(in.GetRoute()), &protocolv1.Proto{
-		Op: protocolv1.OpPush, Cmd: in.GetCommand(), Body: in.GetBody(),
+		Op:   protocolv1.OpPush,
+		Cmd:  in.GetCommand(),
+		Body: in.GetBody(),
 	})
 	if err != nil {
 		return nil, rpcError(err)
@@ -56,27 +58,6 @@ func (s *pushService) Kick(ctx context.Context, in *clusterv1.KickRequest) (*emp
 		return nil, rpcError(err)
 	}
 	return &emptypb.Empty{}, nil
-}
-
-func rpcError(err error) error {
-	switch {
-	case errors.Is(err, errInvalidPush), errors.Is(err, errInvalidKick):
-		return status.Error(codes.InvalidArgument, err.Error())
-	case errors.Is(err, errConnectionMissing):
-		return status.Error(codes.NotFound, err.Error())
-	case errors.Is(err, errBindingChanged):
-		return status.Error(codes.Aborted, err.Error())
-	case errors.Is(err, errConnectionBusy), errors.Is(err, network.ErrFrameTooLarge):
-		return status.Error(codes.ResourceExhausted, err.Error())
-	case errors.Is(err, errConnectionClosed):
-		return status.Error(codes.Unavailable, err.Error())
-	default:
-		return status.Error(codes.Internal, "gateway RPC failed")
-	}
-}
-
-func (s *Server) ownsBinding(binding locate.GateBinding) bool {
-	return binding.GateID == s.identity.id && binding.GateEndpoint == s.identity.endpoint
 }
 
 // push 仅在 target 仍持有连接时投递消息。
@@ -107,10 +88,6 @@ func (s *Server) push(binding locate.GateBinding, msg *protocolv1.Proto) error {
 	default:
 		return errConnectionClosed
 	}
-}
-
-func validExternalFrame(msg *protocolv1.Proto) bool {
-	return msg != nil && proto.Size(msg) <= protocolv1.MaxProtoSize
 }
 
 // kick 仅在 target 仍持有连接时关闭它。
@@ -152,4 +129,29 @@ func (s *Server) kick(ctx context.Context, binding locate.GateBinding, code int3
 		"kick_code", code,
 	)
 	return nil
+}
+
+func (s *Server) ownsBinding(binding locate.GateBinding) bool {
+	return binding.GateID == s.identity.id && binding.GateEndpoint == s.identity.endpoint
+}
+
+func rpcError(err error) error {
+	switch {
+	case errors.Is(err, errInvalidPush), errors.Is(err, errInvalidKick):
+		return status.Error(codes.InvalidArgument, err.Error())
+	case errors.Is(err, errConnectionMissing):
+		return status.Error(codes.NotFound, err.Error())
+	case errors.Is(err, errBindingChanged):
+		return status.Error(codes.Aborted, err.Error())
+	case errors.Is(err, errConnectionBusy), errors.Is(err, network.ErrFrameTooLarge):
+		return status.Error(codes.ResourceExhausted, err.Error())
+	case errors.Is(err, errConnectionClosed):
+		return status.Error(codes.Unavailable, err.Error())
+	default:
+		return status.Error(codes.Internal, "gateway RPC failed")
+	}
+}
+
+func validExternalFrame(msg *protocolv1.Proto) bool {
+	return msg != nil && proto.Size(msg) <= protocolv1.MaxProtoSize
 }

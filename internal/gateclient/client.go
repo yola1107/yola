@@ -77,7 +77,9 @@ func (c *Client) Push(ctx context.Context, binding locate.GateBinding, command i
 	}
 	defer c.release(entry)
 	_, err = entry.client.Push(ctx, &v1.PushRequest{
-		Route: clusterroute.FromBinding(binding), Command: command, Body: body,
+		Route:   clusterroute.FromBinding(binding),
+		Command: command,
+		Body:    body,
 	})
 	return err
 }
@@ -89,9 +91,35 @@ func (c *Client) Kick(ctx context.Context, binding locate.GateBinding, code int3
 	}
 	defer c.release(entry)
 	_, err = entry.client.Kick(ctx, &v1.KickRequest{
-		Route: clusterroute.FromBinding(binding), Code: code,
+		Route: clusterroute.FromBinding(binding),
+		Code:  code,
 	})
 	return err
+}
+
+func (c *Client) Close() error {
+	c.cancel()
+	c.mu.Lock()
+	if c.byHost == nil {
+		c.mu.Unlock()
+		return nil
+	}
+	connections := make([]*grpc.ClientConn, 0, len(c.byHost))
+	for _, entry := range c.byHost {
+		if entry.idleTimer != nil {
+			entry.idleTimer.Stop()
+		}
+		connections = append(connections, entry.conn)
+	}
+	c.byHost = nil
+	c.mu.Unlock()
+	errs := make([]error, 0, len(connections))
+	for _, conn := range connections {
+		errs = append(errs, conn.Close())
+	}
+	// byHost 已关闭，后续 evict 不会增加在途回收。
+	c.evictions.Wait()
+	return errors.Join(errs...)
 }
 
 func (c *Client) acquire(ctx context.Context, endpoint string) (*rpc, error) {
@@ -166,7 +194,9 @@ func (c *Client) connect(host string) error {
 		return nil
 	}
 	entry := &rpc{
-		host: host, conn: conn, client: v1.NewGatewayClient(conn),
+		host:     host,
+		conn:     conn,
+		client:   v1.NewGatewayClient(conn),
 		lastUsed: time.Now(),
 	}
 	c.byHost[host] = entry
@@ -199,29 +229,4 @@ func (c *Client) evict(entry *rpc) {
 	c.mu.Unlock()
 	defer c.evictions.Done()
 	_ = entry.conn.Close()
-}
-
-func (c *Client) Close() error {
-	c.cancel()
-	c.mu.Lock()
-	if c.byHost == nil {
-		c.mu.Unlock()
-		return nil
-	}
-	connections := make([]*grpc.ClientConn, 0, len(c.byHost))
-	for _, entry := range c.byHost {
-		if entry.idleTimer != nil {
-			entry.idleTimer.Stop()
-		}
-		connections = append(connections, entry.conn)
-	}
-	c.byHost = nil
-	c.mu.Unlock()
-	errs := make([]error, 0, len(connections))
-	for _, conn := range connections {
-		errs = append(errs, conn.Close())
-	}
-	// byHost 已关闭，后续 evict 不会增加在途回收。
-	c.evictions.Wait()
-	return errors.Join(errs...)
 }

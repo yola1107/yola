@@ -1,6 +1,7 @@
 package websocket
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"testing"
@@ -74,6 +75,34 @@ func TestDefaultCodecRejectsNonProtoValue(t *testing.T) {
 	}
 }
 
+func TestOnlyDefaultCodecOptimizesFrames(t *testing.T) {
+	if !canOptimizeFrames(defaultCodec()) {
+		t.Fatal("default protobuf codec did not enable bounded buffer reuse")
+	}
+	if canOptimizeFrames(&countingCodec{}) {
+		t.Fatal("configured codec unexpectedly enabled bounded buffer reuse")
+	}
+}
+
+func TestMarshalFrameRejectsInvalidSize(t *testing.T) {
+	codec := defaultCodec()
+	if _, err := marshalFrame(codec, nil); !errors.Is(err, errNilPayload) {
+		t.Fatalf("marshalFrame(nil) error = %v, want %v", err, errNilPayload)
+	}
+	if _, err := marshalFrame(codec, &v1.Proto{}); !errors.Is(err, errFrameLength) {
+		t.Fatalf("marshalFrame(empty) error = %v, want %v", err, errFrameLength)
+	}
+	message := &v1.Proto{Op: v1.OpPush, Body: make([]byte, v1.MaxProtoSize)}
+	if _, err := marshalFrame(codec, message); !errors.Is(err, network.ErrFrameTooLarge) {
+		t.Fatalf("marshalFrame(oversized) error = %v, want %v", err, network.ErrFrameTooLarge)
+	}
+	boundary := &v1.Proto{Op: v1.OpPush, Body: make([]byte, v1.MaxProtoSize-5)}
+	body, err := marshalFrame(codec, boundary)
+	if err != nil || len(body) != v1.MaxProtoSize {
+		t.Fatalf("marshalFrame(boundary) length = %d, error = %v", len(body), err)
+	}
+}
+
 func BenchmarkCodec(b *testing.B) {
 	codec := defaultCodec()
 	for _, payloadSize := range []int{32, 4000} {
@@ -89,6 +118,31 @@ func BenchmarkCodec(b *testing.B) {
 		})
 		b.Run(name+"/encode", func(b *testing.B) {
 			benchmarkEncode(b, codec, p)
+		})
+	}
+}
+
+func TestReadBoundedFrame(t *testing.T) {
+	tests := []struct {
+		name    string
+		body    []byte
+		wantErr error
+	}{
+		{name: "empty"},
+		{name: "fragmented reads", body: bytes.Repeat([]byte{1}, 257)},
+		{name: "boundary", body: bytes.Repeat([]byte{2}, v1.MaxProtoSize)},
+		{name: "oversized", body: bytes.Repeat([]byte{3}, v1.MaxProtoSize+1), wantErr: network.ErrFrameTooLarge},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			reader := &limitedChunkReader{Reader: bytes.NewReader(test.body), size: 7}
+			got, err := readBoundedFrame(reader, make([]byte, v1.MaxProtoSize))
+			if !errors.Is(err, test.wantErr) {
+				t.Fatalf("readBoundedFrame() error = %v, want %v", err, test.wantErr)
+			}
+			if test.wantErr == nil && !bytes.Equal(got, test.body) {
+				t.Fatalf("readBoundedFrame() length = %d, want %d", len(got), len(test.body))
+			}
 		})
 	}
 }
@@ -113,4 +167,13 @@ func benchmarkEncode(b *testing.B, codec encoding.Codec, p *v1.Proto) {
 			b.Fatal(err)
 		}
 	}
+}
+
+type limitedChunkReader struct {
+	*bytes.Reader
+	size int
+}
+
+func (r *limitedChunkReader) Read(body []byte) (int, error) {
+	return r.Reader.Read(body[:min(len(body), r.size)])
 }

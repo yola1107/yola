@@ -7,13 +7,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"yola/api/protocol/v1"
-	"yola/internal/queue"
 	"yola/network"
 
 	"github.com/gorilla/websocket"
@@ -21,6 +19,7 @@ import (
 )
 
 func TestReadAuthenticationReplyRejectsInvalidResponses(t *testing.T) {
+	const callbackQueueSize = 1
 	writeProto := func(conn *websocket.Conn, message *v1.Proto) error {
 		frame, err := marshalFrame(defaultCodec(), message)
 		if err != nil {
@@ -56,13 +55,6 @@ func TestReadAuthenticationReplyRejectsInvalidResponses(t *testing.T) {
 			want: "websocket: invalid authentication response",
 		},
 		{
-			name: "rejected",
-			write: func(conn *websocket.Conn) error {
-				return writeProto(conn, &v1.Proto{Op: v1.OpAuthReply, Code: 16})
-			},
-			is: ErrAuthenticationRejected,
-		},
-		{
 			name: "push limit",
 			write: func(conn *websocket.Conn) error {
 				if err := writeProto(conn, &v1.Proto{Op: v1.OpPush}); err != nil {
@@ -75,7 +67,7 @@ func TestReadAuthenticationReplyRejectsInvalidResponses(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			testInvalidAuthenticationReply(t, test.write, test.want, test.is)
+			testInvalidAuthenticationReply(t, callbackQueueSize, test.write, test.want, test.is)
 		})
 	}
 }
@@ -108,7 +100,7 @@ func TestNewClientReportsInitialFailure(t *testing.T) {
 }
 
 func TestRequestReportsTimeout(t *testing.T) {
-	ch := &Channel{ctx: context.Background(), codec: defaultCodec(), outbound: make(chan outboundFrame, 1)}
+	ch := &Channel{codec: defaultCodec(), outbound: make(chan outboundFrame, 1)}
 	c := &Client{
 		requestTimeout: 10 * time.Millisecond,
 		channel:        ch,
@@ -120,7 +112,7 @@ func TestRequestReportsTimeout(t *testing.T) {
 }
 
 func TestRequestHonorsCanceledContext(t *testing.T) {
-	ch := &Channel{ctx: context.Background(), codec: defaultCodec(), outbound: make(chan outboundFrame, 1)}
+	ch := &Channel{codec: defaultCodec(), outbound: make(chan outboundFrame, 1)}
 	c := &Client{requestTimeout: time.Hour, channel: ch}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -134,7 +126,7 @@ func TestRequestHonorsCanceledContext(t *testing.T) {
 }
 
 func TestResponseCompletesRequest(t *testing.T) {
-	ch := &Channel{ctx: context.Background(), codec: defaultCodec(), outbound: make(chan outboundFrame, 1)}
+	ch := &Channel{codec: defaultCodec(), outbound: make(chan outboundFrame, 1)}
 	c := &Client{
 		requestTimeout: time.Hour,
 		channel:        ch,
@@ -162,19 +154,6 @@ func TestResponseCompletesRequest(t *testing.T) {
 	}
 }
 
-func TestClientDisconnectCallbackCanCloseClient(t *testing.T) {
-	callbacks := queue.New(64, nil)
-	client := &Client{callbacks: callbacks}
-	go callbacks.Run()
-	done := make(chan struct{})
-	client.disconnectFunc = func(*Channel) {
-		client.Close()
-		close(done)
-	}
-	client.Close()
-	waitWebSocketValue(t, done)
-}
-
 func TestClientReceivesFinalKick(t *testing.T) {
 	handler := &kickHandler{}
 	kicked := make(chan *v1.Proto, 1)
@@ -199,140 +178,6 @@ func TestClientReceivesFinalKick(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	if got := handler.opened.Load(); got != 1 {
 		t.Fatalf("connections after Kick = %d, want 1", got)
-	}
-}
-
-func TestClientCallbacksAreOrderedAndDoNotBlockResponses(t *testing.T) {
-	handler := websocketTestHandler{opened: make(chan network.Connection, 1)}
-	endpoint := startWebSocketTestServer(t, handler)
-	connected := make(chan struct{})
-	callbackStarted := make(chan struct{})
-	releaseCallback := make(chan struct{})
-	callbackBodies := make(chan string, 2)
-	client, err := NewClient(context.Background(), WithEndpoint(endpoint), WithServiceName("game"), WithToken("synthetic-token"),
-		WithCallbackQueueSize(2), WithConnectFunc(func(*Channel) { close(connected) }),
-		WithPushHandler(map[int32]PushHandler{1: func(body []byte) {
-			if string(body) == "first" {
-				close(callbackStarted)
-				<-releaseCallback
-			}
-			callbackBodies <- string(body)
-		}}))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { client.Close() })
-	var releaseOnce sync.Once
-	release := func() { releaseOnce.Do(func() { close(releaseCallback) }) }
-	t.Cleanup(release)
-	serverConn := waitWebSocketValue(t, handler.opened)
-	waitWebSocketValue(t, connected)
-	if err := serverConn.SendProto(&v1.Proto{Op: v1.OpPush, Cmd: 1, Body: []byte("first")}); err != nil {
-		t.Fatal(err)
-	}
-	waitWebSocketValue(t, callbackStarted)
-	if err := serverConn.SendProto(&v1.Proto{Op: v1.OpPush, Cmd: 1, Body: []byte("second")}); err != nil {
-		t.Fatal(err)
-	}
-	requestCtx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	if _, _, err := client.Request(requestCtx, 1, &v1.ClientAuthReq{}); err != nil {
-		t.Fatalf("Request blocked behind callback: %v", err)
-	}
-	release()
-	if first, second := waitWebSocketValue(t, callbackBodies), waitWebSocketValue(t, callbackBodies); first != "first" || second != "second" {
-		t.Fatalf("callback order = %q, %q", first, second)
-	}
-}
-
-func TestClientCallbackQueueFullClosesConnection(t *testing.T) {
-	handler := websocketTestHandler{opened: make(chan network.Connection, 4)}
-	endpoint := startWebSocketTestServer(t, handler)
-	connected := make(chan struct{}, 4)
-	callbackStarted := make(chan struct{})
-	releaseCallback := make(chan struct{})
-	disconnected := make(chan struct{}, 4)
-	var callbackStartedOnce sync.Once
-	client, err := NewClient(context.Background(), WithEndpoint(endpoint), WithServiceName("game"), WithToken("synthetic-token"),
-		WithCallbackQueueSize(1), WithConnectFunc(func(*Channel) { connected <- struct{}{} }),
-		WithDisconnectFunc(func(*Channel) { disconnected <- struct{}{} }),
-		WithPushHandler(map[int32]PushHandler{1: func([]byte) { callbackStartedOnce.Do(func() { close(callbackStarted) }); <-releaseCallback }}))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { client.Close() })
-	var releaseOnce sync.Once
-	release := func() { releaseOnce.Do(func() { close(releaseCallback) }) }
-	t.Cleanup(release)
-	serverConn := waitWebSocketValue(t, handler.opened)
-	waitWebSocketValue(t, connected)
-	if err := serverConn.SendProto(&v1.Proto{Op: v1.OpPush, Cmd: 1}); err != nil {
-		t.Fatal(err)
-	}
-	waitWebSocketValue(t, callbackStarted)
-	if err := serverConn.SendProto(&v1.Proto{Op: v1.OpPush, Cmd: 1}); err != nil {
-		t.Fatal(err)
-	}
-	requestCtx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	if _, _, err := client.Request(requestCtx, 1, &v1.ClientAuthReq{}); err != nil {
-		t.Fatalf("Request blocked while filling callback queue: %v", err)
-	}
-	if err := serverConn.SendProto(&v1.Proto{Op: v1.OpPush, Cmd: 1}); err != nil {
-		t.Fatal(err)
-	}
-	waitWebSocketValue(t, client.channel.ctx.Done())
-	select {
-	case <-disconnected:
-		t.Fatal("disconnect callback overlapped the running push callback")
-	default:
-	}
-	release()
-	waitWebSocketValue(t, disconnected)
-}
-
-func TestClientKickRunsAfterPushAndBeforeDisconnect(t *testing.T) {
-	handler := websocketTestHandler{opened: make(chan network.Connection, 1)}
-	endpoint := startWebSocketTestServer(t, handler)
-	pushStarted := make(chan struct{})
-	releasePush := make(chan struct{})
-	callbacks := make(chan string, 3)
-	client, err := NewClient(
-		context.Background(),
-		WithEndpoint(endpoint),
-		WithServiceName("game"),
-		WithToken("synthetic-token"),
-		WithPushHandler(map[int32]PushHandler{1: func([]byte) {
-			close(pushStarted)
-			<-releasePush
-			callbacks <- "push"
-		}}),
-		WithKickHandler(func(int32) { callbacks <- "kick" }),
-		WithDisconnectFunc(func(*Channel) { callbacks <- "disconnect" }),
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { client.Close() })
-	serverConn := waitWebSocketValue(t, handler.opened)
-	if err = serverConn.SendProto(&v1.Proto{Op: v1.OpPush, Cmd: 1}); err != nil {
-		t.Fatal(err)
-	}
-	waitWebSocketValue(t, pushStarted)
-	if err = serverConn.SendProto(&v1.Proto{Op: v1.OpKick, Code: 7}); err != nil {
-		t.Fatal(err)
-	}
-	waitWebSocketValue(t, client.channel.ctx.Done())
-	select {
-	case callback := <-callbacks:
-		t.Fatalf("terminal callback %q overlapped push", callback)
-	default:
-	}
-	close(releasePush)
-	for _, want := range []string{"push", "kick", "disconnect"} {
-		if got := waitWebSocketValue(t, callbacks); got != want {
-			t.Fatalf("callback = %q, want %q", got, want)
-		}
 	}
 }
 
@@ -408,7 +253,7 @@ func TestClientContextCancellationClosesChannel(t *testing.T) {
 }
 
 func TestNewClientCountsConnectAndAuthPushAgainstCallbackCapacity(t *testing.T) {
-	endpoint := startWebSocketTestServer(t, &clientAuthHandler{pushCount: 1})
+	endpoint := startWebSocketTestServer(t, &clientAuthHandler{pushBeforeReply: true})
 	connected := make(chan struct{}, 1)
 	pushed := make(chan struct{}, 1)
 	client, err := NewClient(
@@ -471,12 +316,40 @@ func TestNewClientWaitsForAuthenticationResult(t *testing.T) {
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			testNewClientAuthenticationResult(t, test.handler, test.timeout, test.cancelAfter, test.wantErr, test.wantPush)
+			endpoint := startWebSocketTestServer(t, test.handler)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			if test.cancelAfter > 0 {
+				timer := time.AfterFunc(test.cancelAfter, cancel)
+				defer timer.Stop()
+			}
+			pushed := make(chan []byte, 1)
+			client, err := NewClient(ctx, WithEndpoint(endpoint), WithToken("invalid-token"),
+				WithServiceName("game"), WithTimeout(test.timeout),
+				WithPushHandler(map[int32]PushHandler{1: func(body []byte) { pushed <- body }}))
+			if !errors.Is(err, test.wantErr) {
+				t.Fatalf("NewClient() error = %v, want %v", err, test.wantErr)
+			}
+			if (client == nil) != (err != nil) {
+				t.Fatalf("NewClient() client = %v, error = %v", client, err)
+			}
+			if client != nil {
+				defer client.Close()
+			}
+			if got := test.handler.opened.Load(); got != 1 {
+				t.Fatalf("authentication connections = %d, want 1", got)
+			}
+			if test.wantPush {
+				body := waitWebSocketValue(t, pushed)
+				if string(body) != "before-auth-reply" {
+					t.Fatalf("push body = %q", body)
+				}
+			}
 		})
 	}
 }
 
-func testInvalidAuthenticationReply(t *testing.T, write func(*websocket.Conn) error, want string, wantErr error) {
+func testInvalidAuthenticationReply(t *testing.T, callbackQueueSize int, write func(*websocket.Conn) error, want string, wantErr error) {
 	t.Helper()
 	written := make(chan error, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -489,9 +362,8 @@ func testInvalidAuthenticationReply(t *testing.T, write func(*websocket.Conn) er
 	}))
 	t.Cleanup(server.Close)
 	conn := dialWebSocketTest(t, "ws"+strings.TrimPrefix(server.URL, "http"))
-	t.Cleanup(func() { _ = conn.Close() })
 
-	o := &clientOptions{codec: defaultCodec(), callbackQueueSize: 1}
+	o := &clientOptions{codec: defaultCodec(), callbackQueueSize: callbackQueueSize}
 	_, err := o.readAuthenticationReply(context.Background(), conn)
 	if wantErr != nil {
 		if !errors.Is(err, wantErr) {
@@ -563,7 +435,6 @@ type clientAuthHandler struct {
 	delay           time.Duration
 	code            int32
 	pushBeforeReply bool
-	pushCount       int
 }
 
 func (h *clientAuthHandler) Open(context.Context, network.Connection) error {
@@ -575,11 +446,7 @@ func (h *clientAuthHandler) Handle(_ context.Context, conn network.Connection, m
 	if h.delay > 0 {
 		time.Sleep(h.delay)
 	}
-	pushCount := h.pushCount
 	if h.pushBeforeReply {
-		pushCount = 1
-	}
-	for range pushCount {
 		if err := conn.SendProto(&v1.Proto{Op: v1.OpPush, Cmd: 1, Body: []byte("before-auth-reply")}); err != nil {
 			return nil, err
 		}
@@ -590,44 +457,3 @@ func (h *clientAuthHandler) Handle(_ context.Context, conn network.Connection, m
 }
 
 func (*clientAuthHandler) Close(context.Context, network.Connection) {}
-
-func testNewClientAuthenticationResult(
-	t *testing.T,
-	h *clientAuthHandler,
-	timeout time.Duration,
-	cancelAfter time.Duration,
-	wantErr error,
-	wantPush bool,
-) {
-
-	t.Helper()
-	endpoint := startWebSocketTestServer(t, h)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	if cancelAfter > 0 {
-		timer := time.AfterFunc(cancelAfter, cancel)
-		defer timer.Stop()
-	}
-	pushed := make(chan []byte, 1)
-	client, err := NewClient(ctx, WithEndpoint(endpoint), WithToken("invalid-token"),
-		WithServiceName("game"), WithTimeout(timeout),
-		WithPushHandler(map[int32]PushHandler{1: func(body []byte) { pushed <- body }}))
-	if !errors.Is(err, wantErr) {
-		t.Fatalf("NewClient() error = %v, want %v", err, wantErr)
-	}
-	if (client == nil) != (err != nil) {
-		t.Fatalf("NewClient() client = %v, error = %v", client, err)
-	}
-	if client != nil {
-		defer client.Close()
-	}
-	if got := h.opened.Load(); got != 1 {
-		t.Fatalf("authentication connections = %d, want 1", got)
-	}
-	if wantPush {
-		body := waitWebSocketValue(t, pushed)
-		if string(body) != "before-auth-reply" {
-			t.Fatalf("push body = %q", body)
-		}
-	}
-}

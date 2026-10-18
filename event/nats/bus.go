@@ -36,6 +36,12 @@ type Bus struct {
 	closeErr  error
 }
 
+type publishRequest struct {
+	ctx    context.Context
+	event  event.Event
+	result chan error
+}
+
 // New 连接 NATS 并返回可用的 Bus；WithContext 控制完整生命周期，
 // 取消后关闭 Bus 及其订阅。
 func New(opts ...Option) (*Bus, error) {
@@ -78,87 +84,6 @@ func New(opts ...Option) (*Bus, error) {
 	return bus, nil
 }
 
-func connect(ctx context.Context, o options) (*natsgo.Conn, error) {
-	connectOptions := []natsgo.Option{
-		natsgo.Timeout(timeoutFor(ctx, o.timeout)),
-		natsgo.ReconnectBufSize(-1),
-		natsgo.ErrorHandler(func(_ *natsgo.Conn, sub *natsgo.Subscription, err error) {
-			attrs := []slog.Attr{slog.Any("error", err)}
-			if sub != nil {
-				attrs = append(attrs, slog.String("topic", sub.Subject))
-			}
-			slog.LogAttrs(ctx, slog.LevelError, "event transport error", attrs...)
-		}),
-	}
-	if o.username != "" || o.password != "" {
-		connectOptions = append(connectOptions, natsgo.UserInfo(o.username, o.password))
-	}
-	if o.tls != nil {
-		connectOptions = append(connectOptions, natsgo.Secure(o.tls))
-	}
-	type result struct {
-		conn *natsgo.Conn
-		err  error
-	}
-	// nats.Connect 不接受 context；配置的 timeout 限制此 worker 的等待，
-	// caller 取消后，worker 负责关闭迟到的连接。
-	connected := make(chan result)
-	go func() {
-		conn, err := natsgo.Connect(o.url, connectOptions...)
-		select {
-		case connected <- result{conn: conn, err: err}:
-		case <-ctx.Done():
-			if conn != nil {
-				conn.Close()
-			}
-		}
-	}()
-
-	select {
-	case outcome := <-connected:
-		if err := ctx.Err(); err != nil {
-			if outcome.conn != nil {
-				outcome.conn.Close()
-			}
-			return nil, err
-		}
-		if outcome.err != nil {
-			return nil, fmt.Errorf("nats: connect: %w", outcome.err)
-		}
-		return outcome.conn, nil
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
-}
-
-// Close 拒绝新工作，取消订阅并关闭连接，等待发布 worker 和在途 handler 后返回。
-func (b *Bus) Close() error {
-	b.closeOnce.Do(func() {
-		b.cancel()
-
-		b.registrationMu.Lock()
-		registered := b.subscriptions
-		b.subscriptions = nil
-		b.registrationMu.Unlock()
-
-		for _, subscription := range registered {
-			subscription.beginStop()
-		}
-		for _, subscription := range registered {
-			<-subscription.deactivated
-		}
-		b.conn.Close()
-		<-b.publishDone
-		b.closeErr = waitSubscriptions(registered)
-	})
-	return b.closeErr
-}
-
-func (b *Bus) closeOnContext() {
-	<-b.ctx.Done()
-	_ = b.Close()
-}
-
 // Publish 发布在线事件，等待受 ctx 限制；成功不代表订阅者已收到。
 // 返回后可复用 Payload。worker 通过取消检查后，发布尝试即已开始；
 // 此后取消不能撤回发送，即使原生调用仍在等待锁，投递结果也可能不确定。
@@ -192,46 +117,6 @@ func (b *Bus) Publish(ctx context.Context, e event.Event) error {
 		return event.ErrClosed
 	case err := <-request.result:
 		return err
-	}
-}
-
-type publishRequest struct {
-	ctx    context.Context
-	event  event.Event
-	result chan error
-}
-
-func (b *Bus) startPublisher() {
-	// 无缓冲交接：最多执行一个原生 Publish，排队者仍由 caller 的 context 控制。
-	b.publishRequests = make(chan publishRequest)
-	b.publishDone = make(chan struct{})
-	go b.publishLoop()
-}
-
-func (b *Bus) publishLoop() {
-	defer close(b.publishDone)
-	for {
-		select {
-		case <-b.ctx.Done():
-			return
-		case request := <-b.publishRequests:
-			// select 可能同时选中取消与交接；此检查是发布尝试开始的边界。
-			// 通过后与取消竞争的发送不保证撤回，包括随后的原生锁等待。
-			if err := request.ctx.Err(); err != nil {
-				request.result <- err
-				continue
-			}
-			if b.ctx.Err() != nil {
-				request.result <- event.ErrClosed
-				return
-			}
-			err := b.conn.Publish(request.event.Topic, request.event.Payload)
-			if err != nil && b.ctx.Err() != nil {
-				err = event.ErrClosed
-			}
-			// caller 即使已取消也不会阻塞 worker；Close 会等待此 worker 退出。
-			request.result <- err
-		}
 	}
 }
 
@@ -299,11 +184,131 @@ func (b *Bus) Subscribe(ctx context.Context, topic string, handler event.Handler
 	return registered, nil
 }
 
+// Close 拒绝新工作，取消订阅并关闭连接，等待发布 worker 和在途 handler 后返回。
+func (b *Bus) Close() error {
+	b.closeOnce.Do(func() {
+		b.cancel()
+
+		b.registrationMu.Lock()
+		registered := b.subscriptions
+		b.subscriptions = nil
+		b.registrationMu.Unlock()
+
+		for _, subscription := range registered {
+			subscription.beginStop()
+		}
+		for _, subscription := range registered {
+			<-subscription.deactivated
+		}
+		b.conn.Close()
+		<-b.publishDone
+		errs := make([]error, 0, len(registered))
+		for _, subscription := range registered {
+			<-subscription.stopDone
+			errs = append(errs, subscription.stopErr)
+		}
+		b.closeErr = errors.Join(errs...)
+	})
+	return b.closeErr
+}
+
+func (b *Bus) closeOnContext() {
+	<-b.ctx.Done()
+	_ = b.Close()
+}
+
+func (b *Bus) startPublisher() {
+	// 无缓冲交接：最多执行一个原生 Publish，排队者仍由 caller 的 context 控制。
+	b.publishRequests = make(chan publishRequest)
+	b.publishDone = make(chan struct{})
+	go b.publishLoop()
+}
+
+func (b *Bus) publishLoop() {
+	defer close(b.publishDone)
+	for {
+		select {
+		case <-b.ctx.Done():
+			return
+		case request := <-b.publishRequests:
+			// select 可能同时选中取消与交接；此检查是发布尝试开始的边界。
+			// 通过后与取消竞争的发送不保证撤回，包括随后的原生锁等待。
+			if err := request.ctx.Err(); err != nil {
+				request.result <- err
+				continue
+			}
+			if b.ctx.Err() != nil {
+				request.result <- event.ErrClosed
+				return
+			}
+			err := b.conn.Publish(request.event.Topic, request.event.Payload)
+			if err != nil && b.ctx.Err() != nil {
+				err = event.ErrClosed
+			}
+			// caller 即使已取消也不会阻塞 worker；Close 会等待此 worker 退出。
+			request.result <- err
+		}
+	}
+}
+
 func (b *Bus) failRegistration(registered *subscription, cause error) error {
 	registered.beginStop()
 	<-registered.stopDone
 	b.registrationErr = errors.Join(cause, registered.stopErr)
 	return b.registrationErr
+}
+
+func connect(ctx context.Context, o options) (*natsgo.Conn, error) {
+	connectOptions := []natsgo.Option{
+		natsgo.Timeout(timeoutFor(ctx, o.timeout)),
+		natsgo.ReconnectBufSize(-1),
+		natsgo.ErrorHandler(func(_ *natsgo.Conn, sub *natsgo.Subscription, err error) {
+			attrs := []slog.Attr{slog.Any("error", err)}
+			if sub != nil {
+				attrs = append(attrs, slog.String("topic", sub.Subject))
+			}
+			slog.LogAttrs(ctx, slog.LevelError, "event transport error", attrs...)
+		}),
+	}
+	if o.username != "" || o.password != "" {
+		connectOptions = append(connectOptions, natsgo.UserInfo(o.username, o.password))
+	}
+	if o.tls != nil {
+		connectOptions = append(connectOptions, natsgo.Secure(o.tls))
+	}
+	type result struct {
+		conn *natsgo.Conn
+		err  error
+	}
+	// nats.Connect 不接受 context；配置的 timeout 限制此 worker 的等待，
+	// caller 取消后，worker 负责关闭迟到的连接。
+	connected := make(chan result)
+	go func() {
+		conn, err := natsgo.Connect(o.url, connectOptions...)
+		select {
+		case connected <- result{conn: conn, err: err}:
+		case <-ctx.Done():
+			if conn != nil {
+				conn.Close()
+			}
+		}
+	}()
+
+	select {
+	case outcome := <-connected:
+		if err := ctx.Err(); err != nil {
+			if outcome.conn != nil {
+				outcome.conn.Close()
+			}
+			return nil, err
+		}
+		if outcome.err != nil {
+			return nil, fmt.Errorf("nats: connect: %w", outcome.err)
+		}
+		return outcome.conn, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 func contextError(ctx context.Context) error {

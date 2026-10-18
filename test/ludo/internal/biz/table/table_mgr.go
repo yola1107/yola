@@ -29,6 +29,11 @@ const (
 	defaultTableMailboxBatch   = 64
 )
 
+// ClientPusher relocates the current Gate binding and pushes a client message.
+type ClientPusher interface {
+	PushToUID(ctx context.Context, uid string, command int32, msg proto.Message) error
+}
+
 type Manager struct {
 	tables    []*Table
 	mailboxes *mailbox.Group
@@ -37,14 +42,6 @@ type Manager struct {
 	runCtx    context.Context
 	pusher    ClientPusher
 }
-
-// ClientPusher relocates the current Gate binding and pushes a client message.
-type ClientPusher interface {
-	PushToUID(ctx context.Context, uid string, command int32, msg proto.Message) error
-}
-
-// SetClientPusher configures PushToUID-based client delivery for seated players.
-func (m *Manager) SetClientPusher(pusher ClientPusher) { m.pusher = pusher }
 
 func NewManager(instanceID string, room *conf.Room, repo Repo) *Manager {
 	return newManager(instanceID, room, repo, defaultTableMailboxWorkers, defaultTableQueueSize, defaultTableMailboxBatch)
@@ -73,6 +70,9 @@ func newManager(instanceID string, room *conf.Room, repo Repo, workers int, queu
 	return manager
 }
 
+// SetClientPusher configures PushToUID-based client delivery for seated players.
+func (m *Manager) SetClientPusher(pusher ClientPusher) { m.pusher = pusher }
+
 func (m *Manager) Start(ctx context.Context) error {
 	m.runCtx = ctx
 	if err := m.mailboxes.Start(); err != nil {
@@ -96,13 +96,6 @@ func (m *Manager) Close(ctx context.Context) error {
 		return err
 	}
 	return m.mLog.Close()
-}
-
-func (m *Manager) table(tableID int32) *Table {
-	if tableID <= 0 || tableID > int32(len(m.tables)) {
-		return nil
-	}
-	return m.tables[tableID-1]
 }
 
 // Enter 在指定桌内串行入座；tableID <= 0 时自动选桌，指定桌失败不换桌。
@@ -258,23 +251,6 @@ func (m *Manager) Switch(ctx context.Context, p *player.Player, gameConfig *conf
 	return codes.EnterTableFail, "ENTER_TABLE_FAIL", nil
 }
 
-func CheckRoomLimit(p *player.Player, game *conf.Room_Game) (int32, string) {
-	money, vip := p.GetAllMoney(), p.GetVipGrade()
-	if money < game.MinMoney {
-		return codes.MoneyBelowMinLimit, "MONEY_BELOW_MIN_LIMIT"
-	}
-	if game.MaxMoney != -1 && money > game.MaxMoney {
-		return codes.MoneyOverMaxLimit, "MONEY_OVER_MAX_LIMIT"
-	}
-	if money < game.BaseMoney {
-		return codes.MoneyBelowBaseLimit, "MONEY_BELOW_BASE_LIMIT"
-	}
-	if vip < game.VipLimit {
-		return codes.VIPLimit, "VIP_LIMIT"
-	}
-	return codes.Success, ""
-}
-
 func (m *Manager) CallPlayer(ctx context.Context, p *player.Player, action func(*Table) error) error {
 	if p == nil {
 		return errors.New("table player call requires player")
@@ -289,6 +265,13 @@ func (m *Manager) CallPlayer(ctx context.Context, p *player.Player, action func(
 		}
 		return action(gameTable)
 	})
+}
+
+func (m *Manager) table(tableID int32) *Table {
+	if tableID <= 0 || tableID > int32(len(m.tables)) {
+		return nil
+	}
+	return m.tables[tableID-1]
 }
 
 func (m *Manager) tryAvailableTables(excludedTableID int32, tryTable func(*Table) (bool, error)) (bool, error) {
@@ -397,4 +380,21 @@ func (m *Manager) restorePlayer(gameTable *Table, p *player.Player) error {
 		return errors.New("restore player to original table")
 	}
 	return nil
+}
+
+func CheckRoomLimit(p *player.Player, game *conf.Room_Game) (int32, string) {
+	money, vip := p.GetAllMoney(), p.GetVipGrade()
+	if money < game.MinMoney {
+		return codes.MoneyBelowMinLimit, "MONEY_BELOW_MIN_LIMIT"
+	}
+	if game.MaxMoney != -1 && money > game.MaxMoney {
+		return codes.MoneyOverMaxLimit, "MONEY_OVER_MAX_LIMIT"
+	}
+	if money < game.BaseMoney {
+		return codes.MoneyBelowBaseLimit, "MONEY_BELOW_BASE_LIMIT"
+	}
+	if vip < game.VipLimit {
+		return codes.VIPLimit, "VIP_LIMIT"
+	}
+	return codes.Success, ""
 }

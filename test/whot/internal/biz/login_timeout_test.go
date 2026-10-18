@@ -46,7 +46,9 @@ func TestLoginTimeoutKeepsCleanupBudget(t *testing.T) {
 				}
 				unbindErr := errors.New("unbind failed")
 				sess := &cleanupContextSession{connectionSession: connectionSession{
-					uid: strconv.FormatInt(uid, 10), bindingToken: "candidate", unbindErr: unbindErr,
+					uid:          strconv.FormatInt(uid, 10),
+					bindingToken: "candidate",
+					unbindErr:    unbindErr,
 				}}
 				started := time.Now()
 				reply, err = uc.Login(t.Context(), sess, uid, "valid")

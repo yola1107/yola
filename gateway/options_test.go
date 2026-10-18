@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"crypto/tls"
 	"errors"
 	"net"
@@ -10,6 +11,9 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/health/grpc_health_v1"
 )
 
 func TestResolveOptionsDefaults(t *testing.T) {
@@ -24,6 +28,7 @@ func TestResolveOptionsDefaults(t *testing.T) {
 	require.Equal(t, 3*time.Second, o.connectTimeout)
 	require.Equal(t, 3*time.Second, o.leaseTimeout)
 	require.Equal(t, 3*time.Second, o.cleanupTimeout)
+	require.Equal(t, 10*time.Second, o.shutdownTimeout)
 	require.Equal(t, 15*time.Second, o.authTimeout)
 	require.Equal(t, 60*time.Second, o.leaseTTL)
 	require.Equal(t, min(8, max(1, runtime.GOMAXPROCS(0))), o.broadcastWorkers)
@@ -106,16 +111,23 @@ func TestAdvertiseHostOptionPublishesEndpoint(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			lis, err := net.Listen("tcp", "127.0.0.1:0")
 			require.NoError(t, err)
-			t.Cleanup(func() { require.NoError(t, lis.Close()) })
+			t.Cleanup(func() { _ = lis.Close() })
 			_, port, err := net.SplitHostPort(lis.Addr().String())
 			require.NoError(t, err)
 			opts := []Option{Listener(lis), Address("0.0.0.0:" + port), AdvertiseHost("192.168.1.10")}
 			if test.secure {
 				opts = append(opts, ServerTLS(testServerTLSConfig(t)))
 			}
-			endpoint, err := newTestServer(t, opts...).Endpoint()
+			store := testLocator(t)
+			gate := newTestServer(t, append(opts, Locator(store))...)
+			initTestGateway(t, gate)
+			conn := newTestConnection("conn-advertised-endpoint")
+			require.NoError(t, gate.Open(t.Context(), conn))
+			_, err = gate.Handle(t.Context(), conn, authMessage(t))
 			require.NoError(t, err)
-			require.Equal(t, test.scheme+"://192.168.1.10:"+port, endpoint.String())
+			lease, err := store.LocateGate(t.Context(), "game", "player-a")
+			require.NoError(t, err)
+			require.Equal(t, test.scheme+"://192.168.1.10:"+port, lease.Binding.GateEndpoint)
 		})
 	}
 }
@@ -142,7 +154,7 @@ func TestServerTLSRequiresCertificate(t *testing.T) {
 }
 
 func TestGatewayConstructionReportsConfigurationCause(t *testing.T) {
-	store := testLocator(t)
+	store := pingLocator{}
 	tests := []struct {
 		name string
 		opts []Option
@@ -210,6 +222,7 @@ func TestTimeoutOptionsRejectNonPositive(t *testing.T) {
 		{name: "connect", option: ConnectTimeout},
 		{name: "lease", option: LeaseTimeout},
 		{name: "cleanup", option: CleanupTimeout},
+		{name: "shutdown", option: ShutdownTimeout},
 	} {
 		for _, timeout := range []time.Duration{0, -time.Second} {
 			t.Run(test.name+"/"+timeout.String(), func(t *testing.T) {
@@ -218,4 +231,33 @@ func TestTimeoutOptionsRejectNonPositive(t *testing.T) {
 			})
 		}
 	}
+}
+
+func TestServerAcceptsTLSConnection(t *testing.T) {
+	serverTLS, clientTLS := testTLSConfigs(t)
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	endpoint := &url.URL{Scheme: "grpcs", Host: lis.Addr().String()}
+	server := newTestServer(t, Listener(lis), Endpoint(endpoint), ServerTLS(serverTLS))
+	startTestApp(t, server)
+
+	conn, err := grpc.NewClient(endpoint.Host, grpc.WithTransportCredentials(credentials.NewTLS(clientTLS)))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	reply, err := grpc_health_v1.NewHealthClient(conn).Check(ctx, &grpc_health_v1.HealthCheckRequest{}, grpc.WaitForReady(true))
+	require.NoError(t, err)
+	require.Equal(t, grpc_health_v1.HealthCheckResponse_SERVING, reply.Status)
+}
+
+func TestGatewayConstructionReportsSetHandlerFailure(t *testing.T) {
+	handlerErr := errors.New("handler rejected")
+	_, err := NewServer(
+		Auth(testAuthenticator{}),
+		Locator(pingLocator{}),
+		Discovery(staticDiscovery{}),
+		Transport(&stubTransport{handlerErr: handlerErr}),
+	)
+	require.ErrorIs(t, err, handlerErr)
 }

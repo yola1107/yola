@@ -17,6 +17,51 @@ const (
 	_nodeEpochKeyPrefix = "locate:node:epoch:"
 )
 
+var _bindNodeScript = redis.NewScript(`
+local epoch = redis.call("GET", KEYS[1])
+if not epoch then return {0} end
+if epoch ~= ARGV[1] then return {-1} end
+redis.call("PSETEX", KEYS[2], ARGV[3], ARGV[2])
+return {1}
+`)
+
+var _unbindNodeScript = redis.NewScript(`
+local epoch = redis.call("GET", KEYS[1])
+if not epoch then return {0} end
+if epoch ~= ARGV[1] then return {-1} end
+if redis.call("GET", KEYS[2]) == ARGV[2] then
+  redis.call("DEL", KEYS[2])
+end
+return {1}
+`)
+
+var _deleteIfValueMatchesScript = redis.NewScript(`
+local current = redis.call("GET", KEYS[1])
+if not current then return {0} end
+if current ~= ARGV[1] then return {-1} end
+redis.call("DEL", KEYS[1])
+return {1}
+`)
+
+var _renewNodeScript = redis.NewScript(`
+local epoch = redis.call("GET", KEYS[1])
+if not epoch then return {0} end
+if epoch ~= ARGV[1] then return {-1} end
+local current = redis.call("GET", KEYS[2])
+if not current then return {-5} end
+if current ~= ARGV[2] then return {-6} end
+redis.call("PEXPIRE", KEYS[2], ARGV[3])
+return {1}
+`)
+
+var _renewNodeEpochScript = redis.NewScript(`
+local current = redis.call("GET", KEYS[1])
+if not current then return {0} end
+if current ~= ARGV[1] then return {-1} end
+redis.call("PEXPIRE", KEYS[1], ARGV[2])
+return {1}
+`)
+
 func (l *locator) BindNode(ctx context.Context, serviceName, uid, nodeID, epoch string) error {
 	if !locate.ValidNodeLocation(serviceName, uid, nodeID) {
 		return locate.ErrInvalidNodeBinding

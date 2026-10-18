@@ -58,7 +58,7 @@ func (uc *Usecase) Login(ctx context.Context, sess player.Session, uid int64, to
 		return loginResponse(current, codes.TokenFail, "TOKEN_FAIL"), nil
 	}
 	if current.GetTableID() > 0 {
-		response, err := uc.reconnect(ctx, sess, current, token)
+		response, err := uc.reconnect(ctx, sess, current)
 		if err == nil || (!errors.Is(err, table.ErrTableNotFound) && !errors.Is(err, table.ErrPlayerRouteChanged)) {
 			return response, err
 		}
@@ -222,6 +222,47 @@ func (uc *Usecase) Move(ctx context.Context, uid int64, req *v1.MoveReq) (*v1.Mo
 	return reply, err
 }
 
+func (uc *Usecase) CreateRobot(raw *player.Raw) (*player.Player, error) {
+	base := &player.BaseData{
+		UID:       raw.ID,
+		VIP:       0,
+		NickName:  fmt.Sprintf("robot_%d", raw.ID),
+		Avatar:    fmt.Sprintf("avatar_%d", raw.ID),
+		AvatarURL: fmt.Sprintf("avatar_%d", raw.ID),
+		Money:     xgo.RandFloat(uc.rc.Game.MinMoney, uc.rc.Game.MaxMoney),
+	}
+	raw.BaseData = base
+	return player.New(raw), nil
+}
+
+func (uc *Usecase) EnterRobots(ctx context.Context, players []*player.Player) ([]int64, error) {
+	return uc.tm.EnterRobots(ctx, players)
+}
+
+func (uc *Usecase) LogoutGame(p *player.Player, code int32, message string) error {
+	if p == nil {
+		return nil
+	}
+	uid := p.GetPlayerID()
+	if p.IsRobot() {
+		if uc.rm != nil {
+			uc.rm.Leave(uid)
+		}
+		p.CancelExit()
+		return nil
+	}
+	cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), playerCleanupTimeout)
+	err := uc.persistAndUnbindPlayer(cleanupCtx, p)
+	cancelCleanup()
+	if err != nil {
+		p.CancelExit()
+		return err
+	}
+	uc.pm.RemoveIfSame(p)
+	slog.Info("logout player", "uid", uid, "code", code, "message", message)
+	return nil
+}
+
 func (uc *Usecase) callPlayer(ctx context.Context, p *player.Player, action func(*table.Table) error) error {
 	return mapTableCallError(uc.tm.CallPlayer(ctx, p, action))
 }
@@ -234,17 +275,7 @@ func (uc *Usecase) managedPlayer(uid int64) (*player.Player, error) {
 	return p, nil
 }
 
-func mapTableCallError(err error) error {
-	if errors.Is(err, table.ErrTableNotFound) || errors.Is(err, table.ErrPlayerRouteChanged) || errors.Is(err, table.ErrPlayerExitInProgress) {
-		return fmt.Errorf("%w: %v", ErrInvalidPlayerState, err)
-	}
-	return err
-}
-
-func (uc *Usecase) reconnect(ctx context.Context, sess player.Session, p *player.Player, token string) (*v1.LoginRsp, error) {
-	if token == "" {
-		return loginResponse(p, codes.TokenFail, "TOKEN_FAIL"), nil
-	}
+func (uc *Usecase) reconnect(ctx context.Context, sess player.Session, p *player.Player) (*v1.LoginRsp, error) {
 	if err := sess.BindNode(ctx); err != nil {
 		return nil, fmt.Errorf("bind reconnecting player %d: %w", p.GetPlayerID(), err)
 	}
@@ -348,56 +379,6 @@ func (uc *Usecase) enterRoom(ctx context.Context, sess player.Session, uid int64
 	return loginResponse(p, code, msg), nil
 }
 
-func applyPressureMoney(p *player.Player, token string, game *conf.Room_Game) error {
-	money, pressureLogin, err := pressure.ParseToken(token)
-	if err != nil || !pressureLogin {
-		return err
-	}
-	if p == nil || p.GetBaseData() == nil || game == nil {
-		return errors.New("pressure player money dependencies are missing")
-	}
-	if money.Min < max(game.MinMoney, game.BaseMoney) || game.MaxMoney != -1 && money.Max > game.MaxMoney {
-		return fmt.Errorf("pressure money range [%v,%v] exceeds room range", money.Min, money.Max)
-	}
-	value := money.Min
-	if money.Max > money.Min {
-		value = xgo.RandFloat(money.Min, money.Max)
-	}
-	p.GetBaseData().Money = value
-	return nil
-}
-
-func loginResponse(p *player.Player, code int32, msg string) *v1.LoginRsp {
-	response := &v1.LoginRsp{
-		Code:    code,
-		Msg:     msg,
-		ArenaID: int32(conf.ArenaID),
-	}
-	if p != nil {
-		response.UserID = p.GetPlayerID()
-		response.TableID = p.GetTableID()
-		response.ChairID = p.GetChairID()
-	}
-	return response
-}
-
-func (uc *Usecase) CreateRobot(raw *player.Raw) (*player.Player, error) {
-	base := &player.BaseData{
-		UID:       raw.ID,
-		VIP:       0,
-		NickName:  fmt.Sprintf("robot_%d", raw.ID),
-		Avatar:    fmt.Sprintf("avatar_%d", raw.ID),
-		AvatarURL: fmt.Sprintf("avatar_%d", raw.ID),
-		Money:     xgo.RandFloat(uc.rc.Game.MinMoney, uc.rc.Game.MaxMoney),
-	}
-	raw.BaseData = base
-	return player.New(raw), nil
-}
-
-func (uc *Usecase) EnterRobots(ctx context.Context, players []*player.Player) ([]int64, error) {
-	return uc.tm.EnterRobots(ctx, players)
-}
-
 func (uc *Usecase) createPlayer(ctx context.Context, raw *player.Raw) (*player.Player, error) {
 	base, err := uc.repo.LoadPlayer(ctx, raw.ID)
 	switch {
@@ -421,30 +402,6 @@ func (uc *Usecase) createPlayer(ctx context.Context, raw *player.Raw) (*player.P
 		slog.Debug("create player", "player", p.Desc())
 	}
 	return p, nil
-}
-
-func (uc *Usecase) LogoutGame(p *player.Player, code int32, message string) error {
-	if p == nil {
-		return nil
-	}
-	uid := p.GetPlayerID()
-	if p.IsRobot() {
-		if uc.rm != nil {
-			uc.rm.Leave(uid)
-		}
-		p.CancelExit()
-		return nil
-	}
-	cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), playerCleanupTimeout)
-	err := uc.persistAndUnbindPlayer(cleanupCtx, p)
-	cancelCleanup()
-	if err != nil {
-		p.CancelExit()
-		return err
-	}
-	uc.pm.RemoveIfSame(p)
-	slog.Info("logout player", "uid", uid, "code", code, "message", message)
-	return nil
 }
 
 func (uc *Usecase) closePlayers(ctx context.Context) error {
@@ -528,4 +485,41 @@ func (uc *Usecase) persistAndUnbindPlayer(ctx context.Context, p *player.Player)
 		}
 	}
 	return errors.Join(saveErr, unbindErr)
+}
+
+func mapTableCallError(err error) error {
+	if errors.Is(err, table.ErrTableNotFound) || errors.Is(err, table.ErrPlayerRouteChanged) || errors.Is(err, table.ErrPlayerExitInProgress) {
+		return fmt.Errorf("%w: %v", ErrInvalidPlayerState, err)
+	}
+	return err
+}
+
+func applyPressureMoney(p *player.Player, token string, game *conf.Room_Game) error {
+	money, pressureLogin, err := pressure.ParseToken(token)
+	if err != nil || !pressureLogin {
+		return err
+	}
+	if p == nil || p.GetBaseData() == nil || game == nil {
+		return errors.New("pressure player money dependencies are missing")
+	}
+	if money.Min < max(game.MinMoney, game.BaseMoney) || game.MaxMoney != -1 && money.Max > game.MaxMoney {
+		return fmt.Errorf("pressure money range [%v,%v] exceeds room range", money.Min, money.Max)
+	}
+	value := xgo.RandFloat(money.Min, money.Max)
+	p.GetBaseData().Money = value
+	return nil
+}
+
+func loginResponse(p *player.Player, code int32, msg string) *v1.LoginRsp {
+	response := &v1.LoginRsp{
+		Code:    code,
+		Msg:     msg,
+		ArenaID: int32(conf.ArenaID),
+	}
+	if p != nil {
+		response.UserID = p.GetPlayerID()
+		response.TableID = p.GetTableID()
+		response.ChairID = p.GetChairID()
+	}
+	return response
 }

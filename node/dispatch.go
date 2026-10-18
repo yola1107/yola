@@ -23,6 +23,14 @@ type forwardService struct {
 
 var _ v1.NodeServer = (*forwardService)(nil)
 
+// stickyClaim 携带 Gateway 为 Stateful 请求声明的目标身份。
+type stickyClaim struct {
+	NodeID string
+	Epoch  string
+}
+
+type commandKey struct{}
+
 func (s *forwardService) Forward(ctx context.Context, in *v1.ForwardRequest) (*v1.ForwardReply, error) {
 	if s.server == nil || in == nil {
 		return nil, status.Error(codes.InvalidArgument, "invalid forward request")
@@ -68,10 +76,14 @@ func (s *forwardService) Disconnect(ctx context.Context, in *v1.DisconnectReques
 	return &emptypb.Empty{}, nil
 }
 
-// stickyClaim 携带 Gateway 为 Stateful 请求声明的目标身份。
-type stickyClaim struct {
-	NodeID string
-	Epoch  string
+// CommandFromContext 返回当前 Forward 的业务 command；它不改变 Kratos transport operation。
+// context 未携带该元数据时返回 false，command 为 0 时仍可返回 true。
+func CommandFromContext(ctx context.Context) (int32, bool) {
+	if ctx == nil {
+		return 0, false
+	}
+	command, ok := ctx.Value(commandKey{}).(int32)
+	return command, ok
 }
 
 // forwardTo 核验目标服务和 Stateful 路由声明后分发 command。
@@ -125,14 +137,6 @@ func (s *Server) routeIdentity(binding locate.GateBinding) (nodeIdentity, error)
 	return identity, s.checkEpoch()
 }
 
-func (s *Server) checkEpoch() error {
-	if err := s.lease.Load().valid(); err != nil {
-		s.failLifecycle(err)
-		return status.Error(codes.Unavailable, "node epoch is unavailable")
-	}
-	return nil
-}
-
 func (s *Server) checkNodeBinding(ctx context.Context, gate locate.GateBinding, identity nodeIdentity) error {
 	if s.locator == nil {
 		return status.Error(codes.Unavailable, "node locator is unavailable")
@@ -146,4 +150,12 @@ func (s *Server) checkNodeBinding(ctx context.Context, gate locate.GateBinding, 
 	}
 	// 定位 I/O 可能跨过租约截止时间，迟到的成功结果不得放行 handler。
 	return s.checkEpoch()
+}
+
+func (s *Server) checkEpoch() error {
+	if err := s.lease.Load().valid(); err != nil {
+		s.failLifecycle(err)
+		return status.Error(codes.Unavailable, "node epoch is unavailable")
+	}
+	return nil
 }

@@ -38,61 +38,6 @@ type channel struct {
 	queueDropped        atomic.Uint64
 }
 
-func (c *channel) closeWithProto(ctx context.Context, p *v1.Proto) error {
-	if err := validateFrame(c.codec, p); err != nil {
-		return err
-	}
-	event := channelEvent{proto: p, done: make(chan error, 1)}
-	c.mu.Lock()
-	if c.closed {
-		c.mu.Unlock()
-		return network.ErrConnectionClosed
-	}
-	c.closed = true
-	close(c.closing)
-	c.mu.Unlock()
-	c.replyWG.Wait()
-	size := int64(len(p.Body))
-	c.pendingPayloadBytes.Add(size)
-	select {
-	case c.outbound <- event:
-	case <-ctx.Done():
-		c.pendingPayloadBytes.Add(-size)
-		c.close()
-		return ctx.Err()
-	case <-c.stop:
-		c.pendingPayloadBytes.Add(-size)
-		return c.writerError()
-	}
-	return c.waitFinal(ctx, event.done)
-}
-
-func (c *channel) waitFinal(ctx context.Context, result <-chan error) error {
-	select {
-	case err := <-result:
-		return err
-	default:
-	}
-	contextDone := false
-	select {
-	case err := <-result:
-		return err
-	case <-ctx.Done():
-		contextDone = true
-	case <-c.stop:
-	}
-	select {
-	case err := <-result:
-		return err
-	default:
-	}
-	if contextDone {
-		c.close()
-		return ctx.Err()
-	}
-	return c.writerError()
-}
-
 func newChannel(queueSize int, codec encoding.Codec) *channel {
 	return &channel{
 		outbound: make(chan channelEvent, queueSize),
@@ -151,23 +96,33 @@ func (c *channel) reply(ctx context.Context, p *v1.Proto) error {
 	}
 }
 
-func (c *channel) waitClosed(ctx context.Context) error {
-	select {
-	case <-c.stop:
+func (c *channel) closeWithProto(ctx context.Context, p *v1.Proto) error {
+	if err := validateFrame(c.codec, p); err != nil {
+		return err
+	}
+	event := channelEvent{proto: p, done: make(chan error, 1)}
+	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
 		return network.ErrConnectionClosed
-	case <-ctx.Done():
-		return ctx.Err()
 	}
-}
-
-func (c *channel) next() (channelEvent, bool) {
+	c.closed = true
+	close(c.closing)
+	c.mu.Unlock()
+	c.replyWG.Wait()
+	size := int64(len(p.Body))
+	c.pendingPayloadBytes.Add(size)
 	select {
-	case event := <-c.outbound:
-		c.pendingPayloadBytes.Add(-int64(len(event.proto.Body)))
-		return event, true
+	case c.outbound <- event:
+	case <-ctx.Done():
+		c.pendingPayloadBytes.Add(-size)
+		c.close()
+		return ctx.Err()
 	case <-c.stop:
-		return channelEvent{}, false
+		c.pendingPayloadBytes.Add(-size)
+		return c.writerError()
 	}
+	return c.waitFinal(ctx, event.done)
 }
 
 func (c *channel) close() {
@@ -187,14 +142,13 @@ func (c *channel) isClosed() bool {
 	return closed
 }
 
-func (c *channel) stopLocked() {
-	if !c.closed {
-		c.closed = true
-		close(c.closing)
-	}
-	if !c.stopped {
-		c.stopped = true
-		close(c.stop)
+func (c *channel) next() (channelEvent, bool) {
+	select {
+	case event := <-c.outbound:
+		c.pendingPayloadBytes.Add(-int64(len(event.proto.Body)))
+		return event, true
+	case <-c.stop:
+		return channelEvent{}, false
 	}
 }
 
@@ -206,6 +160,52 @@ func (c *channel) finishWriter(err error) {
 	c.mu.Unlock()
 	if cancel != nil {
 		cancel()
+	}
+}
+
+func (c *channel) waitFinal(ctx context.Context, result <-chan error) error {
+	select {
+	case err := <-result:
+		return err
+	default:
+	}
+	contextDone := false
+	select {
+	case err := <-result:
+		return err
+	case <-ctx.Done():
+		contextDone = true
+	case <-c.stop:
+	}
+	select {
+	case err := <-result:
+		return err
+	default:
+	}
+	if contextDone {
+		c.close()
+		return ctx.Err()
+	}
+	return c.writerError()
+}
+
+func (c *channel) waitClosed(ctx context.Context) error {
+	select {
+	case <-c.stop:
+		return network.ErrConnectionClosed
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (c *channel) stopLocked() {
+	if !c.closed {
+		c.closed = true
+		close(c.closing)
+	}
+	if !c.stopped {
+		c.stopped = true
+		close(c.stop)
 	}
 }
 

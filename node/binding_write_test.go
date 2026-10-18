@@ -50,7 +50,12 @@ func TestLateBindingWritePreservesReplacement(t *testing.T) {
 			}
 			newClient := func(barrier *bindingWriteBarrier) redis.UniversalClient {
 				options := &redis.UniversalOptions{
-					Addrs: addresses, Password: password, DB: database, PoolSize: 1, MaxRetries: -1, ContextTimeoutEnabled: true,
+					Addrs:                 addresses,
+					Password:              password,
+					DB:                    database,
+					PoolSize:              1,
+					MaxRetries:            -1,
+					ContextTimeoutEnabled: true,
 				}
 				if barrier != nil {
 					options.Dialer = func(ctx context.Context, network, address string) (net.Conn, error) {
@@ -97,15 +102,17 @@ func TestLateBindingWritePreservesReplacement(t *testing.T) {
 					oldClient := newClient(barrier)
 					t.Cleanup(func() { require.NoError(t, oldClient.Close()) })
 					oldStore := &observedBindingLocator{
-						Locator: locateredis.New(oldClient), entered: make(chan context.Context, 1), result: make(chan error, 1),
+						Store:   locateredis.New(oldClient),
+						entered: make(chan context.Context, 1),
+						result:  make(chan error, 1),
 					}
 					require.NoError(t, store.RegisterNodeEpoch(ctx, service, "node-a", "old", DefaultNodeEpochTTL))
 					// 预热绑定脚本及目标 slot 连接，排除 NOSCRIPT 重试在取消后提前结束的假阳性。
-					require.NoError(t, oldStore.Locator.BindNode(ctx, service, "warmup", "node-a", "old"))
-					require.NoError(t, oldStore.Locator.RenewNode(ctx, service, "warmup", "node-a", "old"))
-					require.NoError(t, oldStore.Locator.UnbindNode(ctx, service, "warmup", "node-a", "old"))
+					require.NoError(t, oldStore.Store.BindNode(ctx, service, "warmup", "node-a", "old"))
+					require.NoError(t, oldStore.Store.RenewNode(ctx, service, "warmup", "node-a", "old"))
+					require.NoError(t, oldStore.Store.UnbindNode(ctx, service, "warmup", "node-a", "old"))
 					require.NoError(t, store.BindNode(ctx, service, "player", "node-a", "old"))
-					server := newTestServer(t, Locator(oldStore))
+					server := newTestServer(t, Stateful(oldStore))
 					publishTestIdentity(server, nodeIdentity{serviceName: service, nodeID: "node-a", epoch: "old"})
 					t.Cleanup(func() { require.NoError(t, server.Stop(context.Background())) })
 					t.Cleanup(unblock)
@@ -169,28 +176,28 @@ func (c *delayedBindingConn) Write(payload []byte) (int, error) {
 }
 
 type observedBindingLocator struct {
-	locate.Locator
+	Store
 	entered chan context.Context
 	result  chan error
 }
 
 func (l *observedBindingLocator) BindNode(ctx context.Context, service, uid, nodeID, epoch string) error {
 	l.entered <- ctx
-	err := l.Locator.BindNode(ctx, service, uid, nodeID, epoch)
+	err := l.Store.BindNode(ctx, service, uid, nodeID, epoch)
 	l.result <- err
 	return err
 }
 
 func (l *observedBindingLocator) UnbindNode(ctx context.Context, service, uid, nodeID, epoch string) error {
 	l.entered <- ctx
-	err := l.Locator.UnbindNode(ctx, service, uid, nodeID, epoch)
+	err := l.Store.UnbindNode(ctx, service, uid, nodeID, epoch)
 	l.result <- err
 	return err
 }
 
 func (l *observedBindingLocator) RenewNode(ctx context.Context, service, uid, nodeID, epoch string) error {
 	l.entered <- ctx
-	err := l.Locator.RenewNode(ctx, service, uid, nodeID, epoch)
+	err := l.Store.RenewNode(ctx, service, uid, nodeID, epoch)
 	l.result <- err
 	return err
 }

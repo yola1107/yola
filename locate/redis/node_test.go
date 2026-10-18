@@ -59,8 +59,11 @@ func TestNodeRenewalPreservesBindingOwnership(t *testing.T) {
 func TestNodeRenewalRejectsInvalidArguments(t *testing.T) {
 	locator, server := newLocator(t)
 	for _, input := range []struct {
-		service, uid, node, epoch string
-		want                      error
+		service string
+		uid     string
+		node    string
+		epoch   string
+		want    error
 	}{
 		{service: "bad/service", uid: "uid", node: "node", epoch: "epoch", want: locate.ErrInvalidNodeBinding},
 		{service: "game", node: "node", epoch: "epoch", want: locate.ErrInvalidNodeBinding},
@@ -246,7 +249,8 @@ func TestNodeBindingRedisIntegration(t *testing.T) {
 			var client redis.UniversalClient
 			if mode == "cluster" {
 				client = redis.NewClusterClient(&redis.ClusterOptions{
-					Addrs: strings.Split(address, ","), Password: os.Getenv("YOLA_REDIS_PASSWORD"),
+					Addrs:    strings.Split(address, ","),
+					Password: os.Getenv("YOLA_REDIS_PASSWORD"),
 				})
 			} else {
 				client = redis.NewClient(&redis.Options{Addr: address, Password: os.Getenv("YOLA_REDIS_PASSWORD")})

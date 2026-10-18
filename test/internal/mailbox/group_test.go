@@ -15,23 +15,6 @@ import (
 	"google.golang.org/protobuf/types/known/emptypb"
 )
 
-func newTestGroup(t *testing.T, mailboxCount, workerCount, queueSize, batchSize int) *Group {
-	t.Helper()
-	group, err := NewGroup(mailboxCount, workerCount, queueSize, batchSize)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err = group.Start(); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if err := group.Stop(context.Background()); err != nil {
-			t.Errorf("stop mailbox group: %v", err)
-		}
-	})
-	return group
-}
-
 func TestGroupSerializesOneMailboxAndRunsDifferentMailboxesConcurrently(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		group := newTestGroup(t, 2, 2, 8, 1)
@@ -44,7 +27,10 @@ func TestGroupSerializesOneMailboxAndRunsDifferentMailboxesConcurrently(t *testi
 		otherMailboxRan := make(chan struct{})
 		secondSameMailboxRan := make(chan struct{})
 
-		if err := firstMailbox.TryPost(func() { close(firstStarted); <-releaseFirst }); err != nil {
+		if err := firstMailbox.TryPost(func() {
+			close(firstStarted)
+			<-releaseFirst
+		}); err != nil {
 			t.Fatal(err)
 		}
 		<-firstStarted
@@ -108,7 +94,10 @@ func TestGroupAppliesPerMailboxBackpressure(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})
 	t.Cleanup(func() { close(release) })
-	if err := mailbox.TryPost(func() { close(started); <-release }); err != nil {
+	if err := mailbox.TryPost(func() {
+		close(started)
+		<-release
+	}); err != nil {
 		t.Fatal(err)
 	}
 	<-started
@@ -139,7 +128,10 @@ func TestCallsCancelWorkBeforeItStarts(t *testing.T) {
 				release := make(chan struct{})
 				releaseJob := sync.OnceFunc(func() { close(release) })
 				t.Cleanup(releaseJob)
-				if err := group.Executor(0).TryPost(func() { close(started); <-release }); err != nil {
+				if err := group.Executor(0).TryPost(func() {
+					close(started)
+					<-release
+				}); err != nil {
 					t.Fatal(err)
 				}
 				<-started
@@ -148,7 +140,10 @@ func TestCallsCancelWorkBeforeItStarts(t *testing.T) {
 				actionRan := make(chan struct{})
 				result := make(chan error, 1)
 				go func() {
-					result <- call(ctx, func() error { close(actionRan); return nil })
+					result <- call(ctx, func() error {
+						close(actionRan)
+						return nil
+					})
 				}()
 				synctest.Wait()
 				if group.Executor(0).Stats().Free != 0 {
@@ -236,7 +231,10 @@ func TestGroupStopHonorsContextAndFinishesAfterActiveJob(t *testing.T) {
 		releaseJob := sync.OnceFunc(func() { close(release) })
 		t.Cleanup(releaseJob)
 		mailbox := group.Executor(0)
-		if err := mailbox.TryPost(func() { close(started); <-release }); err != nil {
+		if err := mailbox.TryPost(func() {
+			close(started)
+			<-release
+		}); err != nil {
 			t.Fatal(err)
 		}
 		<-started
@@ -277,7 +275,10 @@ func TestGroupPostWaitsForCapacityOrStop(t *testing.T) {
 		t.Cleanup(releaseJob)
 		controlRan := make(chan struct{})
 		mailbox := group.Executor(0)
-		if err := mailbox.TryPost(func() { close(started); <-release }); err != nil {
+		if err := mailbox.TryPost(func() {
+			close(started)
+			<-release
+		}); err != nil {
 			t.Fatal(err)
 		}
 		<-started
@@ -307,7 +308,10 @@ func TestGroupPostWaitsForCapacityOrStop(t *testing.T) {
 			t.Cleanup(releaseJob)
 			controlRan := make(chan struct{})
 			mailbox := group.Executor(0)
-			if err := mailbox.TryPost(func() { close(started); <-release }); err != nil {
+			if err := mailbox.TryPost(func() {
+				close(started)
+				<-release
+			}); err != nil {
 				t.Fatal(err)
 			}
 			<-started
@@ -338,7 +342,10 @@ func TestGroupPostWaitsForCapacityOrStop(t *testing.T) {
 			releaseJob := sync.OnceFunc(func() { close(release) })
 			t.Cleanup(releaseJob)
 			mailbox := group.Executor(0)
-			if err := mailbox.TryPost(func() { close(started); <-release }); err != nil {
+			if err := mailbox.TryPost(func() {
+				close(started)
+				<-release
+			}); err != nil {
 				t.Fatal(err)
 			}
 			<-started
@@ -418,4 +425,21 @@ type callCountingExecutor struct {
 func (executor *callCountingExecutor) Call(ctx context.Context, job func() error) error {
 	executor.calls.Add(1)
 	return executor.Executor.Call(ctx, job)
+}
+
+func newTestGroup(t *testing.T, mailboxCount, workerCount, queueSize, batchSize int) *Group {
+	t.Helper()
+	group, err := NewGroup(mailboxCount, workerCount, queueSize, batchSize)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = group.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := group.Stop(context.Background()); err != nil {
+			t.Errorf("stop mailbox group: %v", err)
+		}
+	})
+	return group
 }

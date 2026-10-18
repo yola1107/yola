@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"net"
+	"net/url"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -16,22 +17,29 @@ import (
 
 	"github.com/go-kratos/kratos/v3"
 	"github.com/go-kratos/kratos/v3/encoding"
+	"github.com/go-kratos/kratos/v3/registry"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/credentials/insecure"
+	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/emptypb"
 )
+
+type lifecycleClient interface {
+	Request(context.Context, int32, proto.Message) ([]byte, int32, error)
+	Close()
+}
 
 func TestClientCancellationLeavesStartedRequestRunning(t *testing.T) {
 	for _, transportName := range []string{"tcp", "websocket"} {
 		for _, interruption := range []string{"cancel", "deadline"} {
 			t.Run(transportName+"/"+interruption, func(t *testing.T) {
 				store := testLocator(t)
-				server, err := node.NewServer(node.Address("127.0.0.1:0"), node.Locator(store))
+				registration := &testNodeRegistration{registered: make(chan *registry.ServiceInstance, 1)}
+				server, err := node.NewServer(node.Registration(registration), node.Address("127.0.0.1:0"), node.Stateful(store))
 				require.NoError(t, err)
 				started := make(chan context.Context, 1)
 				release := make(chan struct{})
@@ -47,7 +55,7 @@ func TestClientCancellationLeavesStartedRequestRunning(t *testing.T) {
 				server.RegisterRawHandler(2, func(context.Context, []byte) ([]byte, error) {
 					return []byte("current response"), nil
 				})
-				fixture := startRequestLifecycle(t, transportName, store, server, 3*time.Second)
+				fixture := startRequestLifecycle(t, transportName, store, server, registration, 3*time.Second)
 				t.Cleanup(unblock)
 				codec := &followingRequestCodec{Codec: encoding.GetCodec("proto"), encoded: make(chan struct{})}
 				client := fixture.dial(nil, codec)
@@ -99,7 +107,8 @@ func TestCanceledForwardRemainsInNodeDrain(t *testing.T) {
 				unblock := sync.OnceFunc(func() { close(release) })
 				var committed atomic.Int32
 				drained := make(chan int32, 1)
-				server, err := node.NewServer(node.Address("127.0.0.1:0"), node.Locator(store),
+				registration := &testNodeRegistration{registered: make(chan *registry.ServiceInstance, 1)}
+				server, err := node.NewServer(node.Registration(registration), node.Address("127.0.0.1:0"), node.Stateful(store),
 					node.Drain(func(context.Context) error {
 						drained <- committed.Load()
 						return nil
@@ -117,7 +126,7 @@ func TestCanceledForwardRemainsInNodeDrain(t *testing.T) {
 				if interruption == "forward deadline" {
 					rpcTimeout = 250 * time.Millisecond
 				}
-				fixture := startRequestLifecycle(t, transportName, store, server, rpcTimeout)
+				fixture := startRequestLifecycle(t, transportName, store, server, registration, rpcTimeout)
 				t.Cleanup(unblock)
 				client := fixture.dial(nil, nil)
 				result := make(chan lifecycleRequestResult, 1)
@@ -166,10 +175,13 @@ func TestReconnectSurvivesLateConnectionCleanup(t *testing.T) {
 	for _, transportName := range []string{"tcp", "websocket"} {
 		t.Run(transportName, func(t *testing.T) {
 			store := &delayedConnectionCleanup{
-				Locator: testLocator(t), started: make(chan locate.GateBinding, 1), release: make(chan struct{}),
+				Locator: testLocator(t),
+				started: make(chan locate.GateBinding, 1),
+				release: make(chan struct{}),
 			}
 			unblock := sync.OnceFunc(func() { close(store.release) })
-			server, err := node.NewServer(node.Address("127.0.0.1:0"), node.Locator(store))
+			registration := &testNodeRegistration{registered: make(chan *registry.ServiceInstance, 1)}
+			server, err := node.NewServer(node.Registration(registration), node.Address("127.0.0.1:0"), node.Stateful(store))
 			require.NoError(t, err)
 			var ownerMu sync.Mutex
 			var currentToken string
@@ -196,7 +208,7 @@ func TestReconnectSurvivesLateConnectionCleanup(t *testing.T) {
 				disconnected <- sess.BindingToken()
 				return nil
 			})
-			fixture := startRequestLifecycle(t, transportName, store, server, 3*time.Second)
+			fixture := startRequestLifecycle(t, transportName, store, server, registration, 3*time.Second)
 			t.Cleanup(unblock)
 			oldClient := fixture.dial(nil, nil)
 			_, code, err := oldClient.Request(t.Context(), 1, &emptypb.Empty{})
@@ -239,23 +251,25 @@ type lifecycleRequestResult struct {
 	err  error
 }
 
-type lifecycleClient interface {
-	Request(context.Context, int32, proto.Message) ([]byte, int32, error)
-	Close()
-}
-
 type requestLifecycleFixture struct {
 	dial     func(chan []byte, encoding.Codec) lifecycleClient
 	stopNode func() error
 	nodeDone <-chan struct{}
 }
 
-func startRequestLifecycle(t *testing.T, transportName string, store locate.Locator, server *node.Server, rpcTimeout time.Duration) requestLifecycleFixture {
+func startRequestLifecycle(
+	t *testing.T,
+	transportName string,
+	store locate.Locator,
+	server *node.Server,
+	registration *testNodeRegistration,
+	rpcTimeout time.Duration,
+) requestLifecycleFixture {
+
 	t.Helper()
 	appCtx, cancelApp := context.WithCancel(context.Background())
 	app := kratos.New(
-		kratos.Context(appCtx), kratos.ID("node-a"), kratos.Name("game"), kratos.Metadata(server.Metadata()),
-		kratos.BeforeStart(server.BeforeStart), kratos.Server(server), kratos.StopTimeout(3*time.Second),
+		kratos.Context(appCtx), kratos.ID("node-a"), kratos.Name("game"), kratos.Server(server), kratos.StopTimeout(3*time.Second),
 	)
 	done := make(chan struct{})
 	var runErr error
@@ -274,17 +288,20 @@ func startRequestLifecycle(t *testing.T, transportName string, store locate.Loca
 		runErr = app.Run()
 		close(done)
 	}()
-	endpoint, err := server.Endpoint()
+	record := receiveWithin(t, registration.registered)
+	require.Len(t, record.Endpoints, 1)
+	endpoint, err := url.Parse(record.Endpoints[0])
 	require.NoError(t, err)
 	probe, err := grpc.NewClient(endpoint.Host, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	require.NoError(t, err)
 	defer func() { require.NoError(t, probe.Close()) }()
-	probe.Connect()
-	readyCtx, readyCancel := context.WithTimeout(t.Context(), time.Second)
-	defer readyCancel()
-	for state := probe.GetState(); state != connectivity.Ready; state = probe.GetState() {
-		require.True(t, probe.WaitForStateChange(readyCtx, state), "Node did not become ready")
-	}
+	health := healthpb.NewHealthClient(probe)
+	require.Eventually(t, func() bool {
+		probeCtx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+		defer cancel()
+		reply, probeErr := health.Check(probeCtx, &healthpb.HealthCheckRequest{})
+		return probeErr == nil && reply.Status == healthpb.HealthCheckResponse_SERVING
+	}, time.Second, time.Millisecond)
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	var transport ClientTransport
@@ -299,34 +316,38 @@ func startRequestLifecycle(t *testing.T, transportName string, store locate.Loca
 		stopNode: app.Stop,
 		nodeDone: done,
 		dial: func(pushes chan []byte, codec encoding.Codec) lifecycleClient {
-			t.Helper()
-			if codec == nil {
-				codec = encoding.GetCodec("proto")
-			}
-			var client lifecycleClient
-			var dialErr error
-			handlePush := func(body []byte) {
-				if pushes != nil {
-					select {
-					case pushes <- body:
-					case <-t.Context().Done():
-					}
-				}
-			}
-			if transportName == "tcp" {
-				client, dialErr = tcp.NewClient(t.Context(), tcp.WithAddress(listener.Addr().String()),
-					tcp.WithServiceName("game"), tcp.WithToken("synthetic-token"), tcp.WithRequestTimeout(5*time.Second), tcp.WithCodec(codec),
-					tcp.WithPushHandler(map[int32]tcp.PushHandler{9: handlePush}))
-			} else {
-				client, dialErr = websocket.NewClient(t.Context(), websocket.WithEndpoint("ws://"+listener.Addr().String()),
-					websocket.WithServiceName("game"), websocket.WithToken("synthetic-token"), websocket.WithRequestTimeout(5*time.Second), websocket.WithCodec(codec),
-					websocket.WithPushHandler(map[int32]websocket.PushHandler{9: handlePush}))
-			}
-			require.NoError(t, dialErr)
-			t.Cleanup(client.Close)
-			return client
+			return dialLifecycleClient(t, transportName, listener.Addr().String(), "game", pushes, codec)
 		},
 	}
+}
+
+func dialLifecycleClient(t *testing.T, transportName, address, serviceName string, pushes chan []byte, codec encoding.Codec) lifecycleClient {
+	t.Helper()
+	if codec == nil {
+		codec = encoding.GetCodec("proto")
+	}
+	handlePush := func(body []byte) {
+		if pushes != nil {
+			select {
+			case pushes <- body:
+			case <-t.Context().Done():
+			}
+		}
+	}
+	var client lifecycleClient
+	var dialErr error
+	if transportName == "tcp" {
+		client, dialErr = tcp.NewClient(t.Context(), tcp.WithAddress(address),
+			tcp.WithServiceName(serviceName), tcp.WithToken("synthetic-token"), tcp.WithRequestTimeout(5*time.Second), tcp.WithCodec(codec),
+			tcp.WithPushHandler(map[int32]tcp.PushHandler{9: handlePush}))
+	} else {
+		client, dialErr = websocket.NewClient(t.Context(), websocket.WithEndpoint("ws://"+address),
+			websocket.WithServiceName(serviceName), websocket.WithToken("synthetic-token"), websocket.WithRequestTimeout(5*time.Second), websocket.WithCodec(codec),
+			websocket.WithPushHandler(map[int32]websocket.PushHandler{9: handlePush}))
+	}
+	require.NoError(t, dialErr)
+	t.Cleanup(client.Close)
+	return client
 }
 
 type followingRequestCodec struct {

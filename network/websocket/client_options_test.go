@@ -22,44 +22,40 @@ func TestClientRejectsInvalidConfiguration(t *testing.T) {
 		{
 			name:    "canceled context",
 			ctx:     canceled,
-			opts:    []ClientOption{WithServiceName("game"), WithToken("token")},
 			wantErr: context.Canceled,
 		},
 		{
 			name: "nil context",
-			opts: []ClientOption{WithServiceName("game"), WithToken("token")},
 			want: "websocket: context is nil",
 		},
 		{
 			name: "codec",
 			ctx:  ctx,
-			opts: []ClientOption{WithServiceName("game"), WithToken("token"), WithCodec(nil)},
+			opts: []ClientOption{WithCodec(nil)},
 			want: "websocket: codec is required",
 		},
 		{
 			name: "channel config",
 			ctx:  ctx,
-			opts: []ClientOption{WithServiceName("game"), WithToken("token"), WithChannelConfig(nil)},
+			opts: []ClientOption{WithChannelConfig(nil)},
 			want: "websocket: channel config is required",
 		},
 		{
 			name: "authentication timeout",
 			ctx:  ctx,
-			opts: []ClientOption{WithServiceName("game"), WithToken("token"), WithTimeout(0)},
+			opts: []ClientOption{WithTimeout(0)},
 			want: "websocket: authentication timeout must be positive",
 		},
 		{
 			name: "ping interval",
 			ctx:  ctx,
-			opts: []ClientOption{WithServiceName("game"), WithToken("token"), WithPingInterval(0)},
+			opts: []ClientOption{WithPingInterval(0)},
 			want: "websocket: ping interval must be positive",
 		},
 		{
 			name: "ping interval and read deadline",
 			ctx:  ctx,
 			opts: []ClientOption{
-				WithServiceName("game"),
-				WithToken("token"),
 				WithPingInterval(time.Second),
 				WithChannelConfig(&ChannelConfig{
 					WriteTimeout:  time.Second,
@@ -72,45 +68,37 @@ func TestClientRejectsInvalidConfiguration(t *testing.T) {
 		{
 			name: "request timeout",
 			ctx:  ctx,
-			opts: []ClientOption{WithServiceName("game"), WithToken("token"), WithRequestTimeout(0)},
+			opts: []ClientOption{WithRequestTimeout(0)},
 			want: "websocket: request timeout must be positive",
 		},
 		{
 			name: "missing service",
 			ctx:  ctx,
-			opts: []ClientOption{WithToken("token")},
+			opts: []ClientOption{WithServiceName("")},
 			want: "websocket: service name is required",
 		},
 		{
 			name: "missing token",
 			ctx:  ctx,
-			opts: []ClientOption{WithServiceName("game")},
+			opts: []ClientOption{WithToken("")},
 			want: "websocket: token is required",
 		},
 		{
 			name: "callback queue",
 			ctx:  ctx,
-			opts: []ClientOption{WithServiceName("game"), WithToken("token"), WithCallbackQueueSize(0)},
+			opts: []ClientOption{WithCallbackQueueSize(0)},
 			want: "websocket: callback queue size must be positive",
 		},
 		{
 			name: "TLS verification",
 			ctx:  ctx,
-			opts: []ClientOption{
-				WithServiceName("game"),
-				WithToken("token"),
-				WithTLSConfig(&tls.Config{InsecureSkipVerify: true}),
-			},
+			opts: []ClientOption{WithTLSConfig(&tls.Config{InsecureSkipVerify: true})},
 			want: "websocket: TLS certificate verification must be enabled",
 		},
 		{
 			name: "invalid endpoint",
 			ctx:  ctx,
-			opts: []ClientOption{
-				WithEndpoint("http://127.0.0.1:1"),
-				WithServiceName("game"),
-				WithToken("token"),
-			},
+			opts: []ClientOption{WithEndpoint("http://127.0.0.1:1")},
 			want: "client: invalid URL: WebSocket endpoint must use ws or wss with a host",
 		},
 		{
@@ -118,8 +106,6 @@ func TestClientRejectsInvalidConfiguration(t *testing.T) {
 			ctx:  ctx,
 			opts: []ClientOption{
 				WithEndpoint("ws://127.0.0.1:1"),
-				WithServiceName("game"),
-				WithToken("token"),
 				WithTLSConfig(&tls.Config{}),
 			},
 			want: "websocket: TLS config requires a wss endpoint",
@@ -127,7 +113,8 @@ func TestClientRejectsInvalidConfiguration(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			_, err := NewClient(test.ctx, test.opts...)
+			opts := append([]ClientOption{WithServiceName("game"), WithToken("token")}, test.opts...)
+			_, err := NewClient(test.ctx, opts...)
 			if test.wantErr != nil {
 				if !errors.Is(err, test.wantErr) {
 					t.Fatalf("NewClient() error = %v, want %v", err, test.wantErr)

@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"sync"
 	"time"
@@ -12,18 +13,23 @@ import (
 )
 
 type sessionRegistry struct {
-	mu       sync.RWMutex
-	byConnID map[string]*session
+	mu              sync.RWMutex
+	byConnID        map[string]*session
+	accepting       bool
+	authentications sync.WaitGroup
 }
 
-func (r *sessionRegistry) add(conn network.Connection, authTimeout time.Duration) bool {
+func (r *sessionRegistry) add(conn network.Connection, authTimeout time.Duration) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.byConnID == nil || r.byConnID[conn.ConnID()] != nil {
-		return false
+	if !r.accepting || r.byConnID == nil {
+		return errors.New("gateway is unavailable")
+	}
+	if r.byConnID[conn.ConnID()] != nil {
+		return errors.New("duplicate connection")
 	}
 	r.byConnID[conn.ConnID()] = newSession(conn, authTimeout)
-	return true
+	return nil
 }
 
 func (r *sessionRegistry) get(connID string) *session {
@@ -32,10 +38,16 @@ func (r *sessionRegistry) get(connID string) *session {
 	return r.byConnID[connID]
 }
 
-func (r *sessionRegistry) current(sess *session) bool {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	return r.byConnID != nil && r.byConnID[sess.conn.ConnID()] == sess
+func (r *sessionRegistry) admitAuthentication(ctx context.Context, sess *session) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.accepting || r.byConnID[sess.conn.ConnID()] != sess ||
+		!sess.canAuthenticate(ctx, time.Now()) {
+		return false
+	}
+	// 关闭准入与计数增加共用此锁；关闭后才可在锁外等待。
+	r.authentications.Add(1)
+	return true
 }
 
 func (r *sessionRegistry) commitAuthentication(ctx context.Context, sess *session, lease locate.GateLease, boundAt time.Time) bool {
@@ -84,6 +96,24 @@ func (r *sessionRegistry) snapshot(sessions []*session) []*session {
 	return sessions
 }
 
+func (r *sessionRegistry) openAdmission() {
+	r.mu.Lock()
+	r.accepting = true
+	r.mu.Unlock()
+}
+
+func (r *sessionRegistry) closeAdmission() {
+	r.mu.Lock()
+	r.accepting = false
+	r.mu.Unlock()
+}
+
+func (r *sessionRegistry) isAccepting() bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.accepting
+}
+
 type session struct {
 	// handlerMu 串行业务调用；关闭按 handlerMu → heartbeatMu → bindingMu 等待处理完成。
 	// 业务和心跳各自可获取 bindingMu，禁止反向取锁。
@@ -106,11 +136,6 @@ func newSession(conn network.Connection, authTimeout time.Duration) *session {
 		}
 	})
 	return sess
-}
-
-// leaseValidLocked 要求调用方持有 bindingMu。
-func (s *session) leaseValidLocked(now time.Time) bool {
-	return locate.ValidGateBinding(s.binding) && now.Before(s.leaseDeadline)
 }
 
 func (s *session) authenticated() bool {
@@ -219,4 +244,9 @@ func (s *session) sendIfAuthenticated(msg *network.PreparedProto) (bool, error) 
 		return true, conn.SendPrepared(msg)
 	}
 	return true, s.conn.SendProto(msg.Message())
+}
+
+// leaseValidLocked 要求调用方持有 bindingMu。
+func (s *session) leaseValidLocked(now time.Time) bool {
+	return locate.ValidGateBinding(s.binding) && now.Before(s.leaseDeadline)
 }

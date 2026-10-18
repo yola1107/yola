@@ -9,7 +9,6 @@ const (
 
 type moveSearch struct {
 	board        *Board
-	color        int32
 	dices        []int32
 	usedDices    []bool
 	pieces       []int32
@@ -49,7 +48,6 @@ func FindBestMoveSequence(b *Board, dices []int32, color int32) (int32, int32) {
 	}
 	search := &moveSearch{
 		board:        boardCopy,
-		color:        color,
 		dices:        dices,
 		usedDices:    make([]bool, len(dices)),
 		pieces:       ids,
@@ -95,7 +93,7 @@ func (s *moveSearch) evaluate(remainingDice int, path []int32, steps []*Step) {
 			}
 			s.usedDices[diceIndex] = true
 			path = append(path, pieceID, dice)
-			step := s.board.moveOne(pieceID, dice)
+			step := s.board.Move(pieceID, dice)
 			steps = append(steps, step)
 
 			s.evaluate(remainingDice-1, path, steps)
@@ -149,30 +147,31 @@ func (b *Board) evaluateMoveSequence(steps []*Step, totalDiceSum int32, ids, ene
 			score += 2 // 家路径轻微加分
 		}
 
-		if p.IsOnBoard() {
-			// 越靠近终点，奖励越高（尽量推进）
-			stepsToEnd := (p.pos - HomeEntrances[p.color] + TotalPositions) % TotalPositions
-			score += (TotalPositions - stepsToEnd) / 5
+		if !p.IsOnBoard() {
+			continue
+		}
+		// 越靠近终点，奖励越高（尽量推进）
+		stepsToEnd := (p.pos - HomeEntrances[p.color] + TotalPositions) % TotalPositions
+		score += (TotalPositions - stepsToEnd) / 5
 
-			// 危险/威胁
-			for _, eID := range enemy {
-				e := b.GetPieceByID(eID)
-				if !e.IsOnBoard() || !p.IsEnemy(e) {
-					continue
-				}
+		// 危险/威胁
+		for _, eID := range enemy {
+			e := b.GetPieceByID(eID)
+			if !e.IsOnBoard() || !p.IsEnemy(e) {
+				continue
+			}
 
-				forwardDist := (e.pos - p.pos + TotalPositions) % TotalPositions  // p到e的顺时针距离
-				backwardDist := (p.pos - e.pos + TotalPositions) % TotalPositions // e到p的顺时针距离
+			forwardDist := (e.pos - p.pos + TotalPositions) % TotalPositions  // p到e的顺时针距离
+			backwardDist := (p.pos - e.pos + TotalPositions) % TotalPositions // e到p的顺时针距离
 
-				// 危险：敌人在我后面，可能追上来
-				if backwardDist > 0 && backwardDist <= dangerousDistance {
-					score -= (dangerousDistance - backwardDist + 1) * 2 // 越近惩罚越大
-				}
+			// 危险：敌人在我后面，可能追上来
+			if backwardDist > 0 && backwardDist <= dangerousDistance {
+				score -= (dangerousDistance - backwardDist + 1) * 2 // 越近惩罚越大
+			}
 
-				// 威胁：我在敌人后面，可以追杀
-				if forwardDist > 0 && forwardDist <= threatenedDistance {
-					score += (threatenedDistance - forwardDist + 1) / 2 // 越近奖励越大
-				}
+			// 威胁：我在敌人后面，可以追杀
+			if forwardDist > 0 && forwardDist <= threatenedDistance {
+				score += (threatenedDistance - forwardDist + 1) / 2 // 越近奖励越大
 			}
 		}
 	}

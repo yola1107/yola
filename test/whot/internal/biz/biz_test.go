@@ -24,14 +24,16 @@ func TestConcurrentLoginSeatsOnePlayer(t *testing.T) {
 		Robot:    &conf.Room_Robot{},
 		LogCache: &conf.Room_LogCache{},
 	}
-	uc, cleanup, err := NewUsecase(newConcurrentLoginRepo(), room)
+	// 两次 LoadPlayer 都到达后才返回，确保两个登录竞争同一玩家。
+	repo := &concurrentLoginRepo{loaded: make(chan struct{})}
+	uc, cleanup, err := NewUsecase(repo, room)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(cleanup)
 
 	replies := make(chan *v1.LoginRsp, 2)
-	errors := make(chan error, 2)
+	loginErrors := make(chan error, 2)
 	var wait sync.WaitGroup
 	for _, bindingToken := range []string{"binding-a", "binding-b"} {
 		wait.Add(1)
@@ -39,13 +41,13 @@ func TestConcurrentLoginSeatsOnePlayer(t *testing.T) {
 			defer wait.Done()
 			reply, loginErr := uc.Login(context.Background(), &connectionSession{uid: "42", bindingToken: bindingToken}, 42, "valid")
 			replies <- reply
-			errors <- loginErr
+			loginErrors <- loginErr
 		}(bindingToken)
 	}
 	wait.Wait()
 	close(replies)
-	close(errors)
-	for loginErr := range errors {
+	close(loginErrors)
+	for loginErr := range loginErrors {
 		if loginErr != nil {
 			t.Fatal(loginErr)
 		}
@@ -308,9 +310,12 @@ type connectionSession struct {
 	unbinds int
 }
 
+var _ player.Session = (*connectionSession)(nil)
+
 func (sess *connectionSession) UID() string                                 { return sess.uid }
 func (sess *connectionSession) BindingToken() string                        { return sess.bindingToken }
 func (*connectionSession) BindNode(context.Context) error                   { return nil }
+func (*connectionSession) RenewNode(context.Context) error                  { return nil }
 func (*connectionSession) Push(context.Context, int32, proto.Message) error { return nil }
 
 func (sess *connectionSession) UnbindNode(context.Context) error {
@@ -325,8 +330,6 @@ func (sess *connectionSession) unbindCount() int {
 	defer sess.mu.Unlock()
 	return sess.unbinds
 }
-
-var _ player.Session = (*connectionSession)(nil)
 
 type usecaseRepoStub struct {
 	mu      sync.Mutex
@@ -355,10 +358,6 @@ type concurrentLoginRepo struct {
 	mu     sync.Mutex
 	loads  int
 	loaded chan struct{}
-}
-
-func newConcurrentLoginRepo() *concurrentLoginRepo {
-	return &concurrentLoginRepo{loaded: make(chan struct{})}
 }
 
 func (*concurrentLoginRepo) SavePlayer(context.Context, *player.BaseData) error { return nil }

@@ -15,7 +15,7 @@ import (
 	"yola/locate"
 	locateredis "yola/locate/redis"
 	"yola/network/websocket"
-	"yola/node"
+	"yola/push"
 
 	"github.com/go-kratos/kratos/v3/encoding"
 	"github.com/redis/go-redis/v9"
@@ -34,18 +34,6 @@ type socketPipeline struct {
 	receivers []*socketReceiver
 }
 
-type socketReceiver struct {
-	client       *websocket.Client
-	disconnected chan struct{}
-	table        int
-	origin       time.Time
-	measurements *measurements
-	warmups      atomic.Uint64
-	mu           sync.Mutex
-	received     uint64
-	err          error
-}
-
 func newSocketPipeline(t testing.TB, address, service string, tableCount int, measurements *measurements) *socketPipeline {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -60,16 +48,19 @@ func newSocketPipeline(t testing.TB, address, service string, tableCount int, me
 		gateway.Locator(store), gateway.Discovery(unusedDiscovery{}), gateway.Transport(socket),
 	)
 	require.NoError(t, err)
-	startServer(t, gate, "gateway", service+"-gateway", nil, nil)
-	server, err := node.NewServer(node.Address("127.0.0.1:0"),
-		node.Locator(&measuredLocator{Locator: store, measurements: measurements}), node.ClientMiddleware(measurements.rpc))
+	startServer(t, gate, "gateway", service+"-gateway", gatewayReady(gate))
+	sender, err := push.NewSender(&measuredLocator{Locator: store, measurements: measurements}, push.ClientMiddleware(measurements.rpc))
 	require.NoError(t, err)
-	startServer(t, server, service, service+"-node", server.Metadata(), nil)
+	t.Cleanup(func() { require.NoError(t, sender.Close()) })
 	endpoint, err := socket.Endpoint()
 	require.NoError(t, err)
 	pipeline := &socketPipeline{
-		ctx: ctx, origin: time.Now(), endpoint: endpoint.String(), service: service, locator: store,
-		pusher: &measuredPusher{server: server, measurements: measurements},
+		ctx:      ctx,
+		origin:   time.Now(),
+		endpoint: endpoint.String(),
+		service:  service,
+		locator:  store,
+		pusher:   &measuredPusher{sender: sender, service: service, measurements: measurements},
 	}
 	t.Cleanup(func() {
 		cancel()
@@ -118,6 +109,37 @@ func (p *socketPipeline) reconnect(t testing.TB, index int, readDelay time.Durat
 	require.NotEqual(t, before.Binding.BindingToken, after.Binding.BindingToken)
 }
 
+func (p *socketPipeline) waitReceived(t testing.TB, want uint64) {
+	t.Helper()
+	require.Eventually(t, func() bool {
+		for _, receiver := range p.receivers {
+			receiver.mu.Lock()
+			received, err := receiver.received, receiver.err
+			receiver.mu.Unlock()
+			if err != nil {
+				t.Error(err)
+				return true
+			}
+			if received != want {
+				return false
+			}
+		}
+		return true
+	}, 10*time.Second, time.Millisecond, "every player must receive every broadcast in order")
+}
+
+type socketReceiver struct {
+	client       *websocket.Client
+	disconnected chan struct{}
+	table        int
+	origin       time.Time
+	measurements *measurements
+	warmups      atomic.Uint64
+	mu           sync.Mutex
+	received     uint64
+	err          error
+}
+
 func (r *socketReceiver) waitClosed(t testing.TB) {
 	t.Helper()
 	select {
@@ -125,15 +147,6 @@ func (r *socketReceiver) waitClosed(t testing.TB) {
 	case <-time.After(5 * time.Second):
 		t.Error("WebSocket receiver did not stop")
 	}
-}
-
-func cadencePayload(table int, sequence uint64, scheduled time.Duration) *wrapperspb.BytesValue {
-	data := make([]byte, 256)
-	binary.LittleEndian.PutUint64(data, uint64(table))
-	binary.LittleEndian.PutUint64(data[8:], sequence)
-	// 同进程回环测试传相对时间，接收侧恢复 time.Time 的 monotonic 时钟。
-	binary.LittleEndian.PutUint64(data[16:], uint64(scheduled))
-	return wrapperspb.Bytes(data)
 }
 
 func (r *socketReceiver) receive(body []byte) {
@@ -165,23 +178,13 @@ func (r *socketReceiver) receive(body []byte) {
 	r.measurements.record("client_scheduled", r.origin.Add(scheduled), nil)
 }
 
-func (p *socketPipeline) waitReceived(t testing.TB, want uint64) {
-	t.Helper()
-	require.Eventually(t, func() bool {
-		for _, receiver := range p.receivers {
-			receiver.mu.Lock()
-			received, err := receiver.received, receiver.err
-			receiver.mu.Unlock()
-			if err != nil {
-				t.Error(err)
-				return true
-			}
-			if received != want {
-				return false
-			}
-		}
-		return true
-	}, 10*time.Second, time.Millisecond, "every player must receive every broadcast in order")
+func cadencePayload(table int, sequence uint64, scheduled time.Duration) *wrapperspb.BytesValue {
+	data := make([]byte, 256)
+	binary.LittleEndian.PutUint64(data, uint64(table))
+	binary.LittleEndian.PutUint64(data[8:], sequence)
+	// 同进程回环测试传相对时间，接收侧恢复 time.Time 的 monotonic 时钟。
+	binary.LittleEndian.PutUint64(data[16:], uint64(scheduled))
+	return wrapperspb.Bytes(data)
 }
 
 // delayedReadCodec 在客户端读循环中延迟下一帧读取，保留实际 socket 背压。

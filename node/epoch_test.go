@@ -10,91 +10,35 @@ import (
 	"testing/synctest"
 	"time"
 
-	"yola/instance"
 	"yola/locate"
-	locateredis "yola/locate/redis"
 
-	"github.com/alicebob/miniredis/v2"
 	"github.com/go-kratos/kratos/v3"
-	"github.com/go-kratos/kratos/v3/registry"
-	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
 func TestEpochConflictPreventsRegistration(t *testing.T) {
-	locator := newMemoryLocator()
+	locator := newMemoryNodeStore()
 	require.NoError(t, locator.RegisterNodeEpoch(
 		context.Background(), "game", "node-a", "existing-epoch", DefaultNodeEpochTTL,
 	))
-	server := newTestServer(t, Locator(locator))
-	t.Cleanup(func() { require.NoError(t, server.Stop(context.Background())) })
 	registrar := &countingRegistrar{}
+	server := newTestServer(t, Stateful(locator), Registration(registrar))
+	t.Cleanup(func() { require.NoError(t, server.Stop(context.Background())) })
 	app := kratos.New(
 		kratos.ID("node-a"),
 		kratos.Name("game"),
-		kratos.Metadata(instance.StickyMetadata()),
-		kratos.BeforeStart(server.BeforeStart),
 		kratos.Server(server),
-		kratos.Registrar(registrar),
 	)
 
 	require.ErrorIs(t, app.Run(), locate.ErrNodeEpochConflict)
 	require.Zero(t, registrar.registered.Load())
 }
 
-func TestStickyStartLifecycle(t *testing.T) {
-	lis, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-	server := newTestServer(t, Listener(lis), Locator(newMemoryLocator()))
-	t.Cleanup(func() { _ = server.Stop(context.Background()) })
-	ctx := kratos.NewContext(context.Background(), nodeTestAppInfo{metadata: instance.StickyMetadata()})
-	require.NoError(t, server.BeforeStart(ctx))
-
-	done := make(chan error, 1)
-	go func() { done <- server.Start(ctx) }()
-	require.Eventually(t, func() bool {
-		server.lifecycleMu.Lock()
-		defer server.lifecycleMu.Unlock()
-		return server.state == _stStarted
-	}, time.Second, time.Millisecond)
-	require.EqualError(t, server.Start(ctx), "node: server is already started")
-	require.NoError(t, server.Stop(context.Background()))
-	require.ErrorIs(t, server.lease.Load().ctx.Err(), context.Canceled)
-	require.NoError(t, <-done)
-}
-
-func TestStartRejectsReplacedEpochBeforeServing(t *testing.T) {
-	redisServer := miniredis.RunT(t)
-	redisClient := redis.NewClient(&redis.Options{Addr: redisServer.Addr()})
-	t.Cleanup(func() { require.NoError(t, redisClient.Close()) })
-	store := locateredis.New(redisClient)
-	appCtx := kratos.NewContext(context.Background(), nodeTestAppInfo{metadata: instance.StickyMetadata()})
-	current := newTestServer(t, Locator(store))
-	t.Cleanup(func() { require.NoError(t, current.Stop(context.Background())) })
-	require.NoError(t, current.BeforeStart(appCtx))
-	endpoint, err := current.Endpoint()
-	require.NoError(t, err)
-	redisServer.FastForward(DefaultNodeEpochTTL + time.Millisecond)
-	replacement := newTestServer(t, Locator(store))
-	t.Cleanup(func() { require.NoError(t, replacement.Stop(context.Background())) })
-	require.NoError(t, replacement.BeforeStart(appCtx))
-
-	started := make(chan error, 1)
-	go func() { started <- current.Start(appCtx) }()
-	require.ErrorIs(t, receiveNodeValue(t, started), locate.ErrNodeEpochConflict)
-	rebound, err := net.Listen("tcp", endpoint.Host)
-	require.NoError(t, err)
-	require.NoError(t, rebound.Close())
-	epoch, err := store.LocateNodeEpoch(context.Background(), "game", "node-a")
-	require.NoError(t, err)
-	require.Equal(t, replacement.currentIdentity().epoch, epoch)
-}
-
 func TestEpochRenewFencesNodeWhenNodeIDTakenOver(t *testing.T) {
-	locator := newMemoryLocator()
-	server := newTestServer(t, Locator(locator))
+	locator := newMemoryNodeStore()
+	server := newTestServer(t, Stateful(locator))
 	identity := nodeIdentity{serviceName: "game", nodeID: "node-a", epoch: "epoch-a"}
 	publishTestIdentity(server, identity)
 	lease := server.lease.Load()
@@ -122,20 +66,17 @@ func TestEpochRenewFencesNodeWhenNodeIDTakenOver(t *testing.T) {
 func TestEpochLossStopsApplicationAndDrainsNode(t *testing.T) {
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
-	locator := newMemoryLocator()
+	locator := newMemoryNodeStore()
 	drained := make(chan struct{})
-	server := newTestServer(t, Listener(lis), Locator(locator), Drain(func(context.Context) error {
+	registrar := &countingRegistrar{}
+	server := newTestServer(t, Listener(lis), Stateful(locator), Registration(registrar), Drain(func(context.Context) error {
 		close(drained)
 		return nil
 	}))
-	registrar := &countingRegistrar{}
 	app := kratos.New(
 		kratos.ID("node-a"),
 		kratos.Name("game"),
-		kratos.Metadata(instance.StickyMetadata()),
-		kratos.BeforeStart(server.BeforeStart),
 		kratos.Server(server),
-		kratos.Registrar(registrar),
 		kratos.StopTimeout(time.Second),
 	)
 
@@ -169,7 +110,7 @@ func TestEpochLossStopsApplicationAndDrainsNode(t *testing.T) {
 }
 
 func TestEpochRenewKeepsServingOnTransientFailure(t *testing.T) {
-	locator := newMemoryLocator()
+	locator := newMemoryNodeStore()
 	identity := nodeIdentity{serviceName: "game", nodeID: "node-a", epoch: ""}
 	lease := newEpochLease(locator, identity, time.Now().Add(DefaultNodeEpochTTL))
 	defer func() { require.NoError(t, lease.stopRenewal(context.Background())) }()
@@ -179,7 +120,7 @@ func TestEpochRenewKeepsServingOnTransientFailure(t *testing.T) {
 	require.NoError(t, lease.valid())
 }
 
-func TestReleasePendingEpochClassifiesCleanupOutcome(t *testing.T) {
+func TestEpochLeaseReleaseClassifiesCleanupOutcome(t *testing.T) {
 	transientErr := errors.New("redis unavailable")
 	for _, test := range []struct {
 		name        string
@@ -193,48 +134,24 @@ func TestReleasePendingEpochClassifiesCleanupOutcome(t *testing.T) {
 		{name: "transient failure", err: transientErr, wantErr: transientErr, wantPending: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			locator := &epochUnregisterResultLocator{Locator: newMemoryLocator(), err: test.err}
-			server := newTestServer(t, Locator(locator))
-			t.Cleanup(func() { _ = server.Stop(context.Background()) })
-			publishTestIdentity(server, nodeIdentity{serviceName: "game", nodeID: "node-a", epoch: "epoch-a"})
+			locator := &epochUnregisterResultLocator{epochStore: newMemoryNodeStore(), err: test.err}
+			identity := nodeIdentity{serviceName: "game", nodeID: "node-a", epoch: "epoch-a"}
+			lease := newEpochLease(locator, identity, time.Now().Add(DefaultNodeEpochTTL))
 
-			err := server.releaseEpoch(context.Background())
+			err := lease.release(context.Background())
 			if test.wantErr == nil {
 				require.NoError(t, err)
 			} else {
 				require.ErrorIs(t, err, test.wantErr)
 			}
-			require.Equal(t, test.wantPending, server.lease.Load().releaseState != _epochReleased)
-			require.Equal(t, nodeIdentity{}, server.currentIdentity())
+			require.Equal(t, test.wantPending, !lease.released)
 		})
 	}
 }
 
-func TestReplacementStartWaitsForFailedDrainEpochExpiry(t *testing.T) {
-	redisServer := miniredis.RunT(t)
-	redisClient := redis.NewClient(&redis.Options{Addr: redisServer.Addr()})
-	t.Cleanup(func() { require.NoError(t, redisClient.Close()) })
-	appCtx := kratos.NewContext(context.Background(), nodeTestAppInfo{metadata: instance.StickyMetadata()})
-	drainErr := errors.New("drain failed")
-
-	current := newTestServer(t, Locator(locateredis.New(redisClient)), Drain(func(context.Context) error { return drainErr }))
-	t.Cleanup(func() { _ = current.Stop(context.Background()) })
-	blockedReplacement := newTestServer(t, Locator(locateredis.New(redisClient)))
-	t.Cleanup(func() { _ = blockedReplacement.Stop(context.Background()) })
-	require.NoError(t, current.BeforeStart(appCtx))
-	require.ErrorIs(t, current.Stop(context.Background()), drainErr)
-	require.ErrorIs(t, blockedReplacement.BeforeStart(appCtx), locate.ErrNodeEpochConflict)
-	require.EqualError(t, blockedReplacement.BeforeStart(appCtx), "node: server is stopping or stopped")
-
-	redisServer.FastForward(DefaultNodeEpochTTL + time.Millisecond)
-	replacement := newTestServer(t, Locator(locateredis.New(redisClient)))
-	t.Cleanup(func() { _ = replacement.Stop(context.Background()) })
-	require.NoError(t, replacement.BeforeStart(appCtx))
-}
-
 func TestEpochLeaseRenewalLifetime(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		store := &countingEpochStore{epochStore: newMemoryLocator()}
+		store := &countingEpochStore{epochStore: newMemoryNodeStore()}
 		lease, err := claimEpoch(context.Background(), store, nodeIdentity{serviceName: "game", nodeID: "node-a"})
 		require.NoError(t, err)
 		defer func() { require.NoError(t, lease.stopRenewal(context.Background())) }()
@@ -255,8 +172,8 @@ func TestEpochLeaseRenewalLifetime(t *testing.T) {
 
 func TestEpochLeaseExpiryCancelsAcceptedWork(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		store := &controlledEpochLocator{Locator: newMemoryLocator()}
-		server := newDispatchTestServer(t, Locator(store))
+		store := &controlledEpochLocator{Store: newMemoryNodeStore()}
+		server := newTestServer(t, Stateful(store))
 		identity := nodeIdentity{serviceName: "game", nodeID: "node-a", epoch: "epoch-a"}
 		require.NoError(t, store.RegisterNodeEpoch(context.Background(), "game", "node-a", identity.epoch, DefaultNodeEpochTTL))
 		publishTestIdentity(server, identity)
@@ -289,7 +206,7 @@ func TestEpochLeaseExpiryCancelsAcceptedWork(t *testing.T) {
 
 func TestEpochLeaseExpiresWhileRenewalIgnoresCancellation(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		store := &controlledEpochLocator{Locator: newMemoryLocator()}
+		store := &controlledEpochLocator{Store: newMemoryNodeStore()}
 		lease, err := claimEpoch(context.Background(), store, nodeIdentity{serviceName: "game", nodeID: "node-a"})
 		require.NoError(t, err)
 		release := make(chan struct{})
@@ -324,14 +241,14 @@ func TestEpochLeaseExpiresWhileRenewalIgnoresCancellation(t *testing.T) {
 		releaseRenewal()
 		require.NoError(t, lease.stopRenewal(context.Background()))
 		require.ErrorIs(t, lease.valid(), errNodeEpochExpired)
-		require.NoError(t, lease.retryRelease(context.Background()))
+		require.NoError(t, lease.release(context.Background()))
 		_, err = store.LocateNodeEpoch(context.Background(), "game", "node-a")
 		require.ErrorIs(t, err, locate.ErrNodeEpochNotFound)
 	})
 }
 
 func TestEpochRenewalReturnsCurrentLossAfterEarlierCancellation(t *testing.T) {
-	store := &controlledEpochLocator{Locator: newMemoryLocator()}
+	store := &controlledEpochLocator{Store: newMemoryNodeStore()}
 	lease, err := claimEpoch(context.Background(), store, nodeIdentity{serviceName: "game", nodeID: "node-a"})
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, lease.release(context.Background())) })
@@ -351,7 +268,7 @@ func TestEpochRenewalReturnsCurrentLossAfterEarlierCancellation(t *testing.T) {
 
 func TestEpochLeaseUsesCallStartForDeadline(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		store := &controlledEpochLocator{Locator: newMemoryLocator()}
+		store := &controlledEpochLocator{Store: newMemoryNodeStore()}
 		lease, err := claimEpoch(context.Background(), store, nodeIdentity{serviceName: "game", nodeID: "node-a"})
 		require.NoError(t, err)
 		defer func() { require.NoError(t, lease.release(context.Background())) }()
@@ -368,7 +285,7 @@ func TestEpochLeaseUsesCallStartForDeadline(t *testing.T) {
 
 func TestEpochLeaseRejectsLateSuccessfulRenewal(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		store := &controlledEpochLocator{Locator: newMemoryLocator()}
+		store := &controlledEpochLocator{Store: newMemoryNodeStore()}
 		lease, err := claimEpoch(context.Background(), store, nodeIdentity{serviceName: "game", nodeID: "node-a"})
 		require.NoError(t, err)
 		defer func() { require.NoError(t, lease.release(context.Background())) }()
@@ -383,31 +300,10 @@ func TestEpochLeaseRejectsLateSuccessfulRenewal(t *testing.T) {
 	})
 }
 
-func TestStopDuringInitialEpochRenewal(t *testing.T) {
-	store := &controlledEpochLocator{Locator: newMemoryLocator()}
-	entered := make(chan struct{})
-	store.setRenew(func(ctx context.Context) error {
-		close(entered)
-		<-ctx.Done()
-		return ctx.Err()
-	})
-	server := newTestServer(t, Locator(store))
-	t.Cleanup(func() { require.NoError(t, server.Stop(context.Background())) })
-	ctx := kratos.NewContext(context.Background(), nodeTestAppInfo{metadata: instance.StickyMetadata()})
-	require.NoError(t, server.BeforeStart(ctx))
-	started := make(chan error, 1)
-	go func() { started <- server.Start(ctx) }()
-	waitNodeSignal(t, entered)
-	require.NoError(t, server.Stop(context.Background()))
-	require.NoError(t, receiveNodeValue(t, started))
-	_, err := store.LocateNodeEpoch(context.Background(), "game", "node-a")
-	require.ErrorIs(t, err, locate.ErrNodeEpochNotFound)
-}
-
 func TestLeaseExpiryDuringNodeLookupRejectsHandler(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		store := &delayedNodeLookup{Locator: newMemoryLocator()}
-		server := newDispatchTestServer(t, Locator(store))
+		store := &delayedNodeLookup{Store: newMemoryNodeStore()}
+		server := newTestServer(t, Stateful(store))
 		t.Cleanup(func() { require.NoError(t, server.Stop(context.Background())) })
 		publishTestIdentity(server, nodeIdentity{serviceName: "game", nodeID: "node-a", epoch: "epoch-a"})
 		server.RegisterRawHandler(1, func(context.Context, []byte) ([]byte, error) {
@@ -443,8 +339,8 @@ func TestExpiredPreparedLeaseRejectsUnboundRequestAndSavedSession(t *testing.T) 
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
-				store := newMemoryLocator()
-				server := newDispatchTestServer(t, Locator(store))
+				store := newMemoryNodeStore()
+				server := newTestServer(t, Stateful(store))
 				t.Cleanup(func() { require.NoError(t, server.Stop(context.Background())) })
 				publishTestIdentity(server, nodeIdentity{serviceName: "game", nodeID: "node-a", epoch: "epoch-a"})
 				binding := testBinding("player-a", "conn-a")
@@ -465,33 +361,11 @@ func TestExpiredPreparedLeaseRejectsUnboundRequestAndSavedSession(t *testing.T) 
 	}
 }
 
-type delayedNodeLookup struct{ locate.Locator }
+type delayedNodeLookup struct{ Store }
 
 func (*delayedNodeLookup) LocateNode(context.Context, string, string) (string, error) {
 	time.Sleep(DefaultNodeEpochTTL)
 	return "node-a", nil
-}
-
-type controlledEpochLocator struct {
-	locate.Locator
-	mu    sync.RWMutex
-	renew func(context.Context) error
-}
-
-func (l *controlledEpochLocator) setRenew(renew func(context.Context) error) {
-	l.mu.Lock()
-	l.renew = renew
-	l.mu.Unlock()
-}
-
-func (l *controlledEpochLocator) RenewNodeEpoch(ctx context.Context, service, nodeID, epoch string, ttl time.Duration) error {
-	l.mu.RLock()
-	renew := l.renew
-	l.mu.RUnlock()
-	if renew != nil {
-		return renew(ctx)
-	}
-	return l.Locator.RenewNodeEpoch(ctx, service, nodeID, epoch, ttl)
 }
 
 type countingEpochStore struct {
@@ -505,21 +379,10 @@ func (s *countingEpochStore) RenewNodeEpoch(ctx context.Context, service, nodeID
 }
 
 type epochUnregisterResultLocator struct {
-	locate.Locator
+	epochStore
 	err error
 }
 
 func (l *epochUnregisterResultLocator) UnregisterNodeEpoch(context.Context, string, string, string) error {
 	return l.err
 }
-
-type countingRegistrar struct {
-	registered atomic.Int32
-}
-
-func (r *countingRegistrar) Register(context.Context, *registry.ServiceInstance) error {
-	r.registered.Add(1)
-	return nil
-}
-
-func (*countingRegistrar) Deregister(context.Context, *registry.ServiceInstance) error { return nil }

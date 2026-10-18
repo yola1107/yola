@@ -48,7 +48,6 @@ func newWebSocketBenchmarkServer(b *testing.B) *websocket.Conn {
 	s := newWebSocketServer(b, websocketTestHandler{}, Address("127.0.0.1:0"))
 	endpoint := serveWebSocketTestServer(b, s)
 	conn := dialWebSocketTest(b, endpoint)
-	b.Cleanup(func() { _ = conn.Close() })
 	auth, err := proto.Marshal(&v1.Proto{Op: v1.OpAuth})
 	if err != nil {
 		b.Fatal(err)

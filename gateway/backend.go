@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"yola/api/cluster/v1"
+	"yola/internal/clusterroute"
 	"yola/internal/tlsconfig"
 	"yola/locate"
 
@@ -25,6 +26,7 @@ var errBackendsClosed = errors.New("gateway: backends are closed")
 
 type backends struct {
 	discovery      registry.Discovery
+	locator        locate.NodeLocator
 	tlsConfig      *tls.Config
 	connectTimeout time.Duration
 	ctx            context.Context
@@ -41,6 +43,14 @@ type backend struct {
 	state  *backendState
 }
 
+// nodeRoute 将选定的归属凭据与精确 RPC 路由保持一致。
+type nodeRoute struct {
+	client  v1.NodeClient
+	binding locate.GateBinding
+	nodeID  string
+	epoch   string
+}
+
 type backendSnapshot struct {
 	available    bool
 	sticky       bool
@@ -51,44 +61,82 @@ type backendState struct {
 	snapshot atomic.Pointer[backendSnapshot]
 }
 
-func (s *backendState) store(snapshot backendSnapshot) {
-	s.snapshot.Store(&snapshot)
-}
-
-func (s *backendState) mode() (sticky bool, initialized bool) {
-	snapshot := s.snapshot.Load()
-	if snapshot == nil {
-		return false, false
-	}
-	return snapshot.sticky, true
-}
-
-func (s *backendState) markUnavailable() {
-	snapshot := s.snapshot.Load()
-	if snapshot != nil {
-		s.store(backendSnapshot{sticky: snapshot.sticky})
-	}
-}
-
-func (s *backendState) load() backendSnapshot {
-	snapshot := s.snapshot.Load()
-	if snapshot == nil {
-		return backendSnapshot{}
-	}
-	return *snapshot
-}
-
-func newBackends(discovery registry.Discovery, tlsConfig *tls.Config, connectTimeout time.Duration) *backends {
+func newBackends(discovery registry.Discovery, tlsConfig *tls.Config, connectTimeout time.Duration, locator locate.NodeLocator) *backends {
 	tlsConfig = tlsconfig.Clone(tlsConfig)
 	ctx, cancel := context.WithCancel(context.Background())
 	return &backends{
 		discovery:      discovery,
+		locator:        locator,
 		tlsConfig:      tlsConfig,
 		connectTimeout: connectTimeout,
 		ctx:            ctx,
 		cancel:         cancel,
 		byService:      make(map[string]*backend),
 	}
+}
+
+// resolveForward 为已有粘性归属补充 epoch，断线通知不需要此凭据。
+func (b *backends) resolveForward(ctx context.Context, binding locate.GateBinding) (nodeRoute, error) {
+	route, err := b.resolveNode(ctx, binding)
+	if err != nil || route.nodeID == "" {
+		return route, err
+	}
+	epoch, err := b.locator.LocateNodeEpoch(ctx, binding.ServiceName, route.nodeID)
+	if err != nil {
+		return nodeRoute{}, err
+	}
+	route.epoch = epoch
+	return route, nil
+}
+
+func (b *backends) resolveNode(ctx context.Context, binding locate.GateBinding) (nodeRoute, error) {
+	if err := ctx.Err(); err != nil {
+		return nodeRoute{}, err
+	}
+	nodeBackend, err := b.get(ctx, binding.ServiceName)
+	if err != nil {
+		return nodeRoute{}, err
+	}
+	snapshot := nodeBackend.state.load()
+	if !snapshot.available {
+		return nodeRoute{}, fmt.Errorf("gateway: node service %q is unavailable", binding.ServiceName)
+	}
+	route := nodeRoute{client: nodeBackend.client, binding: binding}
+	if !snapshot.sticky {
+		return route, nil
+	}
+	nodeID, err := b.locator.LocateNode(ctx, binding.ServiceName, binding.UID)
+	if errors.Is(err, locate.ErrNodeNotFound) {
+		return route, nil
+	}
+	if err != nil {
+		return nodeRoute{}, err
+	}
+	if !locate.ValidNodeLocation(binding.ServiceName, binding.UID, nodeID) {
+		return nodeRoute{}, locate.ErrInvalidNodeBinding
+	}
+	if _, exists := snapshot.hostByNodeID[nodeID]; !exists {
+		return nodeRoute{}, fmt.Errorf("gateway: node %q is unavailable", nodeID)
+	}
+	route.nodeID = nodeID
+	return route, nil
+}
+
+func (r nodeRoute) forward(ctx context.Context, command int32, body []byte) (*v1.ForwardReply, error) {
+	return r.client.Forward(withNodeID(ctx, r.nodeID), &v1.ForwardRequest{
+		Route:     clusterroute.FromBinding(r.binding),
+		Command:   command,
+		Body:      body,
+		NodeId:    r.nodeID,
+		NodeEpoch: r.epoch,
+	}, grpc.WaitForReady(r.nodeID != ""))
+}
+
+func (r nodeRoute) disconnect(ctx context.Context) error {
+	_, err := r.client.Disconnect(withNodeID(ctx, r.nodeID), &v1.DisconnectRequest{
+		Route: clusterroute.FromBinding(r.binding),
+	}, grpc.WaitForReady(r.nodeID != ""))
+	return err
 }
 
 func (b *backends) get(ctx context.Context, serviceName string) (*backend, error) {
@@ -119,6 +167,17 @@ func (b *backends) get(ctx context.Context, serviceName string) (*backend, error
 	}
 }
 
+func (b *backends) close() {
+	b.cancel()
+	b.mu.Lock()
+	byService := b.byService
+	b.byService = nil
+	b.mu.Unlock()
+	for _, nodeBackend := range byService {
+		_ = nodeBackend.conn.Close()
+	}
+}
+
 func (b *backends) connectAndCache(serviceName string) (*backend, error) {
 	cached, err := b.cached(serviceName)
 	if cached != nil || err != nil {
@@ -140,16 +199,6 @@ func (b *backends) connectAndCache(serviceName string) (*backend, error) {
 	b.byService[serviceName] = connected
 	b.mu.Unlock()
 	return connected, nil
-}
-
-func (b *backends) cached(serviceName string) (*backend, error) {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-	if b.byService == nil {
-		return nil, errBackendsClosed
-	}
-	// byService 只保存建连完成的非 nil backend；nil 表示尚未建连。
-	return b.byService[serviceName], nil
 }
 
 func (b *backends) connectBackend(ctx context.Context, serviceName string) (*backend, error) {
@@ -193,13 +242,39 @@ func (b *backends) connectBackend(ctx context.Context, serviceName string) (*bac
 	}, nil
 }
 
-func (b *backends) close() {
-	b.cancel()
-	b.mu.Lock()
-	byService := b.byService
-	b.byService = nil
-	b.mu.Unlock()
-	for _, nodeBackend := range byService {
-		_ = nodeBackend.conn.Close()
+func (b *backends) cached(serviceName string) (*backend, error) {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	if b.byService == nil {
+		return nil, errBackendsClosed
 	}
+	// byService 只保存建连完成的非 nil backend；nil 表示尚未建连。
+	return b.byService[serviceName], nil
+}
+
+func (s *backendState) load() backendSnapshot {
+	snapshot := s.snapshot.Load()
+	if snapshot == nil {
+		return backendSnapshot{}
+	}
+	return *snapshot
+}
+
+func (s *backendState) mode() (sticky bool, initialized bool) {
+	snapshot := s.snapshot.Load()
+	if snapshot == nil {
+		return false, false
+	}
+	return snapshot.sticky, true
+}
+
+func (s *backendState) markUnavailable() {
+	snapshot := s.snapshot.Load()
+	if snapshot != nil {
+		s.store(backendSnapshot{sticky: snapshot.sticky})
+	}
+}
+
+func (s *backendState) store(snapshot backendSnapshot) {
+	s.snapshot.Store(&snapshot)
 }

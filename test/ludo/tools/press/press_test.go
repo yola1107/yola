@@ -243,9 +243,13 @@ func TestUserSynchronizesPiecePushes(t *testing.T) {
 func TestRequestCountsOnlySuccessfulCommands(t *testing.T) {
 	runner := NewRunner(Press{})
 	defer runner.Stop()
-	user := &User{runner: runner, id: 42, requestFn: func(v1.GameCommand, proto.Message, proto.Message) error {
-		return errors.New("request failed")
-	}}
+	user := &User{
+		runner: runner,
+		id:     42,
+		requestFn: func(v1.GameCommand, proto.Message, proto.Message) error {
+			return errors.New("request failed")
+		},
+	}
 	if err := user.Request(v1.GameCommand_CmdLogin, new(v1.LoginReq), new(v1.LoginRsp)); err == nil {
 		t.Fatal("failed request succeeded")
 	}
@@ -265,7 +269,7 @@ func TestUserSkipsReadyWhenAlreadyPrepared(t *testing.T) {
 	user := &User{runner: runner, id: 42}
 	user.requestFn = func(command v1.GameCommand, _ proto.Message, response proto.Message) error {
 		if command == v1.GameCommand_CmdScene {
-			response.(*v1.SceneRsp).Players = []*v1.PlayerInfo{{UserId: 42, Status: 2}}
+			response.(*v1.SceneRsp).Players = []*v1.PlayerInfo{{UserId: 42, Status: playerStatusReady}}
 		}
 		return nil
 	}
@@ -344,9 +348,17 @@ func TestValidatePressRejectsMixedScenarioAndCapacityOverflow(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			press := Press{
-				URL: "ws://127.0.0.1:3102/", Open: true, Scenario: scenarioPlay,
-				Num: 10, Batch: []int32{1, 1}, Interval: 1, StartID: 600000, UIDCount: 100,
-				GatewayLimit: 100, GatewayPerIPLimit: 100, NodeSeatCapacity: 100,
+				URL:               "ws://127.0.0.1:3102/",
+				Open:              true,
+				Scenario:          scenarioPlay,
+				Num:               10,
+				Batch:             []int32{1, 1},
+				Interval:          1,
+				StartID:           600000,
+				UIDCount:          100,
+				GatewayLimit:      100,
+				GatewayPerIPLimit: 100,
+				NodeSeatCapacity:  100,
 			}
 			test.change(&press)
 			_, err := validatePress(&configFile{LoadTest: &loadTest{Press: press}})
@@ -374,7 +386,12 @@ func TestRunnerActionsRespectConcurrency(t *testing.T) {
 	firstStarted := make(chan struct{})
 	secondStarted := make(chan struct{})
 	release := make(chan struct{})
-	go func() { _ = runner.runAction(func() { close(firstStarted); <-release }) }()
+	go func() {
+		_ = runner.runAction(func() {
+			close(firstStarted)
+			<-release
+		})
+	}()
 	waitSignal(t, firstStarted, "first action did not start")
 	go func() { _ = runner.runAction(func() { close(secondStarted) }) }()
 	select {

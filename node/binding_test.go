@@ -21,11 +21,11 @@ func TestStopWaitsForSavedSessionBinding(t *testing.T) {
 	for _, method := range []string{"BindNode", "RenewNode", "UnbindNode"} {
 		t.Run(method, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
-				store := newMemoryLocator()
+				store := newMemoryNodeStore()
 				entered := make(chan context.Context, 1)
 				release := make(chan struct{})
 				releaseWrite := sync.OnceFunc(func() { close(release) })
-				locator := &blockingSessionLocator{Locator: store, entered: entered, release: release}
+				locator := &blockingSessionLocator{Store: store, entered: entered, release: release}
 				server, session := savedBindingSession(t, locator)
 				if method == "RenewNode" {
 					require.NoError(t, store.BindNode(t.Context(), "game", "player-a", "node-a", "epoch-a"))
@@ -64,12 +64,12 @@ func TestSessionBindingDrainTimeoutKeepsEpoch(t *testing.T) {
 	for _, method := range []string{"BindNode", "RenewNode", "UnbindNode"} {
 		t.Run(method, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
-				store := newMemoryLocator()
+				store := newMemoryNodeStore()
 				entered := make(chan context.Context, 1)
 				release := make(chan struct{})
 				releaseWrite := sync.OnceFunc(func() { close(release) })
-				locator := &blockingSessionLocator{Locator: store, entered: entered, release: release}
-				server, session := savedBindingSession(t, locator)
+				locator := &blockingSessionLocator{Store: store, entered: entered, release: release}
+				server, session := savedBindingSession(t, locator, ShutdownTimeout(20*time.Millisecond))
 				if method == "RenewNode" {
 					require.NoError(t, store.BindNode(t.Context(), "game", "player-a", "node-a", "epoch-a"))
 				}
@@ -96,7 +96,7 @@ func TestSessionBindingDrainTimeoutKeepsEpoch(t *testing.T) {
 }
 
 func TestBusinessDrainCanBindAndUnbindSavedSession(t *testing.T) {
-	store := newMemoryLocator()
+	store := newMemoryNodeStore()
 	var session Session
 	server, session := savedBindingSession(t, store, Drain(func(ctx context.Context) error {
 		if err := session.BindNode(ctx); err != nil {
@@ -118,9 +118,9 @@ func TestBusinessDrainCanBindAndUnbindSavedSession(t *testing.T) {
 func TestEpochLossCancelsSavedSessionBinding(t *testing.T) {
 	for _, method := range []string{"BindNode", "RenewNode", "UnbindNode"} {
 		t.Run(method, func(t *testing.T) {
-			store := newMemoryLocator()
+			store := newMemoryNodeStore()
 			entered := make(chan context.Context, 1)
-			locator := &blockingSessionLocator{Locator: store, entered: entered}
+			locator := &blockingSessionLocator{Store: store, entered: entered}
 			server, session := savedBindingSession(t, locator)
 			if method == "RenewNode" {
 				require.NoError(t, store.BindNode(t.Context(), "game", "player-a", "node-a", "epoch-a"))
@@ -144,44 +144,6 @@ func TestEpochLossCancelsSavedSessionBinding(t *testing.T) {
 	}
 }
 
-type blockingSessionLocator struct {
-	locate.Locator
-	entered chan<- context.Context
-	release <-chan struct{}
-}
-
-func (l *blockingSessionLocator) BindNode(ctx context.Context, service, uid, nodeID, epoch string) error {
-	if err := l.wait(ctx); err != nil {
-		return err
-	}
-	return l.Locator.BindNode(ctx, service, uid, nodeID, epoch)
-}
-
-func (l *blockingSessionLocator) UnbindNode(ctx context.Context, service, uid, nodeID, epoch string) error {
-	if err := l.wait(ctx); err != nil {
-		return err
-	}
-	return l.Locator.UnbindNode(ctx, service, uid, nodeID, epoch)
-}
-
-func (l *blockingSessionLocator) RenewNode(ctx context.Context, service, uid, nodeID, epoch string) error {
-	if err := l.wait(ctx); err != nil {
-		return err
-	}
-	return l.Locator.RenewNode(ctx, service, uid, nodeID, epoch)
-}
-
-func (l *blockingSessionLocator) wait(ctx context.Context) error {
-	l.entered <- ctx
-	if l.release != nil {
-		// 模拟已经发出、不会随取消撤销的存储写入。
-		<-l.release
-		return nil
-	}
-	<-ctx.Done()
-	return ctx.Err()
-}
-
 func TestBindingEpochLossCancelsAcceptedWork(t *testing.T) {
 	for _, method := range []string{"BindNode", "RenewNode", "UnbindNode"} {
 		for _, loss := range []struct {
@@ -192,7 +154,7 @@ func TestBindingEpochLossCancelsAcceptedWork(t *testing.T) {
 			{name: "replaced", err: locate.ErrNodeEpochConflict},
 		} {
 			t.Run(method+"/"+loss.name, func(t *testing.T) {
-				store := newMemoryLocator()
+				store := newMemoryNodeStore()
 				server, session := savedBindingSession(t, store)
 				t.Cleanup(func() { require.NoError(t, server.Stop(context.Background())) })
 				entered := make(chan context.Context, 1)
@@ -237,7 +199,7 @@ func TestBindingEpochLossCancelsAcceptedWork(t *testing.T) {
 }
 
 func TestBindingEpochLossPreservesRecordedCause(t *testing.T) {
-	server, _ := savedBindingSession(t, newMemoryLocator())
+	server, _ := savedBindingSession(t, newMemoryNodeStore())
 	t.Cleanup(func() { require.NoError(t, server.Stop(context.Background())) })
 	lease := server.lease.Load()
 	firstCause := errors.New("earlier epoch loss")
@@ -265,7 +227,7 @@ func TestBindingOtherErrorsDoNotRevokeEpoch(t *testing.T) {
 			{name: "invalid", err: locate.ErrInvalidNodeEpoch, code: codes.Internal},
 		} {
 			t.Run(method+"/"+failure.name, func(t *testing.T) {
-				store := &bindingErrorLocator{Locator: newMemoryLocator(), err: failure.err}
+				store := &bindingErrorLocator{Store: newMemoryNodeStore(), err: failure.err}
 				server, session := savedBindingSession(t, store)
 				t.Cleanup(func() { require.NoError(t, server.Stop(context.Background())) })
 				err := callSessionBinding(t.Context(), session, method)
@@ -287,7 +249,7 @@ func TestBindingOtherErrorsDoNotRevokeEpoch(t *testing.T) {
 
 func TestBindingLossCannotBeUndoneByLateRenewal(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		store := &delayedBindingRenewal{Locator: newMemoryLocator(), entered: make(chan struct{}), release: make(chan struct{})}
+		store := &delayedBindingRenewal{Store: newMemoryNodeStore(), entered: make(chan struct{}), release: make(chan struct{})}
 		unblock := sync.OnceFunc(func() { close(store.release) })
 		server, session := savedBindingSession(t, store)
 		t.Cleanup(func() { require.NoError(t, server.Stop(context.Background())) })
@@ -317,7 +279,7 @@ func TestBindingLossCannotBeUndoneByLateRenewal(t *testing.T) {
 func TestBindingEpochLossDuringDrainPreservesNewEpoch(t *testing.T) {
 	for _, method := range []string{"BindNode", "RenewNode", "UnbindNode"} {
 		t.Run(method, func(t *testing.T) {
-			store := newMemoryLocator()
+			store := newMemoryNodeStore()
 			var session Session
 			var drained int
 			server, session := savedBindingSession(t, store, Drain(func(ctx context.Context) error {
@@ -340,15 +302,118 @@ func TestBindingEpochLossDuringDrainPreservesNewEpoch(t *testing.T) {
 	}
 }
 
+func TestSessionBindsNodeAndStatefulForwardRevalidates(t *testing.T) {
+	locator := newMemoryNodeStore()
+	server := newTestServer(t, Stateful(locator))
+	const epoch = "epoch-a"
+	publishTestIdentity(server, nodeIdentity{serviceName: "game", nodeID: "node-a", epoch: epoch})
+	require.NoError(t, locator.RegisterNodeEpoch(context.Background(), "game", "node-a", epoch, DefaultNodeEpochTTL))
+	server.RegisterRawHandler(1, func(ctx context.Context, _ []byte) ([]byte, error) {
+		sess, _ := FromContext(ctx)
+		return []byte("bound"), sess.BindNode(ctx)
+	})
+	server.RegisterRawHandler(2, func(context.Context, []byte) ([]byte, error) {
+		return []byte("stateful"), nil
+	})
+	binding := testBinding("player-a", "conn-a")
+
+	body, err := server.forward(context.Background(), binding, 1, nil)
+	require.NoError(t, err)
+	require.Equal(t, []byte("bound"), body)
+	located, err := locator.LocateNode(context.Background(), "game", "player-a")
+	require.NoError(t, err)
+	require.Equal(t, "node-a", located)
+
+	body, err = server.forwardTo(context.Background(), stickyClaim{NodeID: "node-a", Epoch: epoch}, binding, 2, nil)
+	require.NoError(t, err)
+	require.Equal(t, []byte("stateful"), body)
+	require.NoError(t, locator.RegisterNodeEpoch(context.Background(), "game", "node-b", "epoch-b", DefaultNodeEpochTTL))
+	require.NoError(t, locator.BindNode(context.Background(), "game", "player-a", "node-b", "epoch-b"))
+	_, err = server.forwardTo(context.Background(), stickyClaim{NodeID: "node-a", Epoch: epoch}, binding, 2, nil)
+	require.Equal(t, codes.Aborted, status.Code(err))
+}
+
+func TestSessionNodeBindingRequiresLocator(t *testing.T) {
+	server := newDispatchTestServer(t)
+	sess := requestSession{binding: testBinding("player-a", "conn-a"), server: server}
+
+	require.Equal(t, codes.FailedPrecondition, status.Code(sess.BindNode(context.Background())))
+	require.Equal(t, codes.FailedPrecondition, status.Code(sess.RenewNode(context.Background())))
+	require.Equal(t, codes.FailedPrecondition, status.Code(sess.UnbindNode(context.Background())))
+}
+
+func TestSessionBindingPreservesReplacement(t *testing.T) {
+	store := newMemoryNodeStore()
+	server, session := savedBindingSession(t, store)
+	t.Cleanup(func() { require.NoError(t, server.Stop(context.Background())) })
+	require.Equal(t, codes.Aborted, status.Code(session.RenewNode(t.Context())))
+	require.NoError(t, session.BindNode(t.Context()))
+	require.NoError(t, session.RenewNode(t.Context()))
+	require.NoError(t, store.RegisterNodeEpoch(t.Context(), "game", "node-b", "other", DefaultNodeEpochTTL))
+	require.NoError(t, store.BindNode(t.Context(), "game", session.UID(), "node-b", "other"))
+	require.Equal(t, codes.Aborted, status.Code(session.RenewNode(t.Context())))
+	nodeID, err := store.LocateNode(t.Context(), "game", session.UID())
+	require.NoError(t, err)
+	require.Equal(t, "node-b", nodeID)
+	require.NoError(t, session.UnbindNode(t.Context()))
+	nodeID, err = store.LocateNode(t.Context(), "game", session.UID())
+	require.NoError(t, err)
+	require.Equal(t, "node-b", nodeID)
+	require.NoError(t, server.lease.Load().valid(), "binding migration does not revoke the whole Node")
+	require.False(t, server.deliveries.isClosed())
+	require.NoError(t, session.BindNode(t.Context()), "explicit takeover remains supported")
+	require.NoError(t, session.UnbindNode(t.Context()))
+	_, err = store.LocateNode(t.Context(), "game", session.UID())
+	require.ErrorIs(t, err, locate.ErrNodeNotFound)
+}
+
+type blockingSessionLocator struct {
+	Store
+	entered chan<- context.Context
+	release <-chan struct{}
+}
+
+func (l *blockingSessionLocator) BindNode(ctx context.Context, service, uid, nodeID, epoch string) error {
+	if err := l.wait(ctx); err != nil {
+		return err
+	}
+	return l.Store.BindNode(ctx, service, uid, nodeID, epoch)
+}
+
+func (l *blockingSessionLocator) UnbindNode(ctx context.Context, service, uid, nodeID, epoch string) error {
+	if err := l.wait(ctx); err != nil {
+		return err
+	}
+	return l.Store.UnbindNode(ctx, service, uid, nodeID, epoch)
+}
+
+func (l *blockingSessionLocator) RenewNode(ctx context.Context, service, uid, nodeID, epoch string) error {
+	if err := l.wait(ctx); err != nil {
+		return err
+	}
+	return l.Store.RenewNode(ctx, service, uid, nodeID, epoch)
+}
+
+func (l *blockingSessionLocator) wait(ctx context.Context) error {
+	l.entered <- ctx
+	if l.release != nil {
+		// 模拟已经发出、不会随取消撤销的存储写入。
+		<-l.release
+		return nil
+	}
+	<-ctx.Done()
+	return ctx.Err()
+}
+
 type delayedBindingRenewal struct {
-	locate.Locator
+	Store
 	calls   atomic.Int32
 	entered chan struct{}
 	release chan struct{}
 }
 
 func (l *delayedBindingRenewal) RenewNodeEpoch(ctx context.Context, service, nodeID, epoch string, ttl time.Duration) error {
-	if err := l.Locator.RenewNodeEpoch(ctx, service, nodeID, epoch, ttl); err != nil {
+	if err := l.Store.RenewNodeEpoch(ctx, service, nodeID, epoch, ttl); err != nil {
 		return err
 	}
 	if l.calls.Add(1) == 2 {
@@ -360,7 +425,7 @@ func (l *delayedBindingRenewal) RenewNodeEpoch(ctx context.Context, service, nod
 }
 
 type bindingErrorLocator struct {
-	locate.Locator
+	Store
 	err error
 }
 

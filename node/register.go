@@ -29,7 +29,7 @@ func Register[Command ~int32, Request any, RequestPtr requestPointer[Request], R
 }
 
 // RegisterRawHandler 注册自定义 codec 或装饰后的 handler，不应用 node.Middleware。
-// 必须在 BeforeStart 前调用。
+// 必须在 Start 前调用。
 func (s *Server) RegisterRawHandler(command int32, handler Handler) {
 	if handler == nil {
 		panic("node: nil handler")
@@ -37,7 +37,7 @@ func (s *Server) RegisterRawHandler(command int32, handler Handler) {
 	s.lifecycleMu.Lock()
 	defer s.lifecycleMu.Unlock()
 	if s.state != _stNew || s.requests.isClosed() {
-		panic("node: handlers must be registered before BeforeStart")
+		panic("node: handlers must be registered before Start")
 	}
 	if _, exists := s.handlers[command]; exists {
 		panic(fmt.Sprintf("node: duplicate Command=%d", command))
@@ -45,13 +45,13 @@ func (s *Server) RegisterRawHandler(command int32, handler Handler) {
 	s.handlers[command] = handler
 }
 
-// OnDisconnect 在 BeforeStart 前注册 best-effort 断线 handler；nil 清除注册。
+// OnDisconnect 在 Start 前注册 best-effort 断线 handler；nil 清除注册。
 // 事件至多投递一次，与 Forward 的完成顺序无保证。
 func (s *Server) OnDisconnect(handler DisconnectHandler) {
 	s.lifecycleMu.Lock()
 	defer s.lifecycleMu.Unlock()
 	if s.state != _stNew || s.requests.isClosed() {
-		panic("node: handlers must be registered before BeforeStart")
+		panic("node: handlers must be registered before Start")
 	}
 	s.onDisconnect = handler
 }

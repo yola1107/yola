@@ -29,14 +29,6 @@ type epochStore interface {
 	UnregisterNodeEpoch(context.Context, string, string, string) error
 }
 
-type epochReleaseState uint8
-
-const (
-	_epochHeld epochReleaseState = iota
-	_epochReleaseFailed
-	_epochReleased
-)
-
 // epochLease 拥有一次成功申请的固定凭据、续租取消和清理状态，不引用 Server。
 type epochLease struct {
 	store    epochStore
@@ -46,9 +38,9 @@ type epochLease struct {
 	// deadline 从存储调用开始计时，保留单调时钟；迟到的响应不能恢复失效租约。
 	deadline atomic.Pointer[time.Time]
 
-	mu           sync.Mutex
-	done         chan struct{}
-	releaseState epochReleaseState
+	mu       sync.Mutex
+	done     chan struct{}
+	released bool
 }
 
 func claimEpoch(ctx context.Context, store epochStore, identity nodeIdentity) (*epochLease, error) {
@@ -106,6 +98,75 @@ func (e *epochLease) start(onLost func(error)) <-chan error {
 	return ready
 }
 
+// release 只能由完成排空的 Server 或准备失败的创建方调用。
+func (e *epochLease) release(ctx context.Context) error {
+	if e == nil {
+		return nil
+	}
+	stopErr := e.stopRenewal(ctx)
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if stopErr != nil {
+		return stopErr
+	}
+	if e.released {
+		return nil
+	}
+	identity := e.identity
+	err := e.store.UnregisterNodeEpoch(ctx, identity.serviceName, identity.nodeID, identity.epoch)
+	if err != nil && !errors.Is(err, locate.ErrNodeEpochNotFound) && !errors.Is(err, locate.ErrNodeEpochConflict) {
+		return err
+	}
+	e.released = true
+	return nil
+}
+
+func (e *epochLease) stopRenewal(ctx context.Context) error {
+	if e == nil {
+		return nil
+	}
+	e.cancel(context.Canceled)
+	e.mu.Lock()
+	done := e.done
+	e.mu.Unlock()
+	if done == nil {
+		return nil
+	}
+	return contextwait.Done(ctx, done)
+}
+
+// requestContext 让租约失效取消已接纳工作；正常排空期间租约继续续期。
+func (e *epochLease) requestContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if e == nil {
+		return ctx, func() {}
+	}
+	ctx, cancel := context.WithCancelCause(ctx)
+	stop := context.AfterFunc(e.ctx, func() { cancel(context.Cause(e.ctx)) })
+	if err := e.valid(); err != nil {
+		cancel(err)
+	}
+	return ctx, func() {
+		stop()
+		cancel(context.Canceled)
+	}
+}
+
+func (e *epochLease) valid() error {
+	if e == nil {
+		return nil
+	}
+	if !time.Now().Before(*e.deadline.Load()) {
+		e.cancel(errNodeEpochExpired)
+	}
+	return context.Cause(e.ctx)
+}
+
+// loseOwnership 记录存储确认的失权，取消本代工作并返回首次取消原因。
+func (e *epochLease) loseOwnership(err error) error {
+	e.cancel(fmt.Errorf("node: epoch ownership lost: %w", err))
+	return context.Cause(e.ctx)
+}
+
 func (e *epochLease) monitor(ready chan<- error, results <-chan error) error {
 	timer := time.NewTimer(time.Until(*e.deadline.Load()))
 	defer timer.Stop()
@@ -150,52 +211,6 @@ func (e *epochLease) renewLoop(results chan<- error) {
 	}
 }
 
-func (e *epochLease) valid() error {
-	if e == nil {
-		return nil
-	}
-	if !time.Now().Before(*e.deadline.Load()) {
-		e.cancel(errNodeEpochExpired)
-	}
-	return context.Cause(e.ctx)
-}
-
-// loseOwnership 记录存储确认的失权，取消本代工作并返回首次取消原因。
-func (e *epochLease) loseOwnership(err error) error {
-	e.cancel(fmt.Errorf("node: epoch ownership lost: %w", err))
-	return context.Cause(e.ctx)
-}
-
-// requestContext 让租约失效取消已接纳工作；正常排空期间租约继续续期。
-func (e *epochLease) requestContext(ctx context.Context) (context.Context, context.CancelFunc) {
-	if e == nil {
-		return ctx, func() {}
-	}
-	ctx, cancel := context.WithCancelCause(ctx)
-	stop := context.AfterFunc(e.ctx, func() { cancel(context.Cause(e.ctx)) })
-	if err := e.valid(); err != nil {
-		cancel(err)
-	}
-	return ctx, func() {
-		stop()
-		cancel(context.Canceled)
-	}
-}
-
-func (e *epochLease) stopRenewal(ctx context.Context) error {
-	if e == nil {
-		return nil
-	}
-	e.cancel(context.Canceled)
-	e.mu.Lock()
-	done := e.done
-	e.mu.Unlock()
-	if done == nil {
-		return nil
-	}
-	return contextwait.Done(ctx, done)
-}
-
 // renewOnce 只在原租约仍有效且 I/O 按时完成时延长本地有效期。
 func (e *epochLease) renewOnce(ctx context.Context) error {
 	if err := e.valid(); err != nil {
@@ -231,51 +246,4 @@ func (e *epochLease) renewOnce(ctx context.Context) error {
 		e.cancel(err)
 	}
 	return err
-}
-
-// release 只能由完成排空的 Server 或准备失败的创建方调用。
-func (e *epochLease) release(ctx context.Context) error {
-	if e == nil {
-		return nil
-	}
-	stopErr := e.stopRenewal(ctx)
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	if stopErr != nil {
-		e.releaseState = _epochReleaseFailed
-		return stopErr
-	}
-	return e.releaseLocked(ctx)
-}
-
-func (e *epochLease) retryRelease(ctx context.Context) error {
-	if e == nil {
-		return nil
-	}
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	if e.releaseState != _epochReleaseFailed {
-		return nil
-	}
-	// 上次可能因续租任务未退出而超时，重试仍须等待它结束。
-	if e.done != nil {
-		if err := contextwait.Done(ctx, e.done); err != nil {
-			return err
-		}
-	}
-	return e.releaseLocked(ctx)
-}
-
-func (e *epochLease) releaseLocked(ctx context.Context) error {
-	if e.releaseState == _epochReleased {
-		return nil
-	}
-	identity := e.identity
-	err := e.store.UnregisterNodeEpoch(ctx, identity.serviceName, identity.nodeID, identity.epoch)
-	if err != nil && !errors.Is(err, locate.ErrNodeEpochNotFound) && !errors.Is(err, locate.ErrNodeEpochConflict) {
-		e.releaseState = _epochReleaseFailed
-		return err
-	}
-	e.releaseState = _epochReleased
-	return nil
 }

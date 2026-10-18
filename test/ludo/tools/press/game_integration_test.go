@@ -41,11 +41,25 @@ func TestConfiguredGameDelivery(t *testing.T) {
 	var bootstrap conf.Bootstrap
 	require.NoError(t, c.Scan(&bootstrap))
 	timeouts := pushbench.RequestTimeouts{
-		Transport: 3 * time.Second, Forward: 3 * time.Second,
-		Node: bootstrap.GetServer().GetGrpc().GetTimeout().AsDuration(),
+		Transport: 3 * time.Second,
+		Forward:   3 * time.Second,
+		Node:      bootstrap.GetServer().GetGrpc().GetTimeout().AsDuration(),
 	}
 	t.Log("GAME budget profile: gateway_defaults_and_node_yaml; source=../../configs/config.yaml")
 	runGameDeliveryScenarios(t, timeouts)
+}
+
+// TestTableAdmission 单独验证 4,000 名玩家定桌入座，不以收到本局发牌作为入座成功条件。
+func TestTableAdmission(t *testing.T) {
+	logger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(logger) })
+	t.Log("GAME budget profile: historical_15s")
+	runGameDelivery(t, 1000, false, 0, pushbench.RequestTimeouts{
+		Transport: 15 * time.Second,
+		Forward:   15 * time.Second,
+		Node:      15 * time.Second,
+	})
 }
 
 func runGameDeliveryScenarios(t *testing.T, timeouts pushbench.RequestTimeouts) {
@@ -80,17 +94,6 @@ func runGameDeliveryScenarios(t *testing.T, timeouts pushbench.RequestTimeouts) 
 	}
 }
 
-// TestTableAdmission 单独验证 4,000 名玩家定桌入座，不以收到本局发牌作为入座成功条件。
-func TestTableAdmission(t *testing.T) {
-	logger := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn})))
-	t.Cleanup(func() { slog.SetDefault(logger) })
-	t.Log("GAME budget profile: historical_15s")
-	runGameDelivery(t, 1000, false, 0, pushbench.RequestTimeouts{
-		Transport: 15 * time.Second, Forward: 15 * time.Second, Node: 15 * time.Second,
-	})
-}
-
 // runGameDelivery 在 duration 为零时仅验证入座、场景与消息投递，否则继续验证全员开局及对局。
 func runGameDelivery(t *testing.T, tableCount int, robots bool, duration time.Duration, timeouts pushbench.RequestTimeouts) {
 	t.Helper()
@@ -102,8 +105,17 @@ func runGameDelivery(t *testing.T, tableCount int, robots bool, duration time.Du
 	room := &conf.Room{
 		Table: &conf.Room_Table{TableNum: int32(tableCount), ChairNum: 4},
 		Game:  &conf.Room_Game{BaseMoney: 1, MinMoney: 100, MaxMoney: -1, AutoReady: true},
-		Robot: &conf.Room_Robot{Open: robots, Num: 2, MinPlayCount: 2, TableMaxCount: 2, IdBegin: uidStart + 10000,
-			MinMoney: 10000, MaxMoney: 20000, StandMinMoney: 100, StandMaxMoney: 100000},
+		Robot: &conf.Room_Robot{
+			Open:          robots,
+			Num:           2,
+			MinPlayCount:  2,
+			TableMaxCount: 2,
+			IdBegin:       uidStart + 10000,
+			MinMoney:      10000,
+			MaxMoney:      20000,
+			StandMinMoney: 100,
+			StandMaxMoney: 100000,
+		},
 	}
 	client := pushbench.GameRedis(t)
 	usecase, cleanup, err := biz.NewUsecase("delivery-test", data.NewPlayerRepo(data.NewData(client)), room)
@@ -113,8 +125,18 @@ func runGameDelivery(t *testing.T, tableCount int, robots bool, duration time.Du
 	probe := pushbench.StartGame(t, "ludo", client, game.RegisterNode, game.Drain, playerCount, timeouts)
 	// 到达率由 Batch/Interval 控制，有限玩家集不因压测端启动池满而漏发 Login。
 	runner := NewRunner(Press{
-		URL: probe.Endpoint, Open: true, Scenario: scenarioPlay, Num: int32(playerCount), Batch: []int32{400, 400}, Interval: 10,
-		StartID: uidStart, UIDCount: int64(playerCount), Concurrency: playerCount, ActionConcurrency: 1000, MinMoney: 10000, MaxMoney: 20000,
+		URL:               probe.Endpoint,
+		Open:              true,
+		Scenario:          scenarioPlay,
+		Num:               int32(playerCount),
+		Batch:             []int32{400, 400},
+		Interval:          10,
+		StartID:           uidStart,
+		UIDCount:          int64(playerCount),
+		Concurrency:       playerCount,
+		ActionConcurrency: 1000,
+		MinMoney:          10000,
+		MaxMoney:          20000,
 	})
 	t.Cleanup(runner.Stop)
 	var actions atomic.Bool
@@ -166,9 +188,15 @@ func runGameDelivery(t *testing.T, tableCount int, robots bool, duration time.Du
 			}
 			return err
 		})
-		connection, err := websocket.NewClient(runner.ctx, websocket.WithEndpoint(probe.Endpoint), websocket.WithServiceName("ludo"),
-			websocket.WithToken(strconv.FormatInt(user.id, 10)), websocket.WithCodec(codec), websocket.WithPushHandler(handlers),
-			websocket.WithDisconnectFunc(user.OnDisconnect))
+		connection, err := websocket.NewClient(
+			runner.ctx,
+			websocket.WithEndpoint(probe.Endpoint),
+			websocket.WithServiceName("ludo"),
+			websocket.WithToken(strconv.FormatInt(user.id, 10)),
+			websocket.WithCodec(codec),
+			websocket.WithPushHandler(handlers),
+			websocket.WithDisconnectFunc(user.OnDisconnect),
+		)
 		if err != nil {
 			return err
 		}

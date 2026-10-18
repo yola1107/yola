@@ -46,22 +46,6 @@ func New(path string) (*Log, error) {
 	return &Log{logger: log.New(output, "", 0), close: output.Close}, nil
 }
 
-func preparePath(path string) (string, error) {
-	path = filepath.Clean(strings.TrimSpace(path))
-	if path == "" || path == "." {
-		return "", errors.New("filelog: path is empty")
-	}
-	if info, err := os.Lstat(path); err == nil && info.Mode()&os.ModeSymlink != 0 {
-		return "", fmt.Errorf("filelog: refusing symlink %q", path)
-	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return "", fmt.Errorf("filelog: inspect path: %w", err)
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
-		return "", fmt.Errorf("filelog: create directory: %w", err)
-	}
-	return path, nil
-}
-
 func (logger *Log) Write(format string, args ...any) error {
 	logger.mu.RLock()
 	defer logger.mu.RUnlock()
@@ -80,4 +64,20 @@ func (logger *Log) Close() error {
 		logger.closeErr = logger.close()
 	}
 	return logger.closeErr
+}
+
+func preparePath(path string) (string, error) {
+	path = filepath.Clean(strings.TrimSpace(path))
+	if path == "" || path == "." {
+		return "", errors.New("filelog: path is empty")
+	}
+	if info, err := os.Lstat(path); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("filelog: refusing symlink %q", path)
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return "", fmt.Errorf("filelog: inspect path: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		return "", fmt.Errorf("filelog: create directory: %w", err)
+	}
+	return path, nil
 }

@@ -57,8 +57,6 @@ func newUser(id int64, runner *Runner) *User {
 	return &User{runner: runner, id: id}
 }
 
-func (u *User) stateValue() userState { return userState(u.state.Load()) }
-
 func (u *User) IsFree() bool {
 	if u.logout.Load() {
 		return true
@@ -84,45 +82,6 @@ func (u *User) Init() error {
 	u.chair.Store(-1)
 	u.client.Store(client)
 	return nil
-}
-
-func (u *User) connect() (*websocket.Client, error) {
-	pushHandlers := map[int32]websocket.PushHandler{
-		int32(v1.GameCommand_CmdSendCardPush): u.OnSendCardPush,
-		int32(v1.GameCommand_CmdScenePush):    u.OnScenePush,
-		int32(v1.GameCommand_CmdActivePush):   u.OnActivePush,
-		int32(v1.GameCommand_CmdMovePush):     u.OnMovePush,
-		int32(v1.GameCommand_CmdResultPush):   u.OnResultPush,
-		broadcastprobe.Command:                u.onBroadcast,
-	}
-	return websocket.NewClient(
-		u.runner.ctx,
-		websocket.WithEndpoint(u.gatewayURL()),
-		websocket.WithServiceName("ludo"),
-		websocket.WithToken(strconv.FormatInt(u.id, 10)),
-		websocket.WithPushHandler(pushHandlers),
-		websocket.WithDisconnectFunc(u.OnDisconnect),
-	)
-}
-
-func (u *User) onBroadcast(payload []byte) {
-	sentAt, valid := broadcastprobe.Decode(payload)
-	u.runner.broadcasts.record(sentAt, valid)
-}
-
-func (u *User) gatewayURL() string {
-	urls := gatewayURLs(u.runner.conf.URL)
-	return urls[int(u.id%int64(len(urls)))]
-}
-
-func (u *User) withEvent(job func()) {
-	u.eventMu.Lock()
-	defer u.eventMu.Unlock()
-	state := u.stateValue()
-	if u.logout.Load() || state == userClosing || state == userClosed {
-		return
-	}
-	job()
 }
 
 func (u *User) OnDisconnect(channel *websocket.Channel) {
@@ -234,4 +193,45 @@ func (u *User) OnResultPush(data []byte) {
 			}
 		}
 	})
+}
+
+func (u *User) stateValue() userState { return userState(u.state.Load()) }
+
+func (u *User) connect() (*websocket.Client, error) {
+	pushHandlers := map[int32]websocket.PushHandler{
+		int32(v1.GameCommand_CmdSendCardPush): u.OnSendCardPush,
+		int32(v1.GameCommand_CmdScenePush):    u.OnScenePush,
+		int32(v1.GameCommand_CmdActivePush):   u.OnActivePush,
+		int32(v1.GameCommand_CmdMovePush):     u.OnMovePush,
+		int32(v1.GameCommand_CmdResultPush):   u.OnResultPush,
+		broadcastprobe.Command:                u.onBroadcast,
+	}
+	return websocket.NewClient(
+		u.runner.ctx,
+		websocket.WithEndpoint(u.gatewayURL()),
+		websocket.WithServiceName("ludo"),
+		websocket.WithToken(strconv.FormatInt(u.id, 10)),
+		websocket.WithPushHandler(pushHandlers),
+		websocket.WithDisconnectFunc(u.OnDisconnect),
+	)
+}
+
+func (u *User) onBroadcast(payload []byte) {
+	sentAt, valid := broadcastprobe.Decode(payload)
+	u.runner.broadcasts.record(sentAt, valid)
+}
+
+func (u *User) gatewayURL() string {
+	urls := gatewayURLs(u.runner.conf.URL)
+	return urls[int(u.id%int64(len(urls)))]
+}
+
+func (u *User) withEvent(job func()) {
+	u.eventMu.Lock()
+	defer u.eventMu.Unlock()
+	state := u.stateValue()
+	if u.logout.Load() || state == userClosing || state == userClosed {
+		return
+	}
+	job()
 }

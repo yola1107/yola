@@ -127,13 +127,55 @@ func (r *Runner) Stop() {
 	})
 }
 
-func (r *Runner) stopRuntime() {
-	r.cancel()
-	r.background.Wait()
-	r.delays.Stop()
-	if err := r.mailboxes.Stop(context.Background()); err != nil {
-		slog.Error("stop press mailboxes", "error", err)
+func (r *Runner) Load() {
+	conf := r.conf.Press
+	if !conf.Open {
+		return
 	}
+
+	batch := xgo.RandInt(conf.Batch[0], conf.Batch[1])
+	toLoad := min(conf.Num-r.count.Load(), batch)
+	if toLoad <= 0 {
+		return
+	}
+
+	startID := conf.StartID
+	idRange := int64(conf.Num) * 2
+	loaded := int32(0)
+	attempts := int32(0)
+
+	for loaded < toLoad && attempts < conf.Num {
+		attempts++
+
+		id := startID + ((r.nextID.Add(1) - 1) % idRange)
+
+		if _, exists := r.users.Load(id); exists {
+			continue
+		}
+
+		user, err := NewUser(id, r)
+		if err != nil {
+			slog.Warn("load press user", "uid", id, "error", err)
+			continue
+		}
+
+		r.users.Store(id, user)
+		r.count.Add(1)
+		loaded++
+	}
+}
+
+func (r *Runner) Release() {
+	r.users.Range(func(key, value interface{}) bool {
+		user := value.(*User)
+		if !user.IsFree() {
+			return true
+		}
+		user.Release()
+		r.users.Delete(key)
+		r.count.Add(-1)
+		return true
+	})
 }
 
 func (r *Runner) RecordCommand(command v1.GameCommand) {
@@ -169,6 +211,15 @@ func (r *Runner) Monitor() {
 	)
 }
 
+func (r *Runner) stopRuntime() {
+	r.cancel()
+	r.background.Wait()
+	r.delays.Stop()
+	if err := r.mailboxes.Stop(context.Background()); err != nil {
+		slog.Error("stop press mailboxes", "error", err)
+	}
+}
+
 func (r *Runner) run(loadInterval time.Duration) {
 	loadTicker := time.NewTicker(loadInterval)
 	maintenanceTicker := time.NewTicker(15 * time.Second)
@@ -198,55 +249,4 @@ func (r *Runner) postPeriodic(name string, job func()) {
 	if err != nil && r.ctx.Err() == nil {
 		slog.Warn("post press task", "task", name, "error", err)
 	}
-}
-
-func (r *Runner) Load() {
-	conf := r.conf.Press
-	if !conf.Open {
-		return
-	}
-
-	batch := xgo.RandInt(conf.Batch[0], conf.Batch[1])
-	toLoad := min(conf.Num-r.count.Load(), batch)
-	if toLoad <= 0 {
-		return
-	}
-
-	startID := conf.StartID
-	idRange := int64(conf.Num) * 2
-	loaded := int32(0)
-	attempts := int32(0)
-
-	for loaded < toLoad && attempts < conf.Num {
-		attempts++
-
-		id := startID + ((r.nextID.Add(1) - 1) % idRange)
-
-		if _, exists := r.users.Load(id); exists {
-			continue
-		}
-
-		user, err := NewUser(id, r)
-		if err != nil || user == nil {
-			slog.Warn("load press user", "uid", id, "error", err)
-			continue
-		}
-
-		r.users.Store(id, user)
-		r.count.Add(1)
-		loaded++
-	}
-}
-
-func (r *Runner) Release() {
-	r.users.Range(func(key, value interface{}) bool {
-		user := value.(*User)
-		if !user.IsFree() {
-			return true
-		}
-		user.Release()
-		r.users.Delete(key)
-		r.count.Add(-1)
-		return true
-	})
 }

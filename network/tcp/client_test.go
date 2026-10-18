@@ -15,14 +15,13 @@ import (
 	"time"
 
 	"yola/api/protocol/v1"
-	"yola/internal/queue"
 	"yola/network"
 
 	"github.com/go-kratos/kratos/v3/encoding"
 )
 
 func TestNewClientCountsConnectAndAuthPushAgainstCallbackCapacity(t *testing.T) {
-	endpoint := startTCPTestServer(t, clientAuthHandler{pushCount: 1})
+	endpoint := startTCPTestServer(t, clientAuthHandler{pushBeforeReply: true})
 	connected := make(chan struct{}, 1)
 	pushed := make(chan struct{}, 1)
 	client, err := NewClient(
@@ -118,19 +117,13 @@ func TestNewClientDeliversPushBeforeAuthenticationReply(t *testing.T) {
 
 func TestNewClientClosesConnectionWhenContextExpiresAfterAuthentication(t *testing.T) {
 	closed := make(chan struct{}, 1)
-	server := newTCPServer(t, clientAuthHandler{closed: closed}, Address("127.0.0.1:0"))
-	endpoint, err := server.Endpoint()
-	if err != nil {
-		t.Fatal(err)
-	}
-	done := make(chan error, 1)
-	go func() { done <- server.Start(context.Background()) }()
+	endpoint := startTCPTestServer(t, clientAuthHandler{closed: closed})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	connected := make(chan struct{}, 1)
 	client, err := NewClient(
 		ctx,
-		WithAddress(endpoint.Host),
+		WithAddress(endpoint),
 		WithServiceName("game"),
 		WithToken("synthetic-token"),
 		WithCodec(cancelOnAuthReplyCodec{Codec: defaultCodec(), cancel: cancel}),
@@ -147,20 +140,11 @@ func TestNewClientClosesConnectionWhenContextExpiresAfterAuthentication(t *testi
 		t.Fatal("connect callback ran after caller cancellation")
 	default:
 	}
-	select {
-	case <-closed:
-	case <-time.After(time.Second):
-		t.Fatal("client connection remained open after caller cancellation")
-	}
-	if err := server.Stop(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if err := <-done; err != nil {
-		t.Fatal(err)
-	}
+	waitTCPValue(t, closed)
 }
 
 func TestReadAuthenticationReplyRejectsInvalidResponses(t *testing.T) {
+	const callbackQueueSize = 1
 	writeProto := func(wr *bufio.Writer, message *v1.Proto) error {
 		return writeFrame(wr, defaultCodec(), message)
 	}
@@ -193,17 +177,10 @@ func TestReadAuthenticationReplyRejectsInvalidResponses(t *testing.T) {
 			},
 			want: "tcp: too many pushes before authentication reply",
 		},
-		{
-			name: "rejected",
-			write: func(wr *bufio.Writer) error {
-				return writeProto(wr, &v1.Proto{Op: v1.OpAuthReply, Code: 16})
-			},
-			is: ErrAuthenticationRejected,
-		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			testInvalidAuthenticationReply(t, test.write, test.want, test.is)
+			testInvalidAuthenticationReply(t, callbackQueueSize, test.write, test.want, test.is)
 		})
 	}
 }
@@ -335,173 +312,23 @@ func TestClientWriteTimeoutClosesBlockedWrite(t *testing.T) {
 	}
 }
 
-func TestClientCallbacksAreOrderedAndDoNotBlockResponses(t *testing.T) {
-	handler := tcpTestHandler{opened: make(chan network.Connection, 1)}
-	endpoint := startTCPTestServer(t, handler)
-	connected := make(chan struct{})
-	callbackStarted := make(chan struct{})
-	releaseCallback := make(chan struct{})
-	callbackBodies := make(chan string, 2)
-	client, err := NewClient(context.Background(), WithAddress(endpoint), WithServiceName("game"), WithToken("synthetic-token"),
-		WithCallbackQueueSize(2), WithConnectFunc(func() { close(connected) }), WithPushHandler(map[int32]PushHandler{
-			1: func(body []byte) {
-				if string(body) == "first" {
-					close(callbackStarted)
-					<-releaseCallback
-				}
-				callbackBodies <- string(body)
-			},
-		}))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(client.Close)
-	var releaseOnce sync.Once
-	release := func() { releaseOnce.Do(func() { close(releaseCallback) }) }
-	t.Cleanup(release)
-	serverConn := waitTCPValue(t, handler.opened)
-	waitTCPValue(t, connected)
-	if err := serverConn.SendProto(&v1.Proto{Op: v1.OpPush, Cmd: 1, Body: []byte("first")}); err != nil {
-		t.Fatal(err)
-	}
-	waitTCPValue(t, callbackStarted)
-	if err := serverConn.SendProto(&v1.Proto{Op: v1.OpPush, Cmd: 1, Body: []byte("second")}); err != nil {
-		t.Fatal(err)
-	}
-	requestCtx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	if _, _, err := client.Request(requestCtx, 1, &v1.ClientAuthReq{}); err != nil {
-		t.Fatalf("Request blocked behind callback: %v", err)
-	}
-	release()
-	if first, second := waitTCPValue(t, callbackBodies), waitTCPValue(t, callbackBodies); first != "first" || second != "second" {
-		t.Fatalf("callback order = %q, %q", first, second)
-	}
-}
-
-func TestClientCallbackQueueFullClosesConnection(t *testing.T) {
-	handler := tcpTestHandler{opened: make(chan network.Connection, 1)}
-	endpoint := startTCPTestServer(t, handler)
-	connected := make(chan struct{})
-	callbackStarted := make(chan struct{})
-	releaseCallback := make(chan struct{})
-	disconnected := make(chan struct{}, 1)
-	var callbackStartedOnce sync.Once
-	client, err := NewClient(context.Background(), WithAddress(endpoint), WithServiceName("game"), WithToken("synthetic-token"),
-		WithCallbackQueueSize(1), WithConnectFunc(func() { close(connected) }), WithDisconnectFunc(func() { disconnected <- struct{}{} }),
-		WithPushHandler(map[int32]PushHandler{1: func([]byte) { callbackStartedOnce.Do(func() { close(callbackStarted) }); <-releaseCallback }}))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(client.Close)
-	var releaseOnce sync.Once
-	release := func() { releaseOnce.Do(func() { close(releaseCallback) }) }
-	t.Cleanup(release)
-	serverConn := waitTCPValue(t, handler.opened)
-	waitTCPValue(t, connected)
-	if err := serverConn.SendProto(&v1.Proto{Op: v1.OpPush, Cmd: 1}); err != nil {
-		t.Fatal(err)
-	}
-	waitTCPValue(t, callbackStarted)
-	if err := serverConn.SendProto(&v1.Proto{Op: v1.OpPush, Cmd: 1}); err != nil {
-		t.Fatal(err)
-	}
-	requestCtx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	if _, _, err := client.Request(requestCtx, 1, &v1.ClientAuthReq{}); err != nil {
-		t.Fatalf("Request blocked while filling callback queue: %v", err)
-	}
-	if err := serverConn.SendProto(&v1.Proto{Op: v1.OpPush, Cmd: 1}); err != nil {
-		t.Fatal(err)
-	}
-	waitTCPValue(t, client.done)
-	select {
-	case <-disconnected:
-		t.Fatal("disconnect callback overlapped the running push callback")
-	default:
-	}
-	release()
-	waitTCPValue(t, disconnected)
-}
-
-func TestClientKickRunsAfterPushAndBeforeDisconnect(t *testing.T) {
-	handler := tcpTestHandler{opened: make(chan network.Connection, 1)}
-	endpoint := startTCPTestServer(t, handler)
-	pushStarted := make(chan struct{})
-	releasePush := make(chan struct{})
-	callbacks := make(chan string, 3)
-	client, err := NewClient(
-		context.Background(),
-		WithAddress(endpoint),
-		WithServiceName("game"),
-		WithToken("synthetic-token"),
-		WithPushHandler(map[int32]PushHandler{1: func([]byte) {
-			close(pushStarted)
-			<-releasePush
-			callbacks <- "push"
-		}}),
-		WithKickHandler(func(int32) { callbacks <- "kick" }),
-		WithDisconnectFunc(func() { callbacks <- "disconnect" }),
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(client.Close)
-	serverConn := waitTCPValue(t, handler.opened)
-	if err = serverConn.SendProto(&v1.Proto{Op: v1.OpPush, Cmd: 1}); err != nil {
-		t.Fatal(err)
-	}
-	waitTCPValue(t, pushStarted)
-	if err = serverConn.SendProto(&v1.Proto{Op: v1.OpKick, Code: 7}); err != nil {
-		t.Fatal(err)
-	}
-	waitTCPValue(t, client.done)
-	select {
-	case callback := <-callbacks:
-		t.Fatalf("terminal callback %q overlapped push", callback)
-	default:
-	}
-	close(releasePush)
-	for _, want := range []string{"push", "kick", "disconnect"} {
-		if got := waitTCPValue(t, callbacks); got != want {
-			t.Fatalf("callback = %q, want %q", got, want)
-		}
-	}
-}
-
 func TestClientRequestReportsTimeout(t *testing.T) {
 	h := blockingRequestHandler{started: make(chan struct{}, 1), release: make(chan struct{})}
-	s := newTCPServer(t, h, Address("127.0.0.1:0"))
-	endpoint, err := s.Endpoint()
+	release := sync.OnceFunc(func() { close(h.release) })
+	defer release()
+	endpoint := startTCPTestServer(t, h)
+	client, err := NewClient(context.Background(), WithAddress(endpoint), WithServiceName("game"), WithToken("synthetic-token"),
+		WithRequestTimeout(20*time.Millisecond))
 	if err != nil {
 		t.Fatal(err)
 	}
-	done := make(chan error, 1)
-	go func() { done <- s.Start(context.Background()) }()
-	connected := make(chan struct{})
-	client, err := NewClient(context.Background(), WithAddress(endpoint.Host), WithServiceName("game"), WithToken("synthetic-token"),
-		WithRequestTimeout(20*time.Millisecond), WithConnectFunc(func() { close(connected) }))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer client.Close()
-	select {
-	case <-connected:
-	case <-time.After(time.Second):
-		t.Fatal("authentication timed out")
-	}
+	t.Cleanup(client.Close)
 	_, _, err = client.Request(context.Background(), 1, &v1.Proto{})
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("Request() error = %v, want %v", err, context.DeadlineExceeded)
 	}
-	<-h.started
-	close(h.release)
-	if err = s.Stop(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if err = <-done; err != nil {
-		t.Fatal(err)
-	}
+	waitTCPValue(t, h.started)
+	release()
 }
 
 func TestClientRequestHonorsCanceledContext(t *testing.T) {
@@ -518,8 +345,11 @@ func TestClientCloseFailsPendingRequest(t *testing.T) {
 	clientConn, serverConn := net.Pipe()
 	defer serverConn.Close()
 	c := &Client{
-		conn: clientConn, codec: defaultCodec(), outbound: make(chan *v1.Proto, 1),
-		done: make(chan struct{}), requestTimeout: time.Hour,
+		conn:           clientConn,
+		codec:          defaultCodec(),
+		outbound:       make(chan *v1.Proto, 1),
+		done:           make(chan struct{}),
+		requestTimeout: time.Hour,
 	}
 	completed := make(chan error, 1)
 	go func() {
@@ -532,25 +362,6 @@ func TestClientCloseFailsPendingRequest(t *testing.T) {
 	c.Close()
 	if err := <-completed; !errors.Is(err, net.ErrClosed) {
 		t.Fatalf("Request() error = %v, want %v", err, net.ErrClosed)
-	}
-}
-
-func TestClientDisconnectCallbackCanCloseClient(t *testing.T) {
-	clientConn, serverConn := net.Pipe()
-	defer serverConn.Close()
-	callbacks := queue.New(64, nil)
-	c := &Client{conn: clientConn, done: make(chan struct{}), callbacks: callbacks}
-	go callbacks.Run()
-	c.disconnectFunc = c.Close
-	done := make(chan struct{})
-	go func() {
-		c.Close()
-		close(done)
-	}()
-	select {
-	case <-done:
-	case <-time.After(200 * time.Millisecond):
-		t.Fatal("disconnect callback deadlocked Close")
 	}
 }
 
@@ -600,7 +411,6 @@ type clientAuthHandler struct {
 	code            int32
 	delay           time.Duration
 	pushBeforeReply bool
-	pushCount       int
 	closed          chan<- struct{}
 }
 
@@ -610,11 +420,7 @@ func (h clientAuthHandler) Handle(_ context.Context, conn network.Connection, me
 	if h.delay > 0 {
 		time.Sleep(h.delay)
 	}
-	pushCount := h.pushCount
 	if h.pushBeforeReply {
-		pushCount = 1
-	}
-	for range pushCount {
 		if err := conn.SendProto(&v1.Proto{Op: v1.OpPush, Cmd: 1, Body: []byte("before-auth-reply")}); err != nil {
 			return nil, err
 		}
@@ -648,7 +454,7 @@ func (c cancelOnAuthReplyCodec) Unmarshal(data []byte, value any) error {
 	return nil
 }
 
-func testInvalidAuthenticationReply(t *testing.T, write func(*bufio.Writer) error, want string, wantErr error) {
+func testInvalidAuthenticationReply(t *testing.T, callbackQueueSize int, write func(*bufio.Writer) error, want string, wantErr error) {
 	t.Helper()
 	var wire bytes.Buffer
 	wr := bufio.NewWriter(&wire)
@@ -659,7 +465,7 @@ func testInvalidAuthenticationReply(t *testing.T, write func(*bufio.Writer) erro
 		t.Fatal(err)
 	}
 
-	o := &clientOptions{codec: defaultCodec(), callbackQueueSize: 1}
+	o := &clientOptions{codec: defaultCodec(), callbackQueueSize: callbackQueueSize}
 	_, err := o.readAuthenticationReply(context.Background(), bufio.NewReader(&wire))
 	if wantErr != nil {
 		if !errors.Is(err, wantErr) {

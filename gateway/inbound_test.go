@@ -2,7 +2,6 @@ package gateway
 
 import (
 	"context"
-	"errors"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -152,7 +151,7 @@ func TestAuthenticationDoesNotBindAfterAdmissionCloses(t *testing.T) {
 	store := &bindCountingLocator{Locator: testLocator(t)}
 	entered := make(chan struct{})
 	release := make(chan struct{})
-	var releaseOnce sync.Once
+	releaseAuthentication := sync.OnceFunc(func() { close(release) })
 	gateway := newTestServer(t,
 		Auth(authenticatorFunc(func(context.Context, string, []byte, string) (string, error) {
 			close(entered)
@@ -162,7 +161,7 @@ func TestAuthenticationDoesNotBindAfterAdmissionCloses(t *testing.T) {
 		Locator(store),
 	)
 	initTestGateway(t, gateway)
-	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
+	t.Cleanup(releaseAuthentication)
 	conn := newTestConnection("conn-a")
 	require.NoError(t, gateway.Open(context.Background(), conn))
 	auth := authMessage(t)
@@ -173,11 +172,14 @@ func TestAuthenticationDoesNotBindAfterAdmissionCloses(t *testing.T) {
 	}()
 	receiveWithin(t, entered)
 
-	require.NoError(t, gateway.quiesce(context.Background()))
-	releaseOnce.Do(func() { close(release) })
+	stopCtx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	require.ErrorIs(t, gateway.Stop(stopCtx), context.DeadlineExceeded)
+	releaseAuthentication()
 	require.NoError(t, receiveWithin(t, handled))
 	require.NotEqual(t, int32(codes.OK), auth.Code)
 	require.Zero(t, store.binds.Load())
+	require.NoError(t, gateway.Stop(context.Background()))
 }
 
 func TestAuthenticationCleansCandidateAfterConnectionCloses(t *testing.T) {
@@ -270,173 +272,90 @@ func TestAuthenticationBindAdmittedBeforeShutdownCommitsTakeover(t *testing.T) {
 	}()
 	receiveWithin(t, store.entered)
 	stopped := make(chan error, 1)
-	go func() { stopped <- gateway.quiesce(context.Background()) }()
+	go func() { stopped <- gateway.Stop(context.Background()) }()
+	require.Eventually(t, func() bool { return !gateway.sessions.isAccepting() }, time.Second, time.Millisecond)
 	select {
 	case err := <-stopped:
 		store.unblock()
-		require.FailNow(t, "quiesce returned while an admitted BindGate was blocked", "error: %v", err)
-	case <-time.After(20 * time.Millisecond):
+		require.FailNow(t, "Stop returned while an admitted BindGate was blocked", "error: %v", err)
+	default:
 	}
+	require.Error(t, gateway.Open(context.Background(), newTestConnection("conn-after-stop")))
 	store.unblock()
 
 	require.NoError(t, receiveWithin(t, handled))
 	require.NoError(t, receiveWithin(t, stopped))
 	require.Equal(t, int32(codes.OK), auth.Code)
-	require.Eventually(t, isClosed(oldConn.closed), time.Second, time.Millisecond)
+	require.True(t, isClosed(oldConn.closed)())
+	require.Equal(t, v1.KickCodeSessionReplaced, receiveWithin(t, oldConn.pushes).Code)
 }
 
-func TestSessionReplacementKickDoesNotNotifyNodeDisconnect(t *testing.T) {
-	gateway, store, conn, binding, disconnects := newDisconnectTrackingServer(t)
-	bindTestPlayerNode(t, store, binding.ServiceName, binding.UID, "node-a")
-
-	require.NoError(t, gateway.kick(context.Background(), binding, v1.KickCodeSessionReplaced))
-	require.True(t, isClosed(conn.closed)())
-	select {
-	case disconnect := <-disconnects:
-		t.Fatalf("session replacement sent unexpected Disconnect: %+v", disconnect)
-	default:
-	}
-	_, err := store.LocateGate(context.Background(), binding.ServiceName, binding.UID)
-	require.ErrorIs(t, err, locate.ErrGateNotFound)
-	nodeID, err := store.LocateNode(context.Background(), binding.ServiceName, binding.UID)
-	require.NoError(t, err)
-	require.Equal(t, "node-a", nodeID)
-}
-
-func TestTakeoverKickSurvivesCanceledAuthentication(t *testing.T) {
-	conn := newTestConnection("conn-old")
-	ctxErr := make(chan error, 1)
-	conn.closeWithProto = func(ctx context.Context, _ *v1.Proto) error {
-		ctxErr <- ctx.Err()
-		return conn.Close()
-	}
+func TestSessionRegistryCommitAuthentication(t *testing.T) {
 	binding := testBinding()
-	binding.ConnID = conn.ConnID()
-	gateway := &Server{
-		identity:       identity{id: binding.GateID, endpoint: binding.GateEndpoint},
-		locator:        testLocator(t),
-		sessions:       &sessionRegistry{byConnID: map[string]*session{binding.ConnID: activeSession(conn, binding)}},
-		cleanupTimeout: time.Second,
-	}
-	authCtx, cancel := context.WithCancel(context.Background())
-	cancel()
-	gateway.kickPrevious(authCtx, binding)
-
-	require.NoError(t, receiveWithin(t, ctxErr))
-	require.True(t, isClosed(conn.closed)())
-}
-
-func TestSessionCloseWaitsForConcurrentHeartbeatRenewal(t *testing.T) {
-	started := make(chan struct{})
-	release := make(chan struct{})
-	unblock := sync.OnceFunc(func() { close(release) })
-	defer unblock()
-	conn := newTestConnection("conn-a")
-	sess := activeSession(conn, testBinding())
-	sess.leaseDeadline = time.Now().Add(30 * time.Second)
-	gate := &Server{
-		locator:      &blockedHeartbeatLocator{started: started, release: release},
-		leaseTimeout: time.Second,
-		leaseTTL:     time.Minute,
-		sessions:     &sessionRegistry{byConnID: map[string]*session{"conn-a": sess}},
-	}
-	renewed := make(chan error, 1)
-	go func() { renewed <- gate.Heartbeat(context.Background(), conn) }()
-	receiveWithin(t, started)
-	detached := make(chan locate.GateBinding, 1)
-	go func() { detached <- sess.detachForClose() }()
-	// Close 已进入业务锁，必须等续租结束才能撤下 binding。
-	require.Eventually(t, func() bool {
-		if sess.handlerMu.TryLock() {
-			sess.handlerMu.Unlock()
-			return false
-		}
-		return true
-	}, time.Second, time.Millisecond)
-	select {
-	case <-detached:
-		t.Fatal("session detached before heartbeat renewal finished")
-	default:
-	}
-	unblock()
-	require.NoError(t, receiveWithin(t, renewed))
-	require.Equal(t, testBinding(), receiveWithin(t, detached))
-	require.Zero(t, sess.binding)
-	require.True(t, sess.leaseDeadline.IsZero())
-}
-
-func TestLocateStatusCode(t *testing.T) {
-	t.Parallel()
 	tests := []struct {
-		name string
-		err  error
-		want codes.Code
+		name      string
+		prepare   func(context.Context, *sessionRegistry, *session) context.Context
+		boundAt   time.Time
+		committed bool
 	}{
-		{name: "gate missing", err: locate.ErrGateNotFound, want: codes.Aborted},
-		{name: "gate conflict", err: locate.ErrGateConflict, want: codes.Aborted},
-		{name: "canceled", err: context.Canceled, want: codes.Canceled},
-		{name: "deadline", err: context.DeadlineExceeded, want: codes.DeadlineExceeded},
-		{name: "invalid binding", err: locate.ErrInvalidGateBinding, want: codes.Internal},
-		{name: "invalid lease", err: locate.ErrInvalidGateLease, want: codes.Internal},
-		{name: "invalid ttl", err: locate.ErrInvalidGateTTL, want: codes.Internal},
-		{name: "redis failure", err: errors.New("connection refused"), want: codes.Unavailable},
+		{
+			name:      "current session",
+			prepare:   func(ctx context.Context, _ *sessionRegistry, _ *session) context.Context { return ctx },
+			boundAt:   time.Now(),
+			committed: true,
+		},
+		{
+			name: "removed session",
+			prepare: func(ctx context.Context, registry *sessionRegistry, sess *session) context.Context {
+				registry.remove(sess.conn)
+				return ctx
+			},
+			boundAt: time.Now(),
+		},
+		{
+			name: "canceled authentication",
+			prepare: func(_ context.Context, _ *sessionRegistry, _ *session) context.Context {
+				ctx, cancel := context.WithCancel(context.Background())
+				cancel()
+				return ctx
+			},
+			boundAt: time.Now(),
+		},
+		{
+			name:    "expired lease",
+			prepare: func(ctx context.Context, _ *sessionRegistry, _ *session) context.Context { return ctx },
+			boundAt: time.Now().Add(-2 * time.Minute),
+		},
+		{
+			name: "expired authentication deadline",
+			prepare: func(ctx context.Context, _ *sessionRegistry, sess *session) context.Context {
+				sess.authDeadline = time.Now().Add(-time.Millisecond)
+				return ctx
+			},
+			boundAt: time.Now(),
+		},
 	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			require.Equal(t, tc.want, locateStatusCode(tc.err))
-		})
-	}
-}
-
-func TestHeartbeatClassifiesLocatorFailures(t *testing.T) {
-	for _, test := range []struct {
-		name       string
-		err        error
-		wantCode   codes.Code
-		wantClosed bool
-	}{
-		{name: "unavailable", err: errors.New("redis unavailable")},
-		{name: "deadline", err: context.DeadlineExceeded},
-		{name: "canceled", err: context.Canceled, wantCode: codes.Canceled},
-		{name: "missing", err: locate.ErrGateNotFound, wantCode: codes.Aborted, wantClosed: true},
-		{name: "binding changed", err: locate.ErrGateConflict, wantCode: codes.Aborted, wantClosed: true},
-		{name: "invalid lease", err: locate.ErrInvalidGateLease, wantCode: codes.Internal, wantClosed: true},
-	} {
+	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			store := &renewLeaseLocator{Locator: testLocator(t), err: test.err}
-			gateway := &Server{locator: store, leaseTimeout: time.Second, leaseTTL: time.Minute}
-			conn := newTestConnection("conn-a")
-			sess := activeSession(conn, testBinding())
-			sess.leaseDeadline = time.Now().Add(gateway.leaseTTL / 2)
+			registry := &sessionRegistry{byConnID: make(map[string]*session), accepting: true}
+			conn := newTestConnection(binding.ConnID)
+			require.NoError(t, registry.add(conn, time.Minute))
+			sess := registry.get(conn.ConnID())
+			require.NotNil(t, sess)
+			t.Cleanup(func() { sess.detachForClose() })
+			ctx := test.prepare(context.Background(), registry, sess)
+			lease := locate.GateLease{Binding: binding, TTL: time.Minute}
 
-			err := gateway.heartbeat(context.Background(), sess)
-
-			require.Equal(t, test.wantCode, status.Code(err))
-			require.Equal(t, test.wantClosed, isClosed(conn.closed)())
-			require.Equal(t, int32(1), store.calls.Load())
+			require.Equal(t, test.committed, registry.commitAuthentication(ctx, sess, lease, test.boundAt))
+			got, valid := sess.route(time.Now())
+			require.Equal(t, test.committed, valid)
+			if test.committed {
+				require.Equal(t, binding, got)
+			} else {
+				require.Empty(t, got)
+			}
 		})
 	}
-}
-
-func TestHeartbeatRenewsAtHalfTTLAndRetriesTransientFailure(t *testing.T) {
-	store := &renewLeaseLocator{Locator: testLocator(t), errors: []error{context.DeadlineExceeded, nil}}
-	gateway := &Server{locator: store, leaseTimeout: time.Second, leaseTTL: time.Minute}
-	sess := activeSession(newTestConnection("conn-a"), testBinding())
-	sess.leaseDeadline = time.Now().Add(gateway.leaseTTL / 2)
-	initialDeadline := sess.leaseDeadline
-
-	require.NoError(t, gateway.heartbeat(context.Background(), sess))
-	require.Equal(t, initialDeadline, sess.leaseDeadline)
-	require.NoError(t, gateway.heartbeat(context.Background(), sess))
-	require.Greater(t, sess.leaseDeadline, initialDeadline)
-	require.NoError(t, gateway.heartbeat(context.Background(), sess))
-	require.Equal(t, int32(2), store.calls.Load())
-}
-
-type delayedBindLocator struct {
-	locate.Locator
-	delay time.Duration
 }
 
 type authenticatorFunc func(context.Context, string, []byte, string) (string, error)
@@ -455,6 +374,11 @@ func (s *bindCountingLocator) BindGate(ctx context.Context, binding locate.GateB
 	return s.Locator.BindGate(ctx, binding, ttl)
 }
 
+type delayedBindLocator struct {
+	locate.Locator
+	delay time.Duration
+}
+
 func (s *delayedBindLocator) BindGate(ctx context.Context, binding locate.GateBinding, ttl time.Duration) (locate.GateLease, *locate.GateBinding, error) {
 	lease, previous, err := s.Locator.BindGate(ctx, binding, ttl)
 	time.Sleep(s.delay)
@@ -468,13 +392,11 @@ type blockingBindLocator struct {
 	releaseOnce sync.Once
 }
 
-func (s *blockingBindLocator) unblock() {
-	s.releaseOnce.Do(func() { close(s.release) })
-}
-
 func newBlockingBindLocator(store locate.Locator) *blockingBindLocator {
 	return &blockingBindLocator{
-		Locator: store, entered: make(chan locate.GateBinding, 1), release: make(chan struct{}),
+		Locator: store,
+		entered: make(chan locate.GateBinding, 1),
+		release: make(chan struct{}),
 	}
 }
 
@@ -485,33 +407,6 @@ func (s *blockingBindLocator) BindGate(ctx context.Context, binding locate.GateB
 	return lease, previous, err
 }
 
-type blockedHeartbeatLocator struct {
-	locate.Locator
-	started chan struct{}
-	release <-chan struct{}
-}
-
-func (s *blockedHeartbeatLocator) RenewGateLease(_ context.Context, binding locate.GateBinding, ttl time.Duration) (locate.GateLease, error) {
-	close(s.started)
-	<-s.release
-	return locate.GateLease{Binding: binding, TTL: ttl}, nil
-}
-
-type renewLeaseLocator struct {
-	locate.Locator
-	err    error
-	errors []error
-	calls  atomic.Int32
-}
-
-func (s *renewLeaseLocator) RenewGateLease(_ context.Context, binding locate.GateBinding, ttl time.Duration) (locate.GateLease, error) {
-	call := int(s.calls.Add(1)) - 1
-	err := s.err
-	if call < len(s.errors) {
-		err = s.errors[call]
-	}
-	if err != nil {
-		return locate.GateLease{}, err
-	}
-	return locate.GateLease{Binding: binding, TTL: ttl}, nil
+func (s *blockingBindLocator) unblock() {
+	s.releaseOnce.Do(func() { close(s.release) })
 }

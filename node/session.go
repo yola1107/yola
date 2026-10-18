@@ -11,6 +11,8 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+var _ Session = requestSession{}
+
 // Session 持有本次请求到已认证客户端的回程路由。
 type Session interface {
 	UID() string
@@ -41,68 +43,32 @@ func FromContext(ctx context.Context) (Session, bool) {
 	return sess, ok
 }
 
-type commandKey struct{}
-
-// CommandFromContext 返回当前 Forward 的业务 command；它不改变 Kratos transport operation。
-// context 未携带该元数据时返回 false，command 为 0 时仍可返回 true。
-func CommandFromContext(ctx context.Context) (int32, bool) {
-	if ctx == nil {
-		return 0, false
-	}
-	command, ok := ctx.Value(commandKey{}).(int32)
-	return command, ok
-}
-
 type requestSession struct {
 	binding locate.GateBinding
 	server  *Server
 }
-
-var _ Session = requestSession{}
 
 func (s requestSession) UID() string { return s.binding.UID }
 
 func (s requestSession) BindingToken() string { return s.binding.BindingToken }
 
 func (s requestSession) BindNode(ctx context.Context) error {
-	if s.server.locator == nil {
-		return status.Error(codes.FailedPrecondition, "node locator is not configured")
-	}
-	if !s.server.deliveries.admit() {
-		return status.Error(codes.Unavailable, "node is stopping or stopped")
-	}
-	defer s.server.deliveries.done()
-	identity, err := s.validatedIdentity()
-	if err != nil {
-		return err
-	}
-	ctx, cancel := s.server.lease.Load().requestContext(normalizeContext(ctx))
-	defer cancel()
-	return s.server.handleBindingError(s.server.locator.BindNode(
-		ctx, identity.serviceName, s.binding.UID, identity.nodeID, identity.epoch,
-	))
-}
-
-func (s requestSession) UnbindNode(ctx context.Context) error {
-	if s.server.locator == nil {
-		return status.Error(codes.FailedPrecondition, "node locator is not configured")
-	}
-	if !s.server.deliveries.admit() {
-		return status.Error(codes.Unavailable, "node is stopping or stopped")
-	}
-	defer s.server.deliveries.done()
-	identity, err := s.validatedIdentity()
-	if err != nil {
-		return err
-	}
-	ctx, cancel := s.server.lease.Load().requestContext(normalizeContext(ctx))
-	defer cancel()
-	return s.server.handleBindingError(s.server.locator.UnbindNode(
-		ctx, identity.serviceName, s.binding.UID, identity.nodeID, identity.epoch,
-	))
+	return s.writeBinding(ctx, locate.NodeLocator.BindNode)
 }
 
 func (s requestSession) RenewNode(ctx context.Context) error {
+	return s.writeBinding(ctx, locate.NodeLocator.RenewNode)
+}
+
+func (s requestSession) UnbindNode(ctx context.Context) error {
+	return s.writeBinding(ctx, locate.NodeLocator.UnbindNode)
+}
+
+func (s requestSession) writeBinding(
+	ctx context.Context,
+	write func(locate.NodeLocator, context.Context, string, string, string, string) error,
+) error {
+
 	if s.server.locator == nil {
 		return status.Error(codes.FailedPrecondition, "node locator is not configured")
 	}
@@ -116,8 +82,8 @@ func (s requestSession) RenewNode(ctx context.Context) error {
 	}
 	ctx, cancel := s.server.lease.Load().requestContext(normalizeContext(ctx))
 	defer cancel()
-	return s.server.handleBindingError(s.server.locator.RenewNode(
-		ctx, identity.serviceName, s.binding.UID, identity.nodeID, identity.epoch,
+	return s.server.handleBindingError(write(
+		s.server.locator, ctx, identity.serviceName, s.binding.UID, identity.nodeID, identity.epoch,
 	))
 }
 
@@ -139,13 +105,6 @@ func (s *Server) handleBindingError(err error) error {
 	return status.Error(codes.Unavailable, "node epoch is unavailable")
 }
 
-func normalizeContext(ctx context.Context) context.Context {
-	if ctx == nil {
-		return context.Background()
-	}
-	return ctx
-}
-
 func mapNodeLocatorError(err error) error {
 	switch {
 	case err == nil:
@@ -159,4 +118,11 @@ func mapNodeLocatorError(err error) error {
 	default:
 		return status.Error(codes.Unavailable, "node locator is unavailable")
 	}
+}
+
+func normalizeContext(ctx context.Context) context.Context {
+	if ctx == nil {
+		return context.Background()
+	}
+	return ctx
 }

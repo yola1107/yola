@@ -13,6 +13,7 @@ type Session interface {
 	UID() string
 	BindingToken() string
 	BindNode(context.Context) error
+	RenewNode(context.Context) error
 	UnbindNode(context.Context) error
 	Push(context.Context, int32, proto.Message) error
 }

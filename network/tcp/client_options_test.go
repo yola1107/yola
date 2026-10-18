@@ -15,39 +15,37 @@ func TestClientRejectsInvalidConfiguration(t *testing.T) {
 	}{
 		{
 			name: "missing endpoint",
-			opts: []ClientOption{WithAddress(""), WithServiceName("game"), WithToken("synthetic-token")},
+			opts: []ClientOption{WithAddress("")},
 			want: "tcp: endpoint is required",
 		},
 		{
 			name: "missing service name",
-			opts: []ClientOption{WithToken("synthetic-token")},
+			opts: []ClientOption{WithServiceName("")},
 			want: "tcp: service name is required",
 		},
 		{
 			name: "missing token",
-			opts: []ClientOption{WithServiceName("game")},
+			opts: []ClientOption{WithToken("")},
 			want: "tcp: token is required",
 		},
 		{
 			name: "nil codec",
-			opts: []ClientOption{WithServiceName("game"), WithToken("synthetic-token"), WithCodec(nil)},
+			opts: []ClientOption{WithCodec(nil)},
 			want: "tcp: codec is required",
 		},
 		{
 			name: "invalid ping interval",
-			opts: []ClientOption{WithServiceName("game"), WithToken("synthetic-token"), WithPingInterval(0)},
+			opts: []ClientOption{WithPingInterval(0)},
 			want: "tcp: ping interval must be positive",
 		},
 		{
 			name: "invalid read timeout",
-			opts: []ClientOption{WithServiceName("game"), WithToken("synthetic-token"), WithReadTimeout(0)},
+			opts: []ClientOption{WithReadTimeout(0)},
 			want: "tcp: read timeout must be positive",
 		},
 		{
 			name: "ping not below read timeout",
 			opts: []ClientOption{
-				WithServiceName("game"),
-				WithToken("synthetic-token"),
 				WithPingInterval(time.Second),
 				WithReadTimeout(time.Second),
 			},
@@ -55,32 +53,29 @@ func TestClientRejectsInvalidConfiguration(t *testing.T) {
 		},
 		{
 			name: "invalid write timeout",
-			opts: []ClientOption{WithServiceName("game"), WithToken("synthetic-token"), WithWriteTimeout(0)},
+			opts: []ClientOption{WithWriteTimeout(0)},
 			want: "tcp: write timeout must be positive",
 		},
 		{
 			name: "invalid request timeout",
-			opts: []ClientOption{WithServiceName("game"), WithToken("synthetic-token"), WithRequestTimeout(0)},
+			opts: []ClientOption{WithRequestTimeout(0)},
 			want: "tcp: request timeout must be positive",
 		},
 		{
 			name: "invalid callback queue",
-			opts: []ClientOption{WithServiceName("game"), WithToken("synthetic-token"), WithCallbackQueueSize(0)},
+			opts: []ClientOption{WithCallbackQueueSize(0)},
 			want: "tcp: callback queue size must be positive",
 		},
 		{
 			name: "insecure TLS",
-			opts: []ClientOption{
-				WithServiceName("game"),
-				WithToken("synthetic-token"),
-				WithTLSConfig(&tls.Config{InsecureSkipVerify: true}),
-			},
+			opts: []ClientOption{WithTLSConfig(&tls.Config{InsecureSkipVerify: true})},
 			want: "tcp: TLS certificate verification must be enabled",
 		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			if _, err := NewClient(context.Background(), test.opts...); err == nil || err.Error() != test.want {
+			opts := append([]ClientOption{WithServiceName("game"), WithToken("synthetic-token")}, test.opts...)
+			if _, err := NewClient(context.Background(), opts...); err == nil || err.Error() != test.want {
 				t.Fatalf("NewClient() error = %v, want %q", err, test.want)
 			}
 		})

@@ -7,63 +7,65 @@ import (
 	"time"
 
 	"yola/api/cluster/v1"
-	"yola/instance"
 	"yola/internal/gateclient"
 	"yola/internal/listener"
-	"yola/locate"
 	"yola/network"
 
 	"github.com/go-kratos/kratos/v3/middleware"
 	"github.com/go-kratos/kratos/v3/middleware/recovery"
+	"github.com/go-kratos/kratos/v3/registry"
 	"github.com/go-kratos/kratos/v3/transport"
 	"github.com/go-kratos/kratos/v3/transport/grpc"
+	"google.golang.org/grpc/health"
+	"google.golang.org/grpc/health/grpc_health_v1"
 )
 
-var (
-	_ transport.Server     = (*Server)(nil)
-	_ transport.Endpointer = (*Server)(nil)
-)
+var _ transport.Server = (*Server)(nil)
 
 type lifecycleState uint8
 
 const (
 	_stNew lifecycleState = iota
-	_stPreparing
-	_stPrepared
+	_stStarting
 	_stStarted
 )
 
 // Server 是供 Kratos 应用装配的 Yola Node transport。
 type Server struct {
-	grpcServer     *grpc.Server
-	grpcListener   *listener.Owner
-	pushTimeout    time.Duration
-	cleanupTimeout time.Duration
-	drain          DrainFunc
+	grpcServer      *grpc.Server
+	grpcListener    *listener.Owner
+	pushTimeout     time.Duration
+	cleanupTimeout  time.Duration
+	shutdownTimeout time.Duration
+	drain           DrainFunc
 
-	handlers     map[int32]Handler
-	middlewares  []middleware.Middleware
-	onDisconnect DisconnectHandler
-	gateways     *gateclient.Client
-	locator      locate.Locator
+	handlers      map[int32]Handler
+	middlewares   []middleware.Middleware
+	onDisconnect  DisconnectHandler
+	gateways      *gateclient.Client
+	locator       Store
+	gateDirectory GateLookup
+	registrar     registry.Registrar
+	healthServer  *health.Server
 	// identity 向请求路径发布不可变的服务身份快照。
 	identity atomic.Pointer[nodeIdentity]
 
 	// lifecycleMu 保护准备、启动和 lease 的交接；租约自身管理续租与清理。
-	lifecycleMu     sync.Mutex
-	fatalCtx        context.Context
-	fatalCancel     context.CancelCauseFunc
-	state           lifecycleState
-	preparationDone chan struct{}
-	lease           atomic.Pointer[epochLease]
-	ready           chan struct{}
-	readyOnce       sync.Once
-	readyErr        error
-	requests        requestAdmission
+	lifecycleMu   sync.Mutex
+	fatalCtx      context.Context
+	fatalCancel   context.CancelCauseFunc
+	state         lifecycleState
+	startupDone   chan struct{}
+	startupCancel context.CancelFunc
+	lifecycleCtx  context.Context
+	lease         atomic.Pointer[epochLease]
+	requests      requestAdmission
 	// deliveries 覆盖绑定写入与 Push；业务 Drain 返回后才关闭准入。
-	deliveries requestAdmission
-	stopOnce   sync.Once
-	stopErr    error
+	deliveries   requestAdmission
+	registration *registry.ServiceInstance
+	cleanupOnce  sync.Once
+	cleanupDone  chan struct{}
+	cleanupErr   error
 }
 
 // DrainFunc 在入站请求排空后执行一次；返回前须停止业务的绑定与推送生产者。
@@ -83,15 +85,19 @@ func NewServer(opts ...Option) (*Server, error) {
 	}
 	fatalCtx, fatalCancel := context.WithCancelCause(context.Background())
 	server := &Server{
-		pushTimeout:    o.pushTimeout,
-		cleanupTimeout: o.cleanupTimeout,
-		drain:          o.drain,
-		middlewares:    o.middlewares,
-		locator:        o.locator,
-		handlers:       make(map[int32]Handler),
-		fatalCtx:       fatalCtx,
-		fatalCancel:    fatalCancel,
-		ready:          make(chan struct{}),
+		pushTimeout:     o.pushTimeout,
+		cleanupTimeout:  o.cleanupTimeout,
+		shutdownTimeout: o.shutdownTimeout,
+		drain:           o.drain,
+		middlewares:     o.middlewares,
+		locator:         o.stateful,
+		gateDirectory:   o.gateDirectory,
+		registrar:       o.registrar,
+		healthServer:    health.NewServer(),
+		handlers:        make(map[int32]Handler),
+		fatalCtx:        fatalCtx,
+		fatalCancel:     fatalCancel,
+		cleanupDone:     make(chan struct{}),
 	}
 	server.gateways = gateclient.New(o.clientTLS, o.clientMiddlewares...)
 	server.grpcListener = listener.New(o.network, o.address, o.listener)
@@ -102,19 +108,14 @@ func NewServer(opts ...Option) (*Server, error) {
 		grpc.Listener(server.grpcListener),
 		grpc.Timeout(network.DefaultHandlerTimeout),
 		grpc.Middleware(recovery.Recovery()),
+		grpc.CustomHealth(),
 	)
 	grpcOptions = append(grpcOptions, o.grpcOptions...)
 	server.grpcServer = grpc.NewServer(grpcOptions...)
+	server.healthServer.SetServingStatus("", grpc_health_v1.HealthCheckResponse_NOT_SERVING)
+	grpc_health_v1.RegisterHealthServer(server.grpcServer.Server, server.healthServer)
 	v1.RegisterNodeServer(server.grpcServer, &forwardService{server: server})
 	return server, nil
-}
-
-// Metadata 在配置 Locator 时返回粘性服务元数据。
-func (s *Server) Metadata() map[string]string {
-	if s == nil || s.locator == nil {
-		return nil
-	}
-	return instance.StickyMetadata()
 }
 
 func (s *Server) currentIdentity() nodeIdentity {

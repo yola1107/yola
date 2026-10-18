@@ -88,10 +88,7 @@ func (g *GameCards) Shuffle() {
 
 // DispatchCards 发牌，返回 n 张牌
 func (g *GameCards) DispatchCards(n int) []int32 {
-	end := g.index + n
-	if end > len(g.cards) {
-		end = len(g.cards)
-	}
+	end := min(g.index+n, len(g.cards))
 	cards := xgo.SliceCopy(g.cards[g.index:end])
 	g.index = end
 	return cards

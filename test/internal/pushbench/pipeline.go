@@ -12,7 +12,7 @@ import (
 	"yola/gateway"
 	"yola/locate"
 	locateredis "yola/locate/redis"
-	"yola/node"
+	"yola/push"
 
 	"github.com/go-kratos/kratos/v3"
 	"github.com/go-kratos/kratos/v3/registry"
@@ -21,7 +21,7 @@ import (
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/connectivity"
+	"google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 )
@@ -31,14 +31,129 @@ type Pusher interface {
 	PushToUID(context.Context, string, int32, proto.Message) error
 }
 
+func newPipeline(t testing.TB, address, service string, playerCount int, delay time.Duration, measurements *measurements) (Pusher, *atomic.Uint64) {
+	t.Helper()
+	client := redis.NewClient(&redis.Options{Addr: address, ContextTimeoutEnabled: true})
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+	store := locateredis.New(client)
+	gate, err := gateway.NewServer(
+		gateway.Address("127.0.0.1:0"), gateway.Auth(benchmarkAuthenticator{}),
+		gateway.Locator(store), gateway.Discovery(unusedDiscovery{}), gateway.LeaseTTL(time.Hour),
+	)
+	require.NoError(t, err)
+	startServer(t, gate, "gateway", service+"-gateway", gatewayReady(gate))
+	sender, err := push.NewSender(&measuredLocator{Locator: store, measurements: measurements}, push.ClientMiddleware(measurements.rpc))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, sender.Close()) })
+	received := new(atomic.Uint64)
+	for playerID := 1; playerID <= playerCount; playerID++ {
+		uid := strconv.Itoa(playerID)
+		connection := &benchmarkConnection{id: uid, received: received, delay: delay}
+		require.NoError(t, gate.Open(context.Background(), connection))
+		body, err := proto.Marshal(&v1.ClientAuthReq{ServiceName: service, Token: []byte(uid)})
+		require.NoError(t, err)
+		reply, err := gate.Handle(context.Background(), connection, &v1.Proto{Op: v1.OpAuth, Body: body})
+		require.NoError(t, err)
+		require.Zero(t, reply.Code, "benchmark client authentication failed")
+	}
+	pusher := &measuredPusher{sender: sender, service: service, measurements: measurements}
+	// 在计时前完成连接、路由和 protobuf 首次调用，确认投递确实到达真实 Gateway。
+	require.NoError(t, pusher.PushToUID(context.Background(), "1", 1, wrapperspb.Bytes(nil)))
+	require.Equal(t, uint64(1), received.Load())
+	received.Store(0)
+	measurements.collect(t)
+	return pusher, received
+}
+
+// startServer 使用原生 App，probe 通过公开行为确认 transport 真正可用。
+func startServer(t testing.TB, server transport.Server, service, id string, probe func(context.Context) error) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	app := kratos.New(
+		kratos.Context(ctx), kratos.ID(id), kratos.Name(service), kratos.Server(server),
+		kratos.StopTimeout(10*time.Second),
+	)
+	var runErr error
+	go func() {
+		runErr = app.Run()
+		close(done)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		stopCtx, stopCancel := context.WithTimeout(kratos.NewContext(context.Background(), app), 10*time.Second)
+		defer stopCancel()
+		cleanupErr := server.Stop(stopCtx)
+		select {
+		case <-done:
+			cleanupErr = errors.Join(cleanupErr, runErr)
+		case <-stopCtx.Done():
+			cleanupErr = errors.Join(cleanupErr, errors.New("benchmark application did not stop"), stopCtx.Err())
+		}
+		require.NoError(t, cleanupErr)
+	})
+	readyCtx, readyCancel := context.WithTimeout(ctx, 10*time.Second)
+	defer readyCancel()
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-done:
+			require.NoError(t, runErr)
+			t.Fatal("benchmark application exited before startup completed")
+		case <-readyCtx.Done():
+			t.Fatal("benchmark application did not become ready")
+		case <-ticker.C:
+			if probe(readyCtx) == nil {
+				return
+			}
+		}
+	}
+}
+
+func gatewayReady(gate *gateway.Server) func(context.Context) error {
+	return func(ctx context.Context) error {
+		connection := &benchmarkConnection{id: "readiness-probe"}
+		if err := gate.Open(ctx, connection); err != nil {
+			return err
+		}
+		gate.Close(ctx, connection)
+		return nil
+	}
+}
+
+func nodeReady(t testing.TB, address string) func(context.Context) error {
+	t.Helper()
+	connection, err := kgrpc.NewClient(context.Background(),
+		kgrpc.WithEndpoint("direct:///"+address), kgrpc.WithTimeout(0),
+		kgrpc.WithOptions(grpc.WithDefaultServiceConfig(`{"loadBalancingConfig":[{"pick_first":{}}]}`)),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, connection.Close()) })
+	client := grpc_health_v1.NewHealthClient(connection)
+	return func(ctx context.Context) error {
+		callCtx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
+		defer cancel()
+		response, err := client.Check(callCtx, &grpc_health_v1.HealthCheckRequest{})
+		if err != nil {
+			return err
+		}
+		if response.Status != grpc_health_v1.HealthCheckResponse_SERVING {
+			return errors.New("node is not serving")
+		}
+		return nil
+	}
+}
+
 type measuredPusher struct {
-	server       *node.Server
+	sender       *push.Sender
+	service      string
 	measurements *measurements
 }
 
 func (p *measuredPusher) PushToUID(ctx context.Context, uid string, command int32, message proto.Message) error {
 	started := time.Now()
-	err := p.server.PushToUID(ctx, uid, command, message)
+	err := p.sender.PushToUID(ctx, p.service, uid, command, message)
 	p.measurements.record("push", started, err)
 	return err
 }
@@ -53,110 +168,6 @@ func (s *measuredLocator) LocateGate(ctx context.Context, service, uid string) (
 	lease, err := s.Locator.LocateGate(ctx, service, uid)
 	s.measurements.record("locate_gate", started, err)
 	return lease, err
-}
-
-func newPipeline(t testing.TB, address, service string, playerCount int, delay time.Duration, measurements *measurements) (Pusher, *atomic.Uint64) {
-	t.Helper()
-	client := redis.NewClient(&redis.Options{Addr: address, ContextTimeoutEnabled: true})
-	t.Cleanup(func() { require.NoError(t, client.Close()) })
-	store := locateredis.New(client)
-	gate, err := gateway.NewServer(
-		gateway.Address("127.0.0.1:0"), gateway.Auth(benchmarkAuthenticator{}),
-		gateway.Locator(store), gateway.Discovery(unusedDiscovery{}), gateway.LeaseTTL(time.Hour),
-	)
-	require.NoError(t, err)
-	startServer(t, gate, "gateway", service+"-gateway", nil, nil)
-	server, err := node.NewServer(
-		node.Address("127.0.0.1:0"),
-		node.Locator(&measuredLocator{Locator: store, measurements: measurements}),
-		node.ClientMiddleware(measurements.rpc),
-	)
-	require.NoError(t, err)
-	startServer(t, server, service, service+"-node", server.Metadata(), nil)
-	received := new(atomic.Uint64)
-	for playerID := 1; playerID <= playerCount; playerID++ {
-		uid := strconv.Itoa(playerID)
-		connection := &benchmarkConnection{id: uid, received: received, delay: delay}
-		require.NoError(t, gate.Open(context.Background(), connection))
-		body, err := proto.Marshal(&v1.ClientAuthReq{ServiceName: service, Token: []byte(uid)})
-		require.NoError(t, err)
-		reply, err := gate.Handle(context.Background(), connection, &v1.Proto{Op: v1.OpAuth, Body: body})
-		require.NoError(t, err)
-		require.Zero(t, reply.Code, "benchmark client authentication failed")
-	}
-	pusher := &measuredPusher{server: server, measurements: measurements}
-	// 在计时前完成连接、路由和 protobuf 首次调用，确认投递确实到达真实 Gateway。
-	require.NoError(t, pusher.PushToUID(context.Background(), "1", 1, wrapperspb.Bytes(nil)))
-	require.Equal(t, uint64(1), received.Load())
-	received.Store(0)
-	measurements.collect(t)
-	return pusher, received
-}
-
-type applicationServer interface {
-	transport.Server
-	transport.Endpointer
-	BeforeStart(context.Context) error
-}
-
-func startServer(t testing.TB, server applicationServer, service, id string, metadata map[string]string, registrar registry.Registrar) {
-	t.Helper()
-	ctx, cancel := context.WithCancel(context.Background())
-	ready, done := make(chan struct{}), make(chan struct{})
-	app := kratos.New(
-		kratos.Context(ctx), kratos.ID(id), kratos.Name(service), kratos.Metadata(metadata),
-		kratos.BeforeStart(server.BeforeStart), kratos.Server(server), kratos.Registrar(registrar),
-		kratos.StopTimeout(10*time.Second), kratos.RegistrarTimeout(5*time.Second),
-		kratos.AfterStart(func(context.Context) error { close(ready); return nil }),
-	)
-	var runErr error
-	go func() { runErr = app.Run(); close(done) }()
-	t.Cleanup(func() {
-		var appStopErr error
-		select {
-		case <-ready:
-			appStopErr = app.Stop()
-		default:
-			// 未完成注册时沿用应用 owner 的失败回收，不注销未知登记。
-		}
-		cancel()
-		stopCtx, stopCancel := context.WithTimeout(kratos.NewContext(context.Background(), app), 10*time.Second)
-		defer stopCancel()
-		cleanupErr := errors.Join(appStopErr, server.Stop(stopCtx))
-		select {
-		case <-done:
-			cleanupErr = errors.Join(cleanupErr, runErr)
-		case <-stopCtx.Done():
-			cleanupErr = errors.Join(cleanupErr, errors.New("benchmark application did not stop"), stopCtx.Err())
-		}
-		require.NoError(t, cleanupErr)
-	})
-	select {
-	case <-ready:
-	case <-done:
-		require.NoError(t, runErr)
-		t.Fatal("benchmark application exited before startup completed")
-	case <-time.After(10 * time.Second):
-		t.Fatal("benchmark application did not complete startup")
-	}
-	endpoint, err := server.Endpoint()
-	require.NoError(t, err)
-	// 单 endpoint 就绪探针使用 pick_first，避免 Kratos 默认 selector 的初始化顺序约束。
-	connection, err := kgrpc.NewClient(ctx,
-		kgrpc.WithEndpoint("direct:///"+endpoint.Host), kgrpc.WithTimeout(0),
-		kgrpc.WithOptions(grpc.WithDefaultServiceConfig(`{"loadBalancingConfig":[{"pick_first":{}}]}`)),
-	)
-	require.NoError(t, err)
-	defer func() { require.NoError(t, connection.Close()) }()
-	readyCtx, readyCancel := context.WithTimeout(ctx, 3*time.Second)
-	defer readyCancel()
-	for {
-		state := connection.GetState()
-		if state == connectivity.Ready {
-			return
-		}
-		require.True(t, connection.WaitForStateChange(readyCtx, state), "benchmark gRPC server did not become ready")
-	}
 }
 
 type benchmarkAuthenticator struct{}

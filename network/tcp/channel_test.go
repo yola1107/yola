@@ -11,26 +11,10 @@ import (
 
 	"yola/api/protocol/v1"
 	"yola/network"
-)
 
-func TestPushReportsQueueAndClosedState(t *testing.T) {
-	ch := newChannel(1, defaultCodec())
-	message := &v1.Proto{Op: v1.OpPush}
-	if err := ch.push(message); err != nil {
-		t.Fatal(err)
-	}
-	if err := ch.push(message); !errors.Is(err, network.ErrSendQueueFull) {
-		t.Fatalf("push() error = %v, want %v", err, network.ErrSendQueueFull)
-	}
-	if event, ok := ch.next(); !ok || event.done != nil || event.proto != message {
-		t.Fatalf("next() = %#v", event)
-	}
-	ch.close()
-	ch.close()
-	if err := ch.push(message); !errors.Is(err, network.ErrConnectionClosed) {
-		t.Fatalf("push() error = %v, want %v", err, network.ErrConnectionClosed)
-	}
-}
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
 
 func TestChannelRejectsOversizedProtoBeforeQueue(t *testing.T) {
 	tests := []struct {
@@ -38,17 +22,29 @@ func TestChannelRejectsOversizedProtoBeforeQueue(t *testing.T) {
 		op   int32
 		send func(*channel, *v1.Proto) error
 	}{
-		{name: "push", op: v1.OpPush, send: func(ch *channel, p *v1.Proto) error {
-			return tcpConnection{ch: ch}.SendProto(p)
-		}},
-		{name: "response", op: v1.OpResponse, send: func(ch *channel, p *v1.Proto) error {
-			return ch.reply(context.Background(), p)
-		}},
-		{name: "final", op: v1.OpKick, send: func(ch *channel, p *v1.Proto) error {
-			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
-			defer cancel()
-			return ch.closeWithProto(ctx, p)
-		}},
+		{
+			name: "push",
+			op:   v1.OpPush,
+			send: func(ch *channel, p *v1.Proto) error {
+				return tcpConnection{ch: ch}.SendProto(p)
+			},
+		},
+		{
+			name: "response",
+			op:   v1.OpResponse,
+			send: func(ch *channel, p *v1.Proto) error {
+				return ch.reply(context.Background(), p)
+			},
+		},
+		{
+			name: "final",
+			op:   v1.OpKick,
+			send: func(ch *channel, p *v1.Proto) error {
+				ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+				defer cancel()
+				return ch.closeWithProto(ctx, p)
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -314,17 +310,6 @@ func TestCloseWithProtoReturnsWhenWriterFailsWithFullQueue(t *testing.T) {
 	waitTCPValue(t, dispatched)
 }
 
-type writeStartedConn struct {
-	net.Conn
-	started chan struct{}
-	once    sync.Once
-}
-
-func (c *writeStartedConn) Write(body []byte) (int, error) {
-	c.once.Do(func() { close(c.started) })
-	return c.Conn.Write(body)
-}
-
 func TestConnectionSendConcurrentClose(t *testing.T) {
 	for range 1000 {
 		clientConn, serverConn := net.Pipe()
@@ -354,4 +339,117 @@ func TestConnectionSendConcurrentClose(t *testing.T) {
 		}
 		_ = serverConn.Close()
 	}
+}
+
+func TestSendStatsQueueAndClose(t *testing.T) {
+	ch := newChannel(2, defaultCodec())
+	var conn network.Connection = tcpConnection{ch: ch}
+	observer, ok := conn.(network.SendStatsProvider)
+	require.True(t, ok, "TCP connection must expose send capacity stats")
+	first := &v1.Proto{Op: v1.OpPush, Body: make([]byte, 32)}
+	require.NoError(t, conn.SendProto(first))
+	require.NoError(t, conn.SendProto(&v1.Proto{Op: v1.OpPush, Body: make([]byte, 1024)}))
+	require.ErrorIs(t, conn.SendProto(&v1.Proto{Op: v1.OpPush}), network.ErrSendQueueFull)
+	stats := observer.SendStats()
+	require.Equal(t, 2, stats.QueueDepth)
+	require.Equal(t, 2, stats.QueueCapacity)
+	require.Equal(t, int64(1056), stats.PendingPayloadBytes)
+	require.Equal(t, uint64(1), stats.QueueDropped)
+	event, ready := ch.next()
+	require.True(t, ready)
+	require.Same(t, first, event.proto)
+	require.Nil(t, event.done)
+	require.Equal(t, int64(1024), observer.SendStats().PendingPayloadBytes)
+	ch.close()
+	ch.close()
+	require.ErrorIs(t, conn.SendProto(&v1.Proto{Op: v1.OpPush}), network.ErrConnectionClosed)
+	stats = observer.SendStats()
+	require.True(t, stats.Closed)
+	require.Equal(t, uint64(1), stats.QueueDropped)
+	require.Equal(t, int64(1024), stats.PendingPayloadBytes)
+}
+
+func TestSendStatsSlowWriterAndCanceledReply(t *testing.T) {
+	serverConn, clientConn := net.Pipe()
+	t.Cleanup(func() { _ = clientConn.Close() })
+	controlled := &writeStartedConn{Conn: serverConn, started: make(chan struct{})}
+	ch := newChannel(1, defaultCodec())
+	conn := tcpConnection{conn: controlled, ch: ch}
+	server := NewServer(WriteTimeout(time.Second))
+	writerDone := make(chan struct{})
+	t.Cleanup(func() {
+		_ = conn.Close()
+		waitTCPValue(t, writerDone)
+	})
+	go func() {
+		defer close(writerDone)
+		server.dispatchTCP(controlled, bufio.NewWriterSize(controlled, _defaultIOBufferSize), ch)
+	}()
+	require.NoError(t, conn.SendProto(&v1.Proto{Op: v1.OpPush, Body: make([]byte, 32)}))
+	waitTCPValue(t, controlled.started)
+	require.Zero(t, conn.SendStats().PendingPayloadBytes, "writer owns the dequeued frame")
+	require.NoError(t, conn.SendProto(&v1.Proto{Op: v1.OpPush, Body: make([]byte, 1024)}))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	replied := make(chan error, 1)
+	go func() { replied <- ch.reply(ctx, &v1.Proto{Op: v1.OpResponse, Body: make([]byte, 16)}) }()
+	require.Eventually(t, func() bool { return conn.SendStats().PendingPayloadBytes == 1040 }, time.Second, time.Millisecond)
+	cancel()
+	require.ErrorIs(t, waitTCPValue(t, replied), context.Canceled)
+	require.Equal(t, int64(1024), conn.SendStats().PendingPayloadBytes)
+	require.ErrorIs(t, conn.SendProto(&v1.Proto{Op: v1.OpPush}), network.ErrSendQueueFull)
+	require.NoError(t, conn.Close())
+	waitTCPValue(t, writerDone)
+	require.Equal(t, int64(1024), conn.SendStats().PendingPayloadBytes)
+	require.Equal(t, uint64(1), conn.SendStats().QueueDropped)
+}
+
+func TestSendStatsConcurrentReadSendAndClose(t *testing.T) {
+	ch := newChannel(8, defaultCodec())
+	conn := tcpConnection{ch: ch}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			if _, ok := ch.next(); !ok {
+				return
+			}
+		}
+	}()
+	var workers sync.WaitGroup
+	middle := make(chan struct{})
+	var reached sync.Once
+	workers.Go(func() {
+		<-middle
+		ch.close()
+	})
+	for range 4 {
+		workers.Go(func() {
+			for i := range 200 {
+				if i == 100 {
+					reached.Do(func() { close(middle) })
+				}
+				err := conn.SendProto(&v1.Proto{Op: v1.OpPush, Body: []byte("stats")})
+				if err != nil {
+					assert.True(t, errors.Is(err, network.ErrSendQueueFull) || errors.Is(err, network.ErrConnectionClosed))
+				}
+				assert.GreaterOrEqual(t, conn.SendStats().PendingPayloadBytes, int64(0))
+			}
+		})
+	}
+	workers.Wait()
+	ch.close()
+	waitTCPValue(t, done)
+	require.Equal(t, int64(conn.SendStats().QueueDepth*5), conn.SendStats().PendingPayloadBytes)
+}
+
+type writeStartedConn struct {
+	net.Conn
+	started chan struct{}
+	once    sync.Once
+}
+
+func (c *writeStartedConn) Write(body []byte) (int, error) {
+	c.once.Do(func() { close(c.started) })
+	return c.Conn.Write(body)
 }

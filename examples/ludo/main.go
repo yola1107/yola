@@ -47,7 +47,7 @@ func main() {
 	}
 	defer registry.Close()
 
-	nodeServer, err := node.NewServer(node.Address(grpcAddr))
+	nodeServer, err := node.NewServer(node.Address(grpcAddr), node.Registration(registry))
 	if err != nil {
 		slog.Error("create Ludo Node", "error", err)
 		return
@@ -68,9 +68,7 @@ func main() {
 		kratos.Name(name),
 		kratos.Logger(logger),
 		kratos.StopTimeout(stopTimeout),
-		kratos.BeforeStart(nodeServer.BeforeStart),
 		kratos.Server(nodeServer),
-		kratos.Registrar(nodeServer.Registrar(registry)),
 	)
 	if err := app.Run(); err != nil {
 		slog.Error("run Ludo", "error", err)

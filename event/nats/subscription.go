@@ -39,19 +39,6 @@ func (s *subscription) Unsubscribe(ctx context.Context) error {
 	return s.wait(ctx)
 }
 
-func (s *subscription) activate(conn *natsgo.Conn, queueCapacity int) error {
-	messages := make(chan *natsgo.Msg, queueCapacity)
-	native, err := conn.ChanSubscribe(s.topic, messages)
-	if err != nil {
-		return err
-	}
-
-	s.native = native
-	s.messages = messages
-	s.stats.QueueCapacity = queueCapacity
-	return nil
-}
-
 // SubscriptionStats 返回本地订阅快照；原生 drop 失效后保留最后可得值。
 func (s *subscription) SubscriptionStats() event.SubscriptionStats {
 	s.statsMu.Lock()
@@ -63,16 +50,17 @@ func (s *subscription) SubscriptionStats() event.SubscriptionStats {
 	return stats
 }
 
-// sampleDropped 由 statsMu 保护；不得从原生订阅关闭回调重入原生锁。
-func (s *subscription) sampleDropped() {
-	s.stats.QueueDroppedCurrent = false
-	if s.native == nil {
-		return
+func (s *subscription) activate(conn *natsgo.Conn, queueCapacity int) error {
+	messages := make(chan *natsgo.Msg, queueCapacity)
+	native, err := conn.ChanSubscribe(s.topic, messages)
+	if err != nil {
+		return err
 	}
-	if dropped, err := s.native.Dropped(); err == nil {
-		s.stats.QueueDropped = uint64(dropped)
-		s.stats.QueueDroppedCurrent = true
-	}
+
+	s.native = native
+	s.messages = messages
+	s.stats.QueueCapacity = queueCapacity
+	return nil
 }
 
 func (s *subscription) start(parent context.Context) {
@@ -90,10 +78,7 @@ func (s *subscription) consume(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case message, ok := <-s.messages:
-			if !ok {
-				return
-			}
-			if ctx.Err() != nil {
+			if !ok || ctx.Err() != nil {
 				return
 			}
 			s.handle(ctx, message)
@@ -135,27 +120,6 @@ func (s *subscription) handle(ctx context.Context, message *natsgo.Msg) {
 	s.handler(ctx, received)
 }
 
-func (s *subscription) deactivate() (bool, error) {
-	s.statsMu.Lock()
-	s.sampleDropped()
-	native := s.native
-	started := s.cancel != nil
-	s.native = nil
-	s.cancel = nil
-	dropped := s.stats.QueueDropped
-	s.stats.QueueDroppedCurrent = false
-	s.statsMu.Unlock()
-
-	var err error
-	if native != nil {
-		if dropped > 0 {
-			slog.Warn("event dropped", "topic", s.topic, "reason", "queue_full", "dropped", dropped)
-		}
-		err = native.Unsubscribe()
-	}
-	return started, err
-}
-
 func (s *subscription) beginStop() {
 	s.stopOnce.Do(func() {
 		if s.cancel != nil {
@@ -188,6 +152,26 @@ func (s *subscription) complete() {
 	close(s.stopDone)
 }
 
+func (s *subscription) deactivate() (bool, error) {
+	s.statsMu.Lock()
+	s.sampleDropped()
+	native := s.native
+	started := s.cancel != nil
+	s.native = nil
+	s.cancel = nil
+	dropped := s.stats.QueueDropped
+	s.stats.QueueDroppedCurrent = false
+	s.statsMu.Unlock()
+
+	if native == nil {
+		return started, nil
+	}
+	if dropped > 0 {
+		slog.Warn("event dropped", "topic", s.topic, "reason", "queue_full", "dropped", dropped)
+	}
+	return started, native.Unsubscribe()
+}
+
 func (s *subscription) wait(ctx context.Context) error {
 	if err := contextwait.Done(ctx, s.stopDone); err != nil {
 		select {
@@ -200,18 +184,21 @@ func (s *subscription) wait(ctx context.Context) error {
 	return s.stopErr
 }
 
+// sampleDropped 由 statsMu 保护；不得从原生订阅关闭回调重入原生锁。
+func (s *subscription) sampleDropped() {
+	s.stats.QueueDroppedCurrent = false
+	if s.native == nil {
+		return
+	}
+	if dropped, err := s.native.Dropped(); err == nil {
+		s.stats.QueueDropped = uint64(dropped)
+		s.stats.QueueDroppedCurrent = true
+	}
+}
+
 func (s *subscription) recordPayloadDrop() {
 	dropped := s.payloadDropped.Add(1)
 	if dropped&(dropped-1) == 0 {
 		slog.Warn("event dropped", "topic", s.topic, "reason", "payload_too_large", "dropped", dropped)
 	}
-}
-
-func waitSubscriptions(subscriptions []*subscription) error {
-	errs := make([]error, 0, len(subscriptions))
-	for _, registered := range subscriptions {
-		<-registered.stopDone
-		errs = append(errs, registered.stopErr)
-	}
-	return errors.Join(errs...)
 }

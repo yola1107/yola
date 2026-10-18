@@ -81,7 +81,10 @@ func TestStaleDisconnectDoesNotClearCurrentSessionOfflineState(t *testing.T) {
 		t.Cleanup(resumePush)
 		reconnected := &pausedPushSession{
 			connectionSession: connectionSession{uid: "42", bindingToken: "reconnected"},
-			pause:             sync.OnceFunc(func() { close(pushStarted); <-releasePush }),
+			pause: sync.OnceFunc(func() {
+				close(pushStarted)
+				<-releasePush
+			}),
 		}
 		loginDone := make(chan error, 1)
 		go func() {

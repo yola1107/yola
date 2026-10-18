@@ -234,14 +234,11 @@ func (t *Table) makeAutoActionReq(p *player.Player) (*v1.PlayerActionReq, error)
 		if len(op.Cards) > 0 {
 			req.OutCard = op.Cards[xgo.RandInt(0, len(op.Cards))]
 		}
-	case v1.ACTION_DRAW_CARD:
-		// no extra fields
 	case v1.ACTION_DECLARE_SUIT:
 		if len(op.Suits) > 0 {
 			req.DeclareSuit = op.Suits[xgo.RandInt(0, len(op.Suits))]
 		}
-	case v1.ACTION_SKIP_TURN:
-		// no extra fields
+	case v1.ACTION_DRAW_CARD, v1.ACTION_SKIP_TURN:
 	default:
 		return nil, fmt.Errorf("unexpected action=%v for player=%v", op.Action, p.Desc())
 	}
@@ -272,8 +269,6 @@ func (t *Table) gameEnd() {
 }
 
 func (t *Table) settle() *SettleObj {
-	// winner, endType := t.calcWinner()
-
 	var (
 		winner   *player.Player
 		minScore int32 = math.MaxInt32

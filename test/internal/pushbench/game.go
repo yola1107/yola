@@ -8,6 +8,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"hash"
+	"net"
 	"os"
 	"strconv"
 	"sync"
@@ -51,6 +52,13 @@ type messageStream struct {
 	pending       []time.Time
 }
 
+// RequestTimeouts 分别表达真实投递链各层的请求上限，不改变框架默认值。
+type RequestTimeouts struct {
+	Transport time.Duration
+	Forward   time.Duration
+	Node      time.Duration
+}
+
 // GameRedis 仅连接显式提供的专用实例；完整对局还要求独立 etcd namespace。
 func GameRedis(t *testing.T) *redis.Client {
 	t.Helper()
@@ -64,17 +72,15 @@ func GameRedis(t *testing.T) *redis.Client {
 	return client
 }
 
-// RequestTimeouts 分别表达真实投递链各层的请求上限，不改变框架默认值。
-type RequestTimeouts struct {
-	Transport time.Duration
-	Forward   time.Duration
-	Node      time.Duration
-}
-
 // StartGame 通过原生 App.Run 装配 Node、Gateway、Redis 和共享 Registry。
 func StartGame(
-	t *testing.T, service string, client redis.UniversalClient, register func(*node.Server), drain node.DrainFunc,
-	playerCount int, timeouts RequestTimeouts,
+	t *testing.T,
+	service string,
+	client redis.UniversalClient,
+	register func(*node.Server),
+	drain node.DrainFunc,
+	playerCount int,
+	timeouts RequestTimeouts,
 ) *GameProbe {
 
 	t.Helper()
@@ -85,21 +91,24 @@ func StartGame(
 	measurements := newMeasurements(t)
 	probe := &GameProbe{measurements: measurements, streams: make(map[string]*messageStream)}
 	suffix := rand.Text()
-	discovery, err := etcd.New(
+	discovery, err := etcd.NewNodeRegistry(
 		etcd.WithEndpoints(os.Getenv("YOLA_ETCD_INTEGRATION")), etcd.WithPrefix("/yola/game-test/"+suffix),
 	)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, discovery.Close()) })
 	store := locateredis.New(client)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	locator := &measuredLocator{Locator: store, measurements: measurements}
 	server, err := node.NewServer(
-		node.Address("127.0.0.1:0"), node.Locator(&measuredLocator{Locator: store, measurements: measurements}),
+		node.Address("127.0.0.1:0"), node.Listener(listener), node.Registration(discovery), node.Stateful(locator), node.GateDirectory(locator),
 		node.HandlerTimeout(timeouts.Node),
 		node.ClientMiddleware(probe.observePush, measurements.rpc), node.Middleware(probe.observeHandler), node.Drain(drain),
 	)
 	require.NoError(t, err)
 	register(server)
 	probe.server = server
-	startServer(t, server, service, service+"-"+suffix, server.Metadata(), server.Registrar(discovery))
+	startServer(t, server, service, service+"-"+suffix, nodeReady(t, listener.Addr().String()))
 	socket := websocket.NewServer(websocket.Address("127.0.0.1:0"), websocket.Timeout(timeouts.Transport),
 		websocket.MaxConnLimit(int32(playerCount+1)), websocket.MaxConnPerIP(int32(playerCount+1)))
 	gate, err := gateway.NewServer(
@@ -107,38 +116,11 @@ func StartGame(
 		gateway.Discovery(discovery), gateway.Transport(socket), gateway.RPCTimeout(timeouts.Forward),
 	)
 	require.NoError(t, err)
-	startServer(t, gate, "gateway", "gateway-"+suffix, nil, nil)
+	startServer(t, gate, "gateway", "gateway-"+suffix, gatewayReady(gate))
 	socketEndpoint, err := socket.Endpoint()
 	require.NoError(t, err)
 	probe.Endpoint = socketEndpoint.String()
 	return probe
-}
-
-func (p *GameProbe) observePush(next middleware.Handler) middleware.Handler {
-	return func(ctx context.Context, request any) (any, error) {
-		if push, ok := request.(*v1.PushRequest); ok {
-			stream := p.stream(push.GetRoute().GetUid())
-			stream.mu.Lock()
-			writeMessageDigest(stream.sent, push.Command, push.Body)
-			stream.sentCount++
-			stream.pending = append(stream.pending, time.Now())
-			stream.mu.Unlock()
-		}
-		reply, err := next(ctx, request)
-		p.recordError(err)
-		return reply, err
-	}
-}
-
-func (p *GameProbe) observeHandler(next middleware.Handler) middleware.Handler {
-	return func(ctx context.Context, request any) (any, error) {
-		started := time.Now()
-		reply, err := next(ctx, request)
-		if p.recording.Load() {
-			p.measurements.record("handler", started, err)
-		}
-		return reply, err
-	}
 }
 
 // RecordPush 在客户端按 callback FIFO 记录原始业务 payload，然后才执行客户端行为。
@@ -196,6 +178,46 @@ func (p *GameProbe) AssertDelivered(t *testing.T, playerCount int) {
 	t.Logf("GAME delivery: players=%d pushes=%d matched=true", len(p.streams), messages)
 }
 
+// Err 返回首次观测到的传输或业务响应错误。
+func (p *GameProbe) Err() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.err
+}
+
+// Codec 在真实帧编解码处观测请求往返，保留客户端原有的同步或异步调用方式。
+// 请求计时从出站帧编码开始，包含出站队列等待，但不包含业务 payload 首次序列化。
+func (p *GameProbe) Codec(onResponse func(int32, []byte) error) encoding.Codec {
+	return &gameCodec{Codec: encoding.GetCodec("proto"), probe: p, onResponse: onResponse, pending: make(map[int32]time.Time)}
+}
+
+func (p *GameProbe) observePush(next middleware.Handler) middleware.Handler {
+	return func(ctx context.Context, request any) (any, error) {
+		if push, ok := request.(*v1.PushRequest); ok {
+			stream := p.stream(push.GetRoute().GetUid())
+			stream.mu.Lock()
+			writeMessageDigest(stream.sent, push.Command, push.Body)
+			stream.sentCount++
+			stream.pending = append(stream.pending, time.Now())
+			stream.mu.Unlock()
+		}
+		reply, err := next(ctx, request)
+		p.recordError(err)
+		return reply, err
+	}
+}
+
+func (p *GameProbe) observeHandler(next middleware.Handler) middleware.Handler {
+	return func(ctx context.Context, request any) (any, error) {
+		started := time.Now()
+		reply, err := next(ctx, request)
+		if p.recording.Load() {
+			p.measurements.record("handler", started, err)
+		}
+		return reply, err
+	}
+}
+
 func (p *GameProbe) deliveryError(playerCount int) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -231,17 +253,15 @@ func (p *GameProbe) recordError(err error) {
 	}
 }
 
-// Err 返回首次观测到的传输或业务响应错误。
-func (p *GameProbe) Err() error {
+func (p *GameProbe) stream(uid string) *messageStream {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return p.err
-}
-
-// Codec 在真实帧编解码处观测请求往返，保留客户端原有的同步或异步调用方式。
-// 请求计时从出站帧编码开始，包含出站队列等待，但不包含业务 payload 首次序列化。
-func (p *GameProbe) Codec(onResponse func(int32, []byte) error) encoding.Codec {
-	return &gameCodec{Codec: encoding.GetCodec("proto"), probe: p, onResponse: onResponse, pending: make(map[int32]time.Time)}
+	stream := p.streams[uid]
+	if stream == nil {
+		stream = &messageStream{sent: sha256.New(), received: sha256.New()}
+		p.streams[uid] = stream
+	}
+	return stream
 }
 
 type gameCodec struct {
@@ -290,17 +310,6 @@ func (c *gameCodec) Unmarshal(body []byte, value any) error {
 		c.probe.requests.Add(-1)
 	}
 	return nil
-}
-
-func (p *GameProbe) stream(uid string) *messageStream {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	stream := p.streams[uid]
-	if stream == nil {
-		stream = &messageStream{sent: sha256.New(), received: sha256.New()}
-		p.streams[uid] = stream
-	}
-	return stream
 }
 
 func writeMessageDigest(digest hash.Hash, command int32, body []byte) {

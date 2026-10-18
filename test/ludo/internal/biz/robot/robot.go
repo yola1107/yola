@@ -54,6 +54,32 @@ func (m *Manager) Run(ctx context.Context) {
 	}
 }
 
+// Leave 机器人离开桌子，放回空闲池
+func (m *Manager) Leave(uid int64) bool {
+	value, ok := m.all.Load(uid)
+	if !ok {
+		return false
+	}
+	p, ok := value.(*player.Player)
+	if !ok {
+		m.all.Delete(uid)
+		m.free.Delete(uid)
+		return false
+	}
+	if _, alreadyFree := m.free.Load(uid); alreadyFree {
+		return true
+	}
+	m.reset(p)
+	m.free.Store(uid, p)
+	return true
+}
+
+func (m *Manager) Counts() (all, gaming, free int32) {
+	all = m.countAll()
+	free = m.countFree()
+	return all, all - free, free
+}
+
 func (m *Manager) load() {
 	cfg := m.rc.Robot
 	if !cfg.Open || cfg.Num <= 0 {
@@ -139,26 +165,6 @@ func (m *Manager) login(ctx context.Context) {
 	}
 }
 
-// Leave 机器人离开桌子，放回空闲池
-func (m *Manager) Leave(uid int64) bool {
-	value, ok := m.all.Load(uid)
-	if !ok {
-		return false
-	}
-	p, ok := value.(*player.Player)
-	if !ok {
-		m.all.Delete(uid)
-		m.free.Delete(uid)
-		return false
-	}
-	if _, alreadyFree := m.free.Load(uid); alreadyFree {
-		return true
-	}
-	m.reset(p)
-	m.free.Store(uid, p)
-	return true
-}
-
 func (m *Manager) reset(p *player.Player) {
 	minMoney := max(m.rc.Robot.MinMoney, m.rc.Game.MinMoney)
 	maxMoney := m.rc.Robot.MaxMoney
@@ -169,12 +175,6 @@ func (m *Manager) reset(p *player.Player) {
 	if money < minMoney || money > maxMoney {
 		p.GetBaseData().Money = float64(int64(xgo.RandFloat(minMoney, maxMoney)))
 	}
-}
-
-func (m *Manager) Counts() (all, gaming, free int32) {
-	all = m.countAll()
-	free = m.countFree()
-	return all, all - free, free
 }
 
 func (m *Manager) countAll() int32 {

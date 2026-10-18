@@ -8,19 +8,29 @@ import (
 	"yola/internal/contextwait"
 )
 
-// requestAdmission 统一管理终态、已接纳请求和排空完成信号；零值允许接纳请求。
+const (
+	_admissionPending uint32 = iota
+	_admissionOpen
+	_admissionClosed
+)
+
+// requestAdmission 统一管理准入阶段、已接纳请求和排空完成信号；零值尚未开放。
 type requestAdmission struct {
-	closed atomic.Bool
+	state  atomic.Uint32
 	mu     sync.Mutex
 	active int
 	// drained 只在停止时创建，完成后不再接纳请求。
 	drained chan struct{}
 }
 
+func (a *requestAdmission) open() {
+	a.state.CompareAndSwap(_admissionPending, _admissionOpen)
+}
+
 func (a *requestAdmission) admit() bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.isClosed() {
+	if a.state.Load() != _admissionOpen {
 		return false
 	}
 	a.active++
@@ -36,14 +46,6 @@ func (a *requestAdmission) done() {
 	a.mu.Unlock()
 }
 
-func (a *requestAdmission) close() {
-	a.closed.Store(true)
-}
-
-func (a *requestAdmission) isClosed() bool {
-	return a.closed.Load()
-}
-
 func (a *requestAdmission) stopAndWait(ctx context.Context) error {
 	a.close()
 	a.mu.Lock()
@@ -57,4 +59,12 @@ func (a *requestAdmission) stopAndWait(ctx context.Context) error {
 	drained := a.drained
 	a.mu.Unlock()
 	return contextwait.Done(ctx, drained)
+}
+
+func (a *requestAdmission) close() {
+	a.state.Store(_admissionClosed)
+}
+
+func (a *requestAdmission) isClosed() bool {
+	return a.state.Load() == _admissionClosed
 }

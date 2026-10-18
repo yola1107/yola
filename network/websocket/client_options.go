@@ -25,73 +25,101 @@ type ClientOption func(*clientOptions)
 
 // WithEndpoint 配置客户端 endpoint。
 func WithEndpoint(endpoint string) ClientOption {
-	return func(o *clientOptions) { o.endpoint = endpoint }
+	return func(o *clientOptions) {
+		o.endpoint = endpoint
+	}
 }
 
 // WithTimeout 配置建连和首次认证的超时。
 func WithTimeout(timeout time.Duration) ClientOption {
-	return func(o *clientOptions) { o.timeout = timeout }
+	return func(o *clientOptions) {
+		o.timeout = timeout
+	}
 }
 
 // WithToken 配置认证 token。
 func WithToken(token string) ClientOption {
-	return func(o *clientOptions) { o.token = []byte(token) }
+	return func(o *clientOptions) {
+		o.token = []byte(token)
+	}
 }
 
 // WithServiceName 配置认证使用的 Node 服务。
 func WithServiceName(service string) ClientOption {
-	return func(o *clientOptions) { o.serviceName = service }
+	return func(o *clientOptions) {
+		o.serviceName = service
+	}
 }
 
 // WithTLSConfig 配置 TLS。
 func WithTLSConfig(c *tls.Config) ClientOption {
-	return func(o *clientOptions) { o.tlsConf = c }
+	return func(o *clientOptions) {
+		o.tlsConf = c
+	}
 }
 
 // WithCodec 配置协议帧编码；通信双方必须使用相同 codec。
 // 包内持有的默认 protobuf codec 不会被全局 codec 注册替换。
 func WithCodec(codec encoding.Codec) ClientOption {
-	return func(o *clientOptions) { o.codec = codec }
+	return func(o *clientOptions) {
+		o.codec = codec
+	}
 }
 
 // WithChannelConfig 配置客户端 channel。
 func WithChannelConfig(c *ChannelConfig) ClientOption {
-	return func(o *clientOptions) { o.channel = c }
+	return func(o *clientOptions) {
+		o.channel = c
+	}
 }
 
 // WithPingInterval 配置客户端心跳间隔。
 func WithPingInterval(interval time.Duration) ClientOption {
-	return func(o *clientOptions) { o.pingInterval = interval }
+	return func(o *clientOptions) {
+		o.pingInterval = interval
+	}
 }
 
 // WithRequestTimeout 配置请求等待结果的最长时间。
 func WithRequestTimeout(timeout time.Duration) ClientOption {
-	return func(o *clientOptions) { o.requestTimeout = timeout }
+	return func(o *clientOptions) {
+		o.requestTimeout = timeout
+	}
 }
 
 // WithCallbackQueueSize 配置等待执行的 connect/push 回调队列容量。
 func WithCallbackQueueSize(size int) ClientOption {
-	return func(o *clientOptions) { o.callbackQueueSize = size }
+	return func(o *clientOptions) {
+		o.callbackQueueSize = size
+	}
 }
 
 // WithConnectFunc 配置认证成功后的连接回调。
 func WithConnectFunc(fn func(*Channel)) ClientOption {
-	return func(o *clientOptions) { o.connectFunc = fn }
+	return func(o *clientOptions) {
+		o.connectFunc = fn
+	}
 }
 
 // WithDisconnectFunc 配置断线回调。
 func WithDisconnectFunc(fn func(*Channel)) ClientOption {
-	return func(o *clientOptions) { o.disconnectFunc = fn }
+	return func(o *clientOptions) {
+		o.disconnectFunc = fn
+	}
 }
 
 // WithPushHandler 配置推送处理器。
 func WithPushHandler(handler map[int32]PushHandler) ClientOption {
-	return func(o *clientOptions) { o.pushHandler = handler }
+	return func(o *clientOptions) {
+		o.pushHandler = handler
+	}
 }
 
 // WithKickHandler 配置主动断开连接的回调。
 func WithKickHandler(handler KickHandler) ClientOption {
-	return func(o *clientOptions) { o.kickHandler = handler }
+	return func(o *clientOptions) {
+		o.kickHandler = handler
+	}
 }
 
 type clientOptions struct {

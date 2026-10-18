@@ -17,6 +17,7 @@ import (
 	"yola/api/cluster/v1"
 	protocolv1 "yola/api/protocol/v1"
 	"yola/instance"
+	"yola/internal/clusterroute"
 	"yola/internal/contextwait"
 	"yola/locate"
 	locateredis "yola/locate/redis"
@@ -26,7 +27,6 @@ import (
 	"github.com/alicebob/miniredis/v2"
 	"github.com/go-kratos/kratos/v3"
 	"github.com/go-kratos/kratos/v3/registry"
-	"github.com/go-kratos/kratos/v3/transport"
 	kgrpc "github.com/go-kratos/kratos/v3/transport/grpc"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
@@ -34,6 +34,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/emptypb"
 )
 
 func newTestServer(t testing.TB, opts ...Option) *Server {
@@ -67,21 +68,17 @@ type pingLocator struct {
 func (pingLocator) Ping(context.Context) error { return nil }
 
 type testAuthenticator struct {
-	remoteIPs chan string
 	services  chan string
 	deadlines chan bool
 	calls     *atomic.Int32
 }
 
-func (a testAuthenticator) Authenticate(ctx context.Context, serviceName string, token []byte, remoteIP string) (string, error) {
+func (a testAuthenticator) Authenticate(ctx context.Context, serviceName string, token []byte, _ string) (string, error) {
 	if a.calls != nil {
 		a.calls.Add(1)
 	}
 	if a.services != nil {
 		a.services <- serviceName
-	}
-	if a.remoteIPs != nil {
-		a.remoteIPs <- remoteIP
 	}
 	if a.deadlines != nil {
 		_, ok := ctx.Deadline()
@@ -148,8 +145,12 @@ func (c *testConnection) Close() error {
 
 func testBinding() locate.GateBinding {
 	return locate.GateBinding{
-		ServiceName: "game", UID: "player-a", BindingToken: "binding-a",
-		GateID: "gate-a", GateEndpoint: "grpc://127.0.0.1:9100", ConnID: "conn-a",
+		ServiceName:  "game",
+		UID:          "player-a",
+		BindingToken: "binding-a",
+		GateID:       "gate-a",
+		GateEndpoint: "grpc://127.0.0.1:9100",
+		ConnID:       "conn-a",
 	}
 }
 
@@ -283,10 +284,21 @@ func startTestNode(t *testing.T) string {
 
 func startTestNodeServer(t *testing.T, id string, serviceName string, opts ...node.Option) (string, func()) {
 	t.Helper()
+	return startConfiguredTestNode(t, id, serviceName, func(server *node.Server) {
+		var service testGameService
+		server.RegisterRawHandler(1, service.enter)
+		server.RegisterRawHandler(2, service.enterAndPush)
+		server.RegisterRawHandler(3, service.enterAndBind)
+	}, opts...)
+}
+
+func startConfiguredTestNode(t *testing.T, id, serviceName string, configure func(*node.Server), opts ...node.Option) (string, func()) {
+	t.Helper()
 	const cleanupTimeout = 3 * time.Second
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = lis.Close() })
+	opts = append([]node.Option{node.Registration(&testNodeRegistration{}), node.Address("127.0.0.1:0")}, opts...)
 	opts = append(opts, node.Listener(lis))
 	ns, err := node.NewServer(opts...)
 	require.NoError(t, err)
@@ -298,14 +310,10 @@ func startTestNodeServer(t *testing.T, id string, serviceName string, opts ...no
 			t.Errorf("stop test Node: %v", stopErr)
 		}
 	})
-	var serviceImpl testGameService
-	ns.RegisterRawHandler(1, serviceImpl.enter)
-	ns.RegisterRawHandler(2, serviceImpl.enterAndPush)
-	ns.RegisterRawHandler(3, serviceImpl.enterAndBind)
+	configure(ns)
 	app := kratos.New(
 		kratos.ID(id), kratos.Name(serviceName),
-		kratos.Metadata(ns.Metadata()), kratos.StopTimeout(cleanupTimeout),
-		kratos.BeforeStart(ns.BeforeStart), kratos.Server(ns),
+		kratos.StopTimeout(cleanupTimeout), kratos.Server(ns),
 	)
 	grpcDone := make(chan struct{})
 	stop := sync.OnceFunc(func() {
@@ -333,6 +341,19 @@ func startTestNodeServer(t *testing.T, id string, serviceName string, opts ...no
 	}, time.Second, time.Millisecond)
 	return "grpc://" + lis.Addr().String(), stop
 }
+
+type testNodeRegistration struct {
+	registered chan *registry.ServiceInstance
+}
+
+func (r *testNodeRegistration) Register(_ context.Context, service *registry.ServiceInstance) error {
+	if r.registered != nil {
+		r.registered <- service
+	}
+	return nil
+}
+
+func (*testNodeRegistration) Deregister(context.Context, *registry.ServiceInstance) error { return nil }
 
 type stubTransport struct {
 	handlerErr error
@@ -388,15 +409,19 @@ func initTestGateway(t *testing.T, gateway *Server) {
 		name:      "gate",
 		endpoints: []string{"grpc://127.0.0.1:9100"},
 	})
-	require.NoError(t, gateway.BeforeStart(ctx))
 	started = make(chan error, 1)
 	go func() { started <- gateway.Start(ctx) }()
-	require.Eventually(t, gateway.admission.accepting.Load, time.Second, time.Millisecond)
+	require.Eventually(t, gateway.sessions.isAccepting, time.Second, time.Millisecond)
 }
 
 func startTestApp(t *testing.T, gateway *Server) {
 	t.Helper()
-	app := newTestApp(gateway)
+	startNamedTestApp(t, gateway, "gate-a")
+}
+
+func startNamedTestApp(t *testing.T, gateway *Server, id string) {
+	t.Helper()
+	app := newNamedTestApp(gateway, id)
 	serverDone := make(chan error, 1)
 	t.Cleanup(func() {
 		if err := app.Stop(); err != nil {
@@ -418,33 +443,20 @@ func startTestApp(t *testing.T, gateway *Server) {
 		}
 	})
 	go func() { serverDone <- app.Run() }()
-	require.Eventually(t, gateway.admission.accepting.Load, time.Second, time.Millisecond)
+	require.Eventually(t, gateway.sessions.isAccepting, time.Second, time.Millisecond)
 }
 
-func newTestApp(gateway *Server, servers ...transport.Server) *kratos.App {
+func newTestApp(gateway *Server) *kratos.App {
+	return newNamedTestApp(gateway, "gate-a")
+}
+
+func newNamedTestApp(gateway *Server, id string) *kratos.App {
 	return kratos.New(
-		kratos.ID("gate-a"),
+		kratos.ID(id),
 		kratos.Name("gateway"),
 		kratos.StopTimeout(time.Second),
-		kratos.BeforeStart(gateway.BeforeStart),
-		kratos.Server(append([]transport.Server{gateway}, servers...)...),
+		kratos.Server(gateway),
 	)
-}
-
-type blockingBackendDiscovery struct {
-	*backendTestDiscovery
-	started chan context.Context
-	release chan struct{}
-}
-
-func (d *blockingBackendDiscovery) GetService(ctx context.Context, service string) ([]*registry.ServiceInstance, error) {
-	d.started <- ctx
-	select {
-	case <-d.release:
-		return d.backendTestDiscovery.GetService(ctx, service)
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
 }
 
 type watchDiscoveryWatcher struct {
@@ -540,8 +552,10 @@ func (d *backendTestDiscovery) Watch(ctx context.Context, service string) (regis
 		return nil, errors.New("discovery unavailable")
 	}
 	watcher := &backendTestWatcher{
-		ctx: ctx, discovery: d, service: service,
-		updates: make(chan []*registry.ServiceInstance, 16),
+		ctx:       ctx,
+		discovery: d,
+		service:   service,
+		updates:   make(chan []*registry.ServiceInstance, 16),
 	}
 	if d.watchers[service] == nil {
 		d.watchers[service] = make(map[*backendTestWatcher]struct{})
@@ -594,14 +608,7 @@ func forwardBackend(client v1.NodeClient) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
 	_, err := client.Forward(ctx, &v1.ForwardRequest{
-		Route: &v1.GateRoute{
-			ServiceName:  "game",
-			Uid:          "player-a",
-			BindingToken: "binding-a",
-			GateId:       "gate-a",
-			GateEndpoint: "grpc://127.0.0.1:9100",
-			ConnId:       "conn-a",
-		},
+		Route:   clusterroute.FromBinding(testBinding()),
 		Command: 1,
 		Body:    []byte("request"),
 	})
@@ -659,4 +666,79 @@ func startBackendNodeWithOptions(t *testing.T, scheme string, node v1.NodeServer
 	})
 	go func() { done <- server.Start(context.Background()) }()
 	return scheme + "://" + lis.Addr().String()
+}
+
+type failingListener struct {
+	acceptErr error
+}
+
+func (l *failingListener) Accept() (net.Conn, error) { return nil, l.acceptErr }
+
+func (*failingListener) Close() error { return nil }
+
+func (*failingListener) Addr() net.Addr { return &net.TCPAddr{IP: net.ParseIP("127.0.0.1")} }
+
+func newDisconnectTrackingServer(t *testing.T) (*Server, locate.Locator, *testConnection, locate.GateBinding, <-chan *v1.DisconnectRequest) {
+	t.Helper()
+	disconnects := make(chan *v1.DisconnectRequest, 1)
+	endpoint := startBackendNode(t, &forwardServer{disconnects: disconnects})
+
+	store := testLocator(t)
+	backendPool := newBackends(staticDiscovery{"game": {
+		serviceInstance("game", "node-a", endpoint),
+	}}, nil, time.Second, store)
+	t.Cleanup(backendPool.close)
+	binding := testBinding()
+	gateway := &Server{
+		identity:       identity{id: binding.GateID, endpoint: binding.GateEndpoint},
+		locator:        store,
+		backends:       backendPool,
+		rpcTimeout:     time.Second,
+		cleanupTimeout: time.Second,
+		sessions:       &sessionRegistry{byConnID: make(map[string]*session), accepting: true},
+	}
+	conn := newTestConnection("conn-a")
+	_, _, err := store.BindGate(context.Background(), binding, time.Minute)
+	require.NoError(t, err)
+	require.NoError(t, gateway.sessions.add(conn, time.Minute))
+	sess := gateway.sessions.get(conn.ConnID())
+	require.NotNil(t, sess)
+	require.True(t, sess.finishAuthentication(locate.GateLease{Binding: binding, TTL: time.Minute}, time.Now()))
+	return gateway, store, conn, binding, disconnects
+}
+
+type forwardServer struct {
+	v1.UnimplementedNodeServer
+	request     *v1.ForwardRequest
+	body        []byte
+	err         error
+	disconnects chan *v1.DisconnectRequest
+}
+
+func (s *forwardServer) Forward(_ context.Context, in *v1.ForwardRequest) (*v1.ForwardReply, error) {
+	s.request = in
+	if s.err != nil {
+		return nil, s.err
+	}
+	body := s.body
+	if body == nil {
+		body = []byte("reply")
+	}
+	return &v1.ForwardReply{Body: body}, nil
+}
+
+func (s *forwardServer) Disconnect(_ context.Context, in *v1.DisconnectRequest) (*emptypb.Empty, error) {
+	if s.disconnects != nil {
+		s.disconnects <- in
+	}
+	return &emptypb.Empty{}, nil
+}
+
+func tcpAddressReusable(address string) bool {
+	listener, err := net.Listen("tcp", address)
+	if err != nil {
+		return false
+	}
+	_ = listener.Close()
+	return true
 }

@@ -12,7 +12,7 @@ import (
 	"os"
 	"runtime"
 	"runtime/debug"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -25,6 +25,53 @@ import (
 
 	"google.golang.org/protobuf/proto"
 )
+
+func BenchmarkTCPServer(b *testing.B) {
+	logger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	b.Cleanup(func() { slog.SetDefault(logger) })
+
+	for _, count := range []int{1000, 5000, 10000} {
+		b.Run(fmt.Sprintf("connections=%d", count), func(b *testing.B) {
+			b.StopTimer()
+			env := newTCPBenchmarkServer(b, count)
+			for _, payloadSize := range []int{32, 4000} {
+				request := benchmarkProto(v1.OpRequest, payloadSize)
+				requestFrame := marshalBenchmarkFrame(b, request)
+				push := benchmarkProto(v1.OpPush, payloadSize)
+				pushBytes := int64(len(marshalBenchmarkFrame(b, push)))
+				b.Run(fmt.Sprintf("request/payload=%d", payloadSize), func(b *testing.B) {
+					b.SetBytes(int64(len(requestFrame)))
+					runTCPBenchmark(b, len(env.clients), func(index int) error {
+						return env.clients[index].request(requestFrame)
+					})
+				})
+				b.Run(fmt.Sprintf("push/payload=%d", payloadSize), func(b *testing.B) {
+					b.SetBytes(pushBytes)
+					runTCPBenchmark(b, len(env.clients), func(index int) error {
+						return env.clients[index].readPush(func() error { return env.connections[index].SendProto(push) })
+					})
+				})
+			}
+		})
+	}
+}
+
+func BenchmarkTCPSlowConsumerBackpressure(b *testing.B) {
+	p := benchmarkProto(v1.OpPush, 4000)
+	b.ReportAllocs()
+	for b.Loop() {
+		ch := newChannel(_defaultSendQueueSize, defaultCodec())
+		for range _defaultSendQueueSize {
+			if err := ch.push(p); err != nil {
+				b.Fatal(err)
+			}
+		}
+		if err := ch.push(p); !errors.Is(err, network.ErrSendQueueFull) {
+			b.Fatalf("push() error = %v, want %v", err, network.ErrSendQueueFull)
+		}
+	}
+}
 
 type tcpBenchmarkHandler struct {
 	opened chan network.Connection
@@ -84,53 +131,6 @@ type tcpBenchmarkServer struct {
 	done        chan error
 	clients     []*tcpBenchmarkClient
 	connections []network.Connection
-}
-
-func BenchmarkTCPServer(b *testing.B) {
-	logger := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil)))
-	b.Cleanup(func() { slog.SetDefault(logger) })
-
-	for _, count := range []int{1000, 5000, 10000} {
-		b.Run(fmt.Sprintf("connections=%d", count), func(b *testing.B) {
-			b.StopTimer()
-			env := newTCPBenchmarkServer(b, count)
-			for _, payloadSize := range []int{32, 4000} {
-				request := benchmarkProto(v1.OpRequest, payloadSize)
-				requestFrame := marshalBenchmarkFrame(b, request)
-				push := benchmarkProto(v1.OpPush, payloadSize)
-				pushBytes := int64(len(marshalBenchmarkFrame(b, push)))
-				b.Run(fmt.Sprintf("request/payload=%d", payloadSize), func(b *testing.B) {
-					b.SetBytes(int64(len(requestFrame)))
-					runTCPBenchmark(b, len(env.clients), func(index int) error {
-						return env.clients[index].request(requestFrame)
-					})
-				})
-				b.Run(fmt.Sprintf("push/payload=%d", payloadSize), func(b *testing.B) {
-					b.SetBytes(pushBytes)
-					runTCPBenchmark(b, len(env.clients), func(index int) error {
-						return env.clients[index].readPush(func() error { return env.connections[index].SendProto(push) })
-					})
-				})
-			}
-		})
-	}
-}
-
-func BenchmarkTCPSlowConsumerBackpressure(b *testing.B) {
-	p := benchmarkProto(v1.OpPush, 4000)
-	b.ReportAllocs()
-	for b.Loop() {
-		ch := newChannel(_defaultSendQueueSize, defaultCodec())
-		for range _defaultSendQueueSize {
-			if err := ch.push(p); err != nil {
-				b.Fatal(err)
-			}
-		}
-		if err := ch.push(p); !errors.Is(err, network.ErrSendQueueFull) {
-			b.Fatalf("push() error = %v, want %v", err, network.ErrSendQueueFull)
-		}
-	}
 }
 
 func newTCPBenchmarkServer(b *testing.B, count int) *tcpBenchmarkServer {
@@ -238,7 +238,7 @@ func runTCPBenchmark(b *testing.B, connections int, operation func(int) error) {
 func reportTCPMetrics(b *testing.B, samples []time.Duration, before, after runtime.MemStats, rssStart, rssEnd uint64) {
 	b.Helper()
 	if len(samples) > 0 {
-		sort.Slice(samples, func(i, j int) bool { return samples[i] < samples[j] })
+		slices.Sort(samples)
 		b.ReportMetric(float64(samples[(len(samples)*99-1)/100].Nanoseconds()), "p99-ns")
 	}
 	b.ReportMetric(float64(after.PauseTotalNs-before.PauseTotalNs), "gc-pause-ns")
@@ -277,10 +277,7 @@ func marshalBenchmarkFrame(b *testing.B, p *v1.Proto) []byte {
 	if err != nil {
 		b.Fatal(err)
 	}
-	frame := make([]byte, _framePrefixSize+len(body))
-	binary.LittleEndian.PutUint32(frame, uint32(len(body)))
-	copy(frame[_framePrefixSize:], body)
-	return frame
+	return frameWithLength(uint32(len(body)), body)
 }
 
 func writeBenchmarkFrame(conn net.Conn, frame []byte) error {

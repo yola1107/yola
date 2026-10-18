@@ -48,6 +48,7 @@ type options struct {
 	connectTimeout         time.Duration
 	leaseTimeout           time.Duration
 	cleanupTimeout         time.Duration
+	shutdownTimeout        time.Duration
 	authTimeout            time.Duration
 	leaseTTL               time.Duration
 	network                string
@@ -68,6 +69,7 @@ func resolveOptions(opts ...Option) (options, error) {
 		connectTimeout:         3 * time.Second,
 		leaseTimeout:           3 * time.Second,
 		cleanupTimeout:         3 * time.Second,
+		shutdownTimeout:        10 * time.Second,
 		authTimeout:            15 * time.Second,
 		leaseTTL:               60 * time.Second,
 		network:                "tcp",
@@ -141,7 +143,7 @@ func AdvertiseHost(host string) Option {
 	}
 }
 
-// Endpoint 配置通过服务发现发布的内部 gRPC endpoint。
+// Endpoint 配置写入 GateBinding 的内部 gRPC 回程地址。
 func Endpoint(endpoint *url.URL) Option {
 	return func(o *options) error {
 		if endpoint == nil {
@@ -289,13 +291,25 @@ func LeaseTimeout(timeout time.Duration) Option {
 }
 
 // CleanupTimeout 限制独立的断线清理、Kick、单 Session 排空及每项启动回滚。
-// 正常 Stop 的总预算仍由调用方 context 控制。
+// Stop 的调用方 context 只限制等待，后台清理仍会继续。
 func CleanupTimeout(timeout time.Duration) Option {
 	return func(o *options) error {
 		if timeout <= 0 {
 			return errors.New("gateway: cleanup timeout must be positive")
 		}
 		o.cleanupTimeout = timeout
+		return nil
+	}
+}
+
+// ShutdownTimeout 限制正常停机的排空预算，超时后仍关闭连接和监听。
+// 调用方 context 只限制本次等待；不改变这项后台预算。
+func ShutdownTimeout(timeout time.Duration) Option {
+	return func(o *options) error {
+		if timeout <= 0 {
+			return errors.New("gateway: shutdown timeout must be positive")
+		}
+		o.shutdownTimeout = timeout
 		return nil
 	}
 }

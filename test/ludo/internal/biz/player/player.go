@@ -2,6 +2,7 @@ package player
 
 import (
 	"context"
+	"sync"
 	"sync/atomic"
 
 	"google.golang.org/protobuf/proto"
@@ -12,16 +13,18 @@ type Session interface {
 	UID() string
 	BindingToken() string
 	BindNode(context.Context) error
+	RenewNode(context.Context) error
 	UnbindNode(context.Context) error
 	Push(context.Context, int32, proto.Message) error
 }
 
 type Player struct {
-	isRobot  bool
-	session  Session
-	gameData *GameData
-	baseData *BaseData
-	exiting  atomic.Bool
+	isRobot   bool
+	sessionMu sync.RWMutex
+	session   Session
+	gameData  *GameData
+	baseData  *BaseData
+	exiting   atomic.Bool
 }
 
 type Raw struct {
@@ -49,10 +52,14 @@ func (p *Player) IsRobot() bool {
 }
 
 func (p *Player) GetSession() Session {
+	p.sessionMu.RLock()
+	defer p.sessionMu.RUnlock()
 	return p.session
 }
 
 func (p *Player) UpdateSession(sess Session) {
+	p.sessionMu.Lock()
+	defer p.sessionMu.Unlock()
 	p.session = sess
 }
 

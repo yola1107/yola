@@ -55,9 +55,11 @@ func main() {
 	}
 	defer redisClient.Close()
 
+	locator := redis.New(redisClient)
 	nodeServer, err := node.NewServer(
 		node.Address(grpcAddr),
-		node.Locator(redis.New(redisClient)),
+		node.Registration(registry),
+		node.Stateful(locator),
 	)
 	if err != nil {
 		slog.Error("create Whot Node", "error", err)
@@ -91,11 +93,8 @@ func main() {
 		kratos.ID(id),
 		kratos.Name(name),
 		kratos.Logger(logger),
-		kratos.Metadata(nodeServer.Metadata()),
 		kratos.StopTimeout(stopTimeout),
-		kratos.BeforeStart(nodeServer.BeforeStart),
 		kratos.Server(nodeServer),
-		kratos.Registrar(nodeServer.Registrar(registry)),
 	)
 	if err := app.Run(); err != nil {
 		slog.Error("run Whot", "error", err)

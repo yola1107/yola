@@ -20,6 +20,8 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+var errControlledWrite = errors.New("controlled websocket write failure")
+
 type websocketTestHandler struct {
 	opened chan network.Connection
 }
@@ -69,6 +71,7 @@ func dialWebSocketTest(t testing.TB, endpoint string) *websocket.Conn {
 	if err != nil {
 		t.Fatalf("Dial(%q) error = %v", endpoint, err)
 	}
+	t.Cleanup(func() { _ = conn.Close() })
 	return conn
 }
 
@@ -131,8 +134,6 @@ type fixedSizeCodec struct {
 func (c fixedSizeCodec) Marshal(any) ([]byte, error) { return make([]byte, c.size), nil }
 func (fixedSizeCodec) Unmarshal([]byte, any) error   { return nil }
 func (fixedSizeCodec) Name() string                  { return "fixed-size" }
-
-var errControlledWrite = errors.New("controlled websocket write failure")
 
 type controlledWriteConn struct {
 	net.Conn

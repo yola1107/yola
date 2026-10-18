@@ -51,12 +51,38 @@ func (p *Piece) IsOnBoard() bool       { return p.state == PieceOnBoard }
 func (p *Piece) IsArrived() bool       { return p.state == PieceArrived }
 func (p *Piece) IsEnemy(o *Piece) bool { return p.color != o.color }
 
-// calcBasePos 计算初始点. class模式初始点在基地. fast模式初始点在起始点(出基地的第一格)
-func calcBasePos(color int32, isFastMode bool) int32 {
-	if isFastMode {
-		return EntryPoints[color]
+// CanMovePiece rejects inconsistent wire snapshots before applying the shared movement rule.
+func CanMovePiece(pos, color, status, steps int32) bool {
+	if color < 0 || color >= ColorCount {
+		return false
 	}
-	return BasePos
+	if PieceState(status) != calcStateByPos(pos, color) {
+		return false
+	}
+	ok, _, _ := calcNextPos(pos, color, steps)
+	return ok
+}
+
+// StepsFromStart 计算从EntryPoint起的累计步数
+func StepsFromStart(pos, color int32) int32 {
+	if pos == BasePos {
+		return 0
+	}
+
+	homeStart := HomeStartIndices[color]
+
+	// Home 路径
+	if pos >= homeStart && pos < homeStart+HomePathLen {
+		return TotalPositions + (pos - homeStart)
+	}
+
+	// 公共路径
+	if pos >= 0 && pos < TotalPositions {
+		offset := (pos - EntryPoints[color] + TotalPositions) % TotalPositions
+		return offset
+	}
+
+	return 0
 }
 
 // setPos 更新位置，自动更新状态
@@ -92,6 +118,14 @@ func (p *Piece) move(x int32) (from, to int32) {
 	}
 	p.setPos(newPos)
 	return from, newPos
+}
+
+// calcBasePos 计算初始点. class模式初始点在基地. fast模式初始点在起始点(出基地的第一格)
+func calcBasePos(color int32, isFastMode bool) int32 {
+	if isFastMode {
+		return EntryPoints[color]
+	}
+	return BasePos
 }
 
 // 根据位置和颜色计算棋子状态
@@ -162,41 +196,4 @@ func calcNextPos(pos, color, x int32) (bool, int32, int32) {
 	default:
 		return false, ErrInvalidStep, pos
 	}
-}
-
-// CanMovePiece rejects inconsistent wire snapshots before applying the shared movement rule.
-func CanMovePiece(pos, color, status, steps int32) bool {
-	if color < 0 || color >= ColorCount {
-		return false
-	}
-	if PieceState(status) != calcStateByPos(pos, color) {
-		return false
-	}
-	ok, _, _ := calcNextPos(pos, color, steps)
-	return ok
-}
-
-// StepsFromStart 计算从EntryPoint起的累计步数
-func StepsFromStart(pos, color int32) int32 {
-	if pos == BasePos {
-		return 0
-	}
-
-	homeStart := HomeStartIndices[color]
-
-	// Home 路径
-	if pos >= homeStart && pos < homeStart+HomePathLen {
-		return TotalPositions + (pos - homeStart)
-	}
-
-	// 公共路径
-	if pos >= 0 && pos < TotalPositions {
-		if pos == EntryPoints[color] {
-			return 0
-		}
-		offset := (pos - EntryPoints[color] + TotalPositions) % TotalPositions
-		return offset
-	}
-
-	return 0
 }

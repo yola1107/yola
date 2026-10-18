@@ -17,8 +17,8 @@ import (
 func TestDispatcherPreservesFIFOAndBoundsPendingRequests(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})
-	var releaseOnce sync.Once
-	defer releaseOnce.Do(func() { close(release) })
+	releaseHandler := sync.OnceFunc(func() { close(release) })
+	defer releaseHandler()
 	conn := newTestConnection()
 	dispatcher := New(context.Background(), conn, func(ctx context.Context, message *v1.Proto) (*v1.Proto, error) {
 		switch message.Op {
@@ -50,7 +50,7 @@ func TestDispatcherPreservesFIFOAndBoundsPendingRequests(t *testing.T) {
 	require.ErrorIs(t, dispatcher.Handle(&v1.Proto{Op: v1.OpRequest, Seq: 4}), ErrQueueFull)
 	require.NoError(t, dispatcher.Handle(&v1.Proto{Op: v1.OpHeartbeat}))
 	require.Equal(t, v1.OpHeartbeatReply, receive(t, conn.replies).Op)
-	releaseOnce.Do(func() { close(release) })
+	releaseHandler()
 	for _, seq := range []int32{1, 2, 3} {
 		require.Equal(t, seq, receive(t, conn.replies).Seq)
 	}
@@ -60,8 +60,8 @@ func TestDispatcherStopCancelsWaitsAndDiscardsPending(t *testing.T) {
 	started := make(chan struct{})
 	canceled := make(chan struct{})
 	release := make(chan struct{})
-	var releaseOnce sync.Once
-	defer releaseOnce.Do(func() { close(release) })
+	releaseHandler := sync.OnceFunc(func() { close(release) })
+	defer releaseHandler()
 	var calls atomic.Int32
 	conn := newTestConnection()
 	dispatcher := New(context.Background(), conn, func(ctx context.Context, message *v1.Proto) (*v1.Proto, error) {
@@ -91,7 +91,7 @@ func TestDispatcherStopCancelsWaitsAndDiscardsPending(t *testing.T) {
 		t.Fatal("Stop returned while a request still owned the connection")
 	default:
 	}
-	releaseOnce.Do(func() { close(release) })
+	releaseHandler()
 	receive(t, stopped)
 	require.Equal(t, int32(1), calls.Load())
 	require.ErrorIs(t, dispatcher.Handle(&v1.Proto{Op: v1.OpRequest}), context.Canceled)

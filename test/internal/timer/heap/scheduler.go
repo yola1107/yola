@@ -181,12 +181,7 @@ func (s *Scheduler) Cancel(id timer.TaskID) bool {
 // CancelAll cancels all pending and periodic tasks.
 func (s *Scheduler) CancelAll() {
 	s.mu.Lock()
-	for _, entry := range s.tasks {
-		entry.canceled.Store(true)
-	}
-	clear(s.tasks)
-	clear(s.queue)
-	s.queue = s.queue[:0]
+	s.cancelAllLocked()
 	s.mu.Unlock()
 	s.notify()
 }

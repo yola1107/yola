@@ -94,10 +94,11 @@ func (t *Table) SendPacketToAllExcept(cmd v1.GameCommand, msg proto.Message, uid
 func (t *Table) broadcastUserInfo(p *player.Player) {
 	t.sendUserInfoToAnother(p, p)
 	for k, v := range t.seats {
-		if v != nil && k != int(p.GetChairID()) {
-			t.sendUserInfoToAnother(p, v)
-			t.sendUserInfoToAnother(v, p)
+		if v == nil || k == int(p.GetChairID()) {
+			continue
 		}
+		t.sendUserInfoToAnother(p, v)
+		t.sendUserInfoToAnother(v, p)
 	}
 }
 
@@ -177,10 +178,7 @@ func (t *Table) sendMatchOk(p *player.Player) {
 // 发牌推送
 func (t *Table) dispatchCardPush(canGameSeats []*player.Player, bottom []int32, leftNum int32) {
 	for _, p := range canGameSeats {
-		if p == nil {
-			continue
-		}
-		if !p.IsGaming() {
+		if p == nil || !p.IsGaming() {
 			continue
 		}
 		t.SendPacketToClient(p, v1.GameCommand_CmdSendCardPush, &v1.SendCardPush{
@@ -376,20 +374,6 @@ func (t *Table) getCanOp(p *player.Player) []*v1.ActionOption {
 	return ops
 }
 
-func newDrawOption(n int32) *v1.ActionOption {
-	return &v1.ActionOption{Action: v1.ACTION_DRAW_CARD, DrawCount: n}
-}
-
-func collectPlayCard(currCard int32, hand []int32, pending *v1.Pending) []int32 {
-	out := make([]int32, 0, len(hand))
-	for _, card := range hand {
-		if canPlayCardOn(currCard, card, pending) {
-			out = append(out, card)
-		}
-	}
-	return out
-}
-
 func (t *Table) sendMarketDrawCardPush(p *player.Player, draw []int32) {
 	for _, v := range t.seats {
 		if v == nil {
@@ -418,4 +402,18 @@ func (t *Table) broadcastResult(obj *SettleObj) {
 		rsp = obj.GetResult()
 	}
 	t.SendPacketToAll(v1.GameCommand_CmdResultPush, rsp)
+}
+
+func newDrawOption(n int32) *v1.ActionOption {
+	return &v1.ActionOption{Action: v1.ACTION_DRAW_CARD, DrawCount: n}
+}
+
+func collectPlayCard(currCard int32, hand []int32, pending *v1.Pending) []int32 {
+	out := make([]int32, 0, len(hand))
+	for _, card := range hand {
+		if canPlayCardOn(currCard, card, pending) {
+			out = append(out, card)
+		}
+	}
+	return out
 }

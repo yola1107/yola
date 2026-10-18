@@ -75,23 +75,6 @@ func NewRunner(conf Press) *Runner {
 	return runner
 }
 
-func (r *Runner) runAction(job func()) error {
-	if job == nil {
-		return errors.New("pressure action is nil")
-	}
-	if err := r.ctx.Err(); err != nil {
-		return err
-	}
-	select {
-	case r.actionSlots <- struct{}{}:
-	case <-r.ctx.Done():
-		return r.ctx.Err()
-	}
-	defer func() { <-r.actionSlots }()
-	job()
-	return nil
-}
-
 func (r *Runner) Start() error {
 	if r.conf.Interval <= 0 {
 		return errors.New("start pressure client: interval must be positive")
@@ -119,6 +102,95 @@ func (r *Runner) Start() error {
 	return nil
 }
 
+func (r *Runner) Stop() {
+	r.stop.Do(func() {
+		r.cancel()
+		r.jobs.Wait()
+		stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := r.workers.Stop(stopCtx); err != nil {
+			slog.Warn("stop pressure workers", "error", err)
+		}
+		cancel()
+		for _, user := range r.userSnapshot() {
+			r.RemoveUser(user)
+		}
+		slog.Info("stop pressure client")
+	})
+}
+
+func (r *Runner) Load() {
+	if !r.conf.Open {
+		return
+	}
+	batch := xgo.RandInt(r.conf.Batch[0], r.conf.Batch[1])
+	toLoad := min(r.conf.Num-int32(r.userCount()), batch)
+	if toLoad <= 0 {
+		return
+	}
+
+	loaded := int32(0)
+	for loaded < toLoad {
+		id, ok := r.nextUserID()
+		if !ok {
+			if r.uidExhausted.CompareAndSwap(false, true) {
+				slog.Error("pressure UID range exhausted",
+					"start_id", r.conf.StartID,
+					"uid_count", r.conf.UIDCount,
+				)
+			}
+			return
+		}
+		user := newUser(id, r)
+		if !r.trackUser(user) {
+			continue
+		}
+		if err := r.workers.Submit(func() { r.startUser(user) }); err != nil {
+			if r.ctx.Err() == nil {
+				r.startupRejected.Add(1)
+				if !errors.Is(err, ants.ErrFull) {
+					slog.Warn("start pressure user", "uid", id, "error", err)
+				}
+			}
+			r.RemoveUser(user)
+			if errors.Is(err, ants.ErrFull) {
+				break
+			}
+			return
+		}
+		loaded++
+	}
+}
+
+func (r *Runner) RemoveUser(user *User) {
+	if user == nil {
+		return
+	}
+	user.eventMu.Lock()
+	for {
+		state := user.stateValue()
+		if state == userClosing || state == userClosed {
+			user.eventMu.Unlock()
+			return
+		}
+		if r.transitionUser(user, state, userClosing) {
+			break
+		}
+	}
+	user.logout.Store(true)
+	user.eventMu.Unlock()
+
+	user.Release()
+	r.usersMu.Lock()
+	tracked := r.users[user.id] == user
+	if tracked {
+		delete(r.users, user.id)
+	}
+	r.usersMu.Unlock()
+	if r.transitionUser(user, userClosing, userClosed) && tracked {
+		r.closedPlayers.Add(1)
+	}
+}
+
 func (r *Runner) maintain() {
 	defer r.jobs.Done()
 	load := time.NewTicker(time.Duration(r.conf.Interval) * time.Millisecond)
@@ -135,22 +207,6 @@ func (r *Runner) maintain() {
 			r.maintainUsers()
 		}
 	}
-}
-
-func (r *Runner) Stop() {
-	r.stop.Do(func() {
-		r.cancel()
-		r.jobs.Wait()
-		stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		if err := r.workers.Stop(stopCtx); err != nil {
-			slog.Warn("stop pressure workers", "error", err)
-		}
-		cancel()
-		for _, user := range r.userSnapshot() {
-			r.RemoveUser(user)
-		}
-		slog.Info("stop pressure client")
-	})
 }
 
 func (r *Runner) monitor(counts userCounts) {
@@ -209,49 +265,6 @@ func (r *Runner) maintainUsers() {
 	r.monitor(counts)
 }
 
-func (r *Runner) Load() {
-	if !r.conf.Open {
-		return
-	}
-	batch := xgo.RandInt(r.conf.Batch[0], r.conf.Batch[1])
-	toLoad := min(r.conf.Num-int32(r.userCount()), batch)
-	if toLoad <= 0 {
-		return
-	}
-
-	loaded := int32(0)
-	for loaded < toLoad {
-		id, ok := r.nextUserID()
-		if !ok {
-			if r.uidExhausted.CompareAndSwap(false, true) {
-				slog.Error("pressure UID range exhausted",
-					"start_id", r.conf.StartID,
-					"uid_count", r.conf.UIDCount,
-				)
-			}
-			return
-		}
-		user := newUser(id, r)
-		if !r.trackUser(user) {
-			continue
-		}
-		if err := r.workers.Submit(func() { r.startUser(user) }); err != nil {
-			if r.ctx.Err() == nil {
-				r.startupRejected.Add(1)
-				if !errors.Is(err, ants.ErrFull) {
-					slog.Warn("start pressure user", "uid", id, "error", err)
-				}
-			}
-			r.RemoveUser(user)
-			if errors.Is(err, ants.ErrFull) {
-				break
-			}
-			return
-		}
-		loaded++
-	}
-}
-
 func (r *Runner) startUser(user *User) {
 	started := time.Now()
 	connectErr := r.connectUser(user)
@@ -307,36 +320,6 @@ func (r *Runner) startUser(user *User) {
 			)
 		}
 		r.RemoveUser(user)
-	}
-}
-
-func (r *Runner) RemoveUser(user *User) {
-	if user == nil {
-		return
-	}
-	user.eventMu.Lock()
-	for {
-		state := user.stateValue()
-		if state == userClosing || state == userClosed {
-			user.eventMu.Unlock()
-			return
-		}
-		if r.transitionUser(user, state, userClosing) {
-			break
-		}
-	}
-	user.logout.Store(true)
-	user.eventMu.Unlock()
-
-	user.Release()
-	r.usersMu.Lock()
-	tracked := r.users[user.id] == user
-	if tracked {
-		delete(r.users, user.id)
-	}
-	r.usersMu.Unlock()
-	if r.transitionUser(user, userClosing, userClosed) && tracked {
-		r.closedPlayers.Add(1)
 	}
 }
 
@@ -408,4 +391,21 @@ func (r *Runner) commandCounts() map[string]int64 {
 		counts[command.String()] = r.commands[int(command)].Load()
 	}
 	return counts
+}
+
+func (r *Runner) runAction(job func()) error {
+	if job == nil {
+		return errors.New("pressure action is nil")
+	}
+	if err := r.ctx.Err(); err != nil {
+		return err
+	}
+	select {
+	case r.actionSlots <- struct{}{}:
+	case <-r.ctx.Done():
+		return r.ctx.Err()
+	}
+	defer func() { <-r.actionSlots }()
+	job()
+	return nil
 }

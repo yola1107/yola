@@ -169,8 +169,8 @@ func TestSubscribeDoesNotWaitForAsyncErrorReporting(t *testing.T) {
 	report := bus.conn.ErrorHandler()
 	callbackStarted := make(chan struct{})
 	callbackRelease := make(chan struct{})
-	var releaseOnce sync.Once
-	t.Cleanup(func() { releaseOnce.Do(func() { close(callbackRelease) }) })
+	unblock := sync.OnceFunc(func() { close(callbackRelease) })
+	t.Cleanup(unblock)
 	bus.conn.SetErrorHandler(func(conn *natsgo.Conn, sub *natsgo.Subscription, err error) {
 		close(callbackStarted)
 		<-callbackRelease
@@ -187,7 +187,7 @@ func TestSubscribeDoesNotWaitForAsyncErrorReporting(t *testing.T) {
 	waitSignal(t, callbackStarted, "async error was not dispatched")
 	peer.send(t, "PONG\r\n")
 	require.NoError(t, <-subscribed)
-	releaseOnce.Do(func() { close(callbackRelease) })
+	unblock()
 	require.ErrorIs(t, waitTransportError(t, logged).err, natsgo.ErrMaxSubscriptionsExceeded)
 }
 
@@ -224,7 +224,8 @@ func captureTransportErrors(t *testing.T) <-chan transportError {
 	previous := slog.Default()
 	reports := make(chan transportError, 16)
 	slog.SetDefault(slog.New(transportErrorHandler{
-		Handler: slog.NewTextHandler(io.Discard, nil), reports: reports,
+		Handler: slog.NewTextHandler(io.Discard, nil),
+		reports: reports,
 	}))
 	t.Cleanup(func() { slog.SetDefault(previous) })
 	return reports

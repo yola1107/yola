@@ -75,6 +75,17 @@ func writeFrame(wr *bufio.Writer, codec encoding.Codec, p *v1.Proto) error {
 	return err
 }
 
+func validateFrame(codec encoding.Codec, p *v1.Proto) error {
+	if _, ok := codec.(protoFrameCodec); ok {
+		return validateFrameSize(proto.Size(p))
+	}
+	body, err := codec.Marshal(p)
+	if err != nil {
+		return err
+	}
+	return validateFrameSize(len(body))
+}
+
 func writeFrameAppend(wr *bufio.Writer, p *v1.Proto) error {
 	length := proto.Size(p)
 	if err := validateFrameSize(length); err != nil {
@@ -92,17 +103,6 @@ func writeFrameAppend(wr *bufio.Writer, p *v1.Proto) error {
 	}
 	_, err = wr.Write(frame)
 	return err
-}
-
-func validateFrame(codec encoding.Codec, p *v1.Proto) error {
-	if _, ok := codec.(protoFrameCodec); ok {
-		return validateFrameSize(proto.Size(p))
-	}
-	body, err := codec.Marshal(p)
-	if err != nil {
-		return err
-	}
-	return validateFrameSize(len(body))
 }
 
 func validateFrameSize(size int) error {

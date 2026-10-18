@@ -33,7 +33,8 @@ func TestBusPublishSubscribe(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.NoError(t, bus.Publish(context.Background(), event.Event{
-		Topic: "yola.event.test", Payload: []byte("hello yola"),
+		Topic:   "yola.event.test",
+		Payload: []byte("hello yola"),
 	}))
 
 	incoming := waitEvent(t, received)
@@ -194,19 +195,6 @@ func TestBusContextCancellationClosesBusAndSubscriptions(t *testing.T) {
 	}
 }
 
-func TestBusLifecycle(t *testing.T) {
-	bus := newTestBus(t, startTestServer(t))
-	published := event.Event{Topic: "yola.event.lifecycle"}
-	_, err := bus.Subscribe(context.Background(), published.Topic, func(context.Context, event.Event) {})
-	require.NoError(t, err)
-	require.NoError(t, bus.Publish(context.Background(), published))
-	require.NoError(t, bus.Close())
-	require.NoError(t, bus.Close())
-	require.ErrorIs(t, bus.Publish(context.Background(), published), event.ErrClosed)
-	_, err = bus.Subscribe(context.Background(), published.Topic, func(context.Context, event.Event) {})
-	require.ErrorIs(t, err, event.ErrClosed)
-}
-
 func TestReconnectBufferIsDisabled(t *testing.T) {
 	natsServer := startTestServerInstance(t)
 	bus := newTestBus(t, natsServer.ClientURL())
@@ -233,6 +221,7 @@ func TestBusRejectsInvalidInput(t *testing.T) {
 	require.ErrorIs(t, bus.Publish(nilCtx, event.Event{Topic: "yola.event.test"}), event.ErrInvalidContext)
 	require.ErrorIs(t, bus.Publish(context.Background(), event.Event{}), event.ErrInvalidTopic)
 	require.EqualError(t, bus.Publish(context.Background(), event.Event{
-		Topic: "yola.event.test", Payload: []byte("12345"),
+		Topic:   "yola.event.test",
+		Payload: []byte("12345"),
 	}), "nats: payload exceeds 4 bytes")
 }

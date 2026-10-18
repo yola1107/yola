@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"yola/test/internal/mailbox"
-	"yola/test/internal/timer"
 	"yola/test/ludo/internal/biz/player"
 	"yola/test/ludo/internal/conf"
 	"yola/test/ludo/pkg/codes"
@@ -35,7 +34,9 @@ func TestManagerLimitsConcurrentTableJobs(t *testing.T) {
 				release := make(chan struct{})
 				t.Cleanup(func() {
 					close(release)
-					if err := manager.Close(context.Background()); err != nil {
+					ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+					defer cancel()
+					if err := manager.Close(ctx); err != nil {
 						t.Error(err)
 					}
 				})
@@ -106,19 +107,18 @@ func BenchmarkTryAvailableTablesFull(b *testing.B) {
 func TestManagerCloseCanRetryAfterTimeout(t *testing.T) {
 	room := testRoom(1)
 	room.LogCache.Open = false
-	tables := newManager("ludo-test", room, new(tableRepoStub), 1, 1, 1)
-	if err := tables.Start(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+	tables := newStartedManagerWithConfig(t, room, new(tableRepoStub), 1, 1, 1)
 	started := make(chan struct{})
 	release := make(chan struct{})
+	unblock := sync.OnceFunc(func() { close(release) })
+	defer unblock()
 	if err := tables.mailboxes.Executor(0).TryPost(func() {
 		close(started)
 		<-release
 	}); err != nil {
 		t.Fatal(err)
 	}
-	<-started
+	receiveWithin(t, started)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
@@ -129,22 +129,26 @@ func TestManagerCloseCanRetryAfterTimeout(t *testing.T) {
 		t.Fatalf("TryPost after Close() error = %v, want %v", err, mailbox.ErrStopped)
 	}
 
-	close(release)
-	if err := tables.Close(context.Background()); err != nil {
+	unblock()
+	retryCtx, retryCancel := context.WithTimeout(context.Background(), time.Second)
+	defer retryCancel()
+	if err := tables.Close(retryCtx); err != nil {
 		t.Fatalf("retry Close() error = %v", err)
 	}
 }
 
 func TestManagerEnterTriesNextTableWhenFirstMailboxIsFull(t *testing.T) {
-	room := testRoom(2)
-	room.Table.ChairNum = 1
-	room.LogCache.Open = false
+	room := &conf.Room{
+		Table:    &conf.Room_Table{TableNum: 2, ChairNum: 1},
+		Game:     &conf.Room_Game{MinMoney: 100, MaxMoney: 1000, BaseMoney: 100},
+		Robot:    &conf.Room_Robot{},
+		LogCache: &conf.Room_LogCache{},
+	}
 	tables := newStartedManagerWithConfig(t, room, new(tableRepoStub), 2, 1, 1)
 
 	started := make(chan struct{})
 	release := make(chan struct{})
-	var releaseOnce sync.Once
-	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	unblock := sync.OnceFunc(func() { close(release) })
 	defer unblock()
 	first := tables.mailboxes.Executor(0)
 	if err := first.TryPost(func() {
@@ -153,7 +157,7 @@ func TestManagerEnterTriesNextTableWhenFirstMailboxIsFull(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	<-started
+	receiveWithin(t, started)
 	if err := first.TryPost(func() {}); err != nil {
 		t.Fatal(err)
 	}
@@ -169,9 +173,12 @@ func TestManagerEnterTriesNextTableWhenFirstMailboxIsFull(t *testing.T) {
 }
 
 func TestManagerSeatsRobotsAcrossTables(t *testing.T) {
-	room := testRoom(2)
-	room.LogCache.Open = false
-	room.Robot = &conf.Room_Robot{Open: true, TableMaxCount: 1, MinPlayCount: 2}
+	room := &conf.Room{
+		Table:    &conf.Room_Table{TableNum: 2, ChairNum: 4},
+		Game:     &conf.Room_Game{MinMoney: 100, MaxMoney: 1000, BaseMoney: 100},
+		Robot:    &conf.Room_Robot{Open: true, TableMaxCount: 1, MinPlayCount: 2},
+		LogCache: &conf.Room_LogCache{},
+	}
 	tables := newStartedManager(t, room, new(tableRepoStub))
 	players := []*player.Player{
 		newRobotPlayer(1),
@@ -203,10 +210,15 @@ func TestManagerCallPlayerRechecksCapturedRoute(t *testing.T) {
 	}
 	started := make(chan struct{})
 	release := make(chan struct{})
-	if err := mailboxes.Executor(0).TryPost(func() { close(started); <-release }); err != nil {
+	unblock := sync.OnceFunc(func() { close(release) })
+	defer unblock()
+	if err := mailboxes.Executor(0).TryPost(func() {
+		close(started)
+		<-release
+	}); err != nil {
 		t.Fatal(err)
 	}
-	<-started
+	receiveWithin(t, started)
 
 	called := make(chan struct{}, 1)
 	result := make(chan error, 1)
@@ -218,8 +230,8 @@ func TestManagerCallPlayerRechecksCapturedRoute(t *testing.T) {
 	}()
 	waitTableTest(t, func() bool { return mailboxes.Executor(0).Stats().Free == 0 })
 	p.SetTableID(2)
-	close(release)
-	if callErr := <-result; !errors.Is(callErr, ErrPlayerRouteChanged) {
+	unblock()
+	if callErr := receiveWithin(t, result); !errors.Is(callErr, ErrPlayerRouteChanged) {
 		t.Fatalf("CallPlayer error = %v, want %v", callErr, ErrPlayerRouteChanged)
 	}
 	select {
@@ -274,9 +286,12 @@ func TestTableIgnoresStaleStageTimer(t *testing.T) {
 }
 
 func TestManagerSwitchTriesNextCandidateAfterConcurrentFill(t *testing.T) {
-	room := testRoom(3)
-	room.Table.ChairNum = 1
-	room.LogCache.Open = false
+	room := &conf.Room{
+		Table:    &conf.Room_Table{TableNum: 3, ChairNum: 1},
+		Game:     &conf.Room_Game{MinMoney: 100, MaxMoney: 1000, BaseMoney: 100},
+		Robot:    &conf.Room_Robot{},
+		LogCache: &conf.Room_LogCache{},
+	}
 	tables := newStartedManagerWithConfig(t, room, new(tableRepoStub), 3, 4, 1)
 	mailboxes := tables.mailboxes
 
@@ -287,10 +302,15 @@ func TestManagerSwitchTriesNextCandidateAfterConcurrentFill(t *testing.T) {
 	}
 	started := make(chan struct{})
 	release := make(chan struct{})
-	if err := mailboxes.Executor(1).TryPost(func() { close(started); <-release }); err != nil {
+	unblock := sync.OnceFunc(func() { close(release) })
+	defer unblock()
+	if err := mailboxes.Executor(1).TryPost(func() {
+		close(started)
+		<-release
+	}); err != nil {
 		t.Fatal(err)
 	}
-	<-started
+	receiveWithin(t, started)
 	if err := mailboxes.Executor(1).TryPost(func() { seatForTest(tables.table(2), other) }); err != nil {
 		t.Fatal(err)
 	}
@@ -304,8 +324,8 @@ func TestManagerSwitchTriesNextCandidateAfterConcurrentFill(t *testing.T) {
 		result <- switchErr
 	}()
 	waitTableTest(t, func() bool { return p.GetTableID() == player.TableIDPending })
-	close(release)
-	if switchErr := <-result; switchErr != nil {
+	unblock()
+	if switchErr := receiveWithin(t, result); switchErr != nil {
 		t.Fatal(switchErr)
 	}
 	if tableID := p.GetTableID(); tableID != 3 {
@@ -314,8 +334,12 @@ func TestManagerSwitchTriesNextCandidateAfterConcurrentFill(t *testing.T) {
 }
 
 func TestManagerSwitchRestoresPlayerWhenTargetFills(t *testing.T) {
-	room := testRoom(2)
-	room.Table.ChairNum = 1
+	room := &conf.Room{
+		Table:    &conf.Room_Table{TableNum: 2, ChairNum: 1},
+		Game:     &conf.Room_Game{MinMoney: 100, MaxMoney: 1000, BaseMoney: 100},
+		Robot:    &conf.Room_Robot{},
+		LogCache: &conf.Room_LogCache{},
+	}
 	tables := newStartedManagerWithConfig(t, room, new(tableRepoStub), 2, 4, 1)
 	p := player.New(&player.Raw{ID: 1, BaseData: &player.BaseData{UID: 1, Money: 500}})
 	other := player.New(&player.Raw{ID: 2, BaseData: &player.BaseData{UID: 2, Money: 500}})
@@ -325,11 +349,16 @@ func TestManagerSwitchRestoresPlayerWhenTargetFills(t *testing.T) {
 
 	started := make(chan struct{})
 	release := make(chan struct{})
+	unblock := sync.OnceFunc(func() { close(release) })
+	defer unblock()
 	target := tables.mailboxes.Executor(1)
-	if err := target.TryPost(func() { close(started); <-release }); err != nil {
+	if err := target.TryPost(func() {
+		close(started)
+		<-release
+	}); err != nil {
 		t.Fatal(err)
 	}
-	<-started
+	receiveWithin(t, started)
 	if err := target.TryPost(func() { seatForTest(tables.table(2), other) }); err != nil {
 		t.Fatal(err)
 	}
@@ -346,8 +375,8 @@ func TestManagerSwitchRestoresPlayerWhenTargetFills(t *testing.T) {
 		}{code: code, err: err}
 	}()
 	waitTableTest(t, func() bool { return p.GetTableID() == player.TableIDPending })
-	close(release)
-	got := <-result
+	unblock()
+	got := receiveWithin(t, result)
 	if got.err != nil || got.code != codes.EnterTableFail {
 		t.Fatalf("Switch() = (%d, %v), want ENTER_TABLE_FAIL", got.code, got.err)
 	}
@@ -357,9 +386,12 @@ func TestManagerSwitchRestoresPlayerWhenTargetFills(t *testing.T) {
 }
 
 func TestManagerSwitchFinishesMigrationAfterRequestCancellation(t *testing.T) {
-	room := testRoom(2)
-	room.Table.ChairNum = 1
-	room.LogCache.Open = false
+	room := &conf.Room{
+		Table:    &conf.Room_Table{TableNum: 2, ChairNum: 1},
+		Game:     &conf.Room_Game{MinMoney: 100, MaxMoney: 1000, BaseMoney: 100},
+		Robot:    &conf.Room_Robot{},
+		LogCache: &conf.Room_LogCache{},
+	}
 	tables := newStartedManagerWithConfig(t, room, new(tableRepoStub), 2, 4, 1)
 	mailboxes := tables.mailboxes
 
@@ -369,12 +401,18 @@ func TestManagerSwitchFinishesMigrationAfterRequestCancellation(t *testing.T) {
 	}
 	started := make(chan struct{})
 	release := make(chan struct{})
-	if err := mailboxes.Executor(1).TryPost(func() { close(started); <-release }); err != nil {
+	unblock := sync.OnceFunc(func() { close(release) })
+	defer unblock()
+	if err := mailboxes.Executor(1).TryPost(func() {
+		close(started)
+		<-release
+	}); err != nil {
 		t.Fatal(err)
 	}
-	<-started
+	receiveWithin(t, started)
 
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	result := make(chan error, 1)
 	go func() {
 		code, _, switchErr := tables.Switch(ctx, p, room.Game)
@@ -390,8 +428,8 @@ func TestManagerSwitchFinishesMigrationAfterRequestCancellation(t *testing.T) {
 		t.Fatalf("migration stopped after request cancellation: %v", switchErr)
 	case <-time.After(20 * time.Millisecond):
 	}
-	close(release)
-	if switchErr := <-result; switchErr != nil {
+	unblock()
+	if switchErr := receiveWithin(t, result); switchErr != nil {
 		t.Fatal(switchErr)
 	}
 	if tableID := p.GetTableID(); tableID != 2 {
@@ -400,9 +438,12 @@ func TestManagerSwitchFinishesMigrationAfterRequestCancellation(t *testing.T) {
 }
 
 func TestManagerSwitchMarksPlayerDetachedWhenOriginalTableIsOccupied(t *testing.T) {
-	room := testRoom(2)
-	room.Table.ChairNum = 1
-	room.LogCache.Open = false
+	room := &conf.Room{
+		Table:    &conf.Room_Table{TableNum: 2, ChairNum: 1},
+		Game:     &conf.Room_Game{MinMoney: 100, MaxMoney: 1000, BaseMoney: 100},
+		Robot:    &conf.Room_Robot{},
+		LogCache: &conf.Room_LogCache{},
+	}
 	tables := newStartedManagerWithConfig(t, room, new(tableRepoStub), 2, 2, 1)
 	p := player.New(&player.Raw{ID: 1, BaseData: &player.BaseData{UID: 1, Money: 500}})
 	oldOccupant := player.New(&player.Raw{ID: 2, BaseData: &player.BaseData{UID: 2, Money: 500}})
@@ -413,8 +454,7 @@ func TestManagerSwitchMarksPlayerDetachedWhenOriginalTableIsOccupied(t *testing.
 
 	started := make(chan struct{})
 	release := make(chan struct{})
-	var releaseOnce sync.Once
-	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	unblock := sync.OnceFunc(func() { close(release) })
 	defer unblock()
 	target := tables.mailboxes.Executor(1)
 	if err := target.TryPost(func() {
@@ -423,7 +463,7 @@ func TestManagerSwitchMarksPlayerDetachedWhenOriginalTableIsOccupied(t *testing.
 	}); err != nil {
 		t.Fatal(err)
 	}
-	<-started
+	receiveWithin(t, started)
 	if err := target.TryPost(func() { seatForTest(tables.table(2), targetOccupant) }); err != nil {
 		t.Fatal(err)
 	}
@@ -444,227 +484,10 @@ func TestManagerSwitchMarksPlayerDetachedWhenOriginalTableIsOccupied(t *testing.
 	}
 
 	unblock()
-	if err := <-done; err == nil {
+	if err := receiveWithin(t, done); err == nil {
 		t.Fatal("Switch() error = nil, want restore failure")
 	}
 	if p.GetTableID() != player.TableIDDetached {
 		t.Fatalf("player table = %d, want detached", p.GetTableID())
 	}
-}
-
-func testRoom(tableCount int32) *conf.Room {
-	return &conf.Room{
-		Table:    &conf.Room_Table{TableNum: tableCount, ChairNum: 4},
-		Game:     &conf.Room_Game{MinMoney: 100, MaxMoney: 1000, BaseMoney: 100},
-		Robot:    &conf.Room_Robot{},
-		LogCache: &conf.Room_LogCache{},
-	}
-}
-
-func newRobotPlayer(uid int64) *player.Player {
-	return player.New(&player.Raw{
-		ID:       uid,
-		IsRobot:  true,
-		BaseData: &player.BaseData{UID: uid, Money: 500},
-	})
-}
-
-func waitTableTest(t *testing.T, condition func() bool) {
-	t.Helper()
-	deadline := time.Now().Add(time.Second)
-	for !condition() {
-		if time.Now().After(deadline) {
-			t.Fatal("condition was not satisfied")
-		}
-		time.Sleep(time.Millisecond)
-	}
-}
-
-func fireTableTimer(t *testing.T, tables *Manager, timerID int64) bool {
-	t.Helper()
-	return testTimers(t, tables).fire(timerID)
-}
-
-func startTableTimer(tables *Manager, timerID int64) (<-chan struct{}, <-chan struct{}, bool) {
-	timers, ok := tables.timers.(*manualScheduler)
-	if !ok {
-		return nil, nil, false
-	}
-	return timers.start(timerID)
-}
-
-func latestTableTimerID(tables *Manager) int64 {
-	timers, ok := tables.timers.(*manualScheduler)
-	if !ok {
-		return -1
-	}
-	return timers.latestID()
-}
-
-type manualScheduler struct {
-	mu      sync.Mutex
-	nextID  timer.TaskID
-	jobs    map[timer.TaskID]func()
-	started bool
-	closed  bool
-}
-
-func (timers *manualScheduler) Start(ctx context.Context) error {
-	if ctx == nil {
-		return errors.New("start manual timer: context is nil")
-	}
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	timers.mu.Lock()
-	defer timers.mu.Unlock()
-	if timers.closed {
-		return timer.ErrStopped
-	}
-	if timers.started {
-		return timer.ErrStarted
-	}
-	timers.started = true
-	return nil
-}
-
-func (timers *manualScheduler) Stop(ctx context.Context) error {
-	if ctx == nil {
-		return errors.New("stop manual timer: context is nil")
-	}
-	timers.mu.Lock()
-	timers.closed = true
-	clear(timers.jobs)
-	timers.mu.Unlock()
-	return nil
-}
-
-func (timers *manualScheduler) Once(delay time.Duration, callback func()) (timer.TaskID, error) {
-	if delay < 0 {
-		return 0, errors.New("manual timer delay is negative")
-	}
-	if callback == nil {
-		return 0, errors.New("manual timer callback is nil")
-	}
-	timers.mu.Lock()
-	defer timers.mu.Unlock()
-	if timers.closed {
-		return 0, timer.ErrStopped
-	}
-	if timers.jobs == nil {
-		timers.jobs = make(map[timer.TaskID]func())
-	}
-	timers.nextID++
-	timers.jobs[timers.nextID] = callback
-	return timers.nextID, nil
-}
-
-func (timers *manualScheduler) Forever(interval time.Duration, callback func()) (timer.TaskID, error) {
-	if interval <= 0 {
-		return 0, errors.New("manual timer interval must be positive")
-	}
-	return timers.Once(interval, callback)
-}
-
-func (timers *manualScheduler) ForeverNow(interval time.Duration, callback func()) (timer.TaskID, error) {
-	if interval <= 0 {
-		return 0, errors.New("manual timer interval must be positive")
-	}
-	return timers.Once(0, callback)
-}
-
-func (timers *manualScheduler) Cancel(timerID timer.TaskID) bool {
-	timers.mu.Lock()
-	_, found := timers.jobs[timerID]
-	delete(timers.jobs, timerID)
-	timers.mu.Unlock()
-	return found
-}
-
-func (timers *manualScheduler) CancelAll() {
-	timers.mu.Lock()
-	clear(timers.jobs)
-	timers.mu.Unlock()
-}
-
-func (timers *manualScheduler) Monitor() timer.Monitor {
-	timers.mu.Lock()
-	defer timers.mu.Unlock()
-	return timer.Monitor{Total: len(timers.jobs)}
-}
-
-func (timers *manualScheduler) fire(timerID int64) bool {
-	callback := timers.take(timer.TaskID(timerID))
-	if callback == nil {
-		return false
-	}
-	callback()
-	return true
-}
-
-func (timers *manualScheduler) start(timerID int64) (<-chan struct{}, <-chan struct{}, bool) {
-	callback := timers.take(timer.TaskID(timerID))
-	if callback == nil {
-		return nil, nil, false
-	}
-	started := make(chan struct{})
-	done := make(chan struct{})
-	go func() {
-		close(started)
-		callback()
-		close(done)
-	}()
-	return started, done, true
-}
-
-func (timers *manualScheduler) take(timerID timer.TaskID) func() {
-	timers.mu.Lock()
-	defer timers.mu.Unlock()
-	callback := timers.jobs[timerID]
-	delete(timers.jobs, timerID)
-	return callback
-}
-
-func (timers *manualScheduler) latestID() int64 {
-	timers.mu.Lock()
-	defer timers.mu.Unlock()
-	return int64(timers.nextID)
-}
-
-func useManualTimers(t *testing.T, tables *Manager) {
-	t.Helper()
-	if err := tables.timers.Stop(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	timers := new(manualScheduler)
-	if err := timers.Start(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	tables.timers = timers
-}
-
-func testTimers(t *testing.T, tables *Manager) *manualScheduler {
-	t.Helper()
-	timers, ok := tables.timers.(*manualScheduler)
-	if !ok {
-		t.Fatal("table test does not use manual timers")
-	}
-	return timers
-}
-
-func newStartedManager(t *testing.T, room *conf.Room, repo Repo) *Manager {
-	t.Helper()
-	return newStartedManagerWithConfig(t, room, repo, 1, defaultTableQueueSize, defaultTableMailboxBatch)
-}
-
-func newStartedManagerWithConfig(t *testing.T, room *conf.Room, repo Repo, workers, queueSize, batchSize int) *Manager {
-	t.Helper()
-	tables := newManager("ludo-test", room, repo, workers, queueSize, batchSize)
-	if err := tables.Start(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		_ = tables.Close(context.Background())
-	})
-	return tables
 }

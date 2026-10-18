@@ -22,6 +22,16 @@ type backendResolverBuilder struct {
 	state     *backendState
 }
 
+type backendResolver struct {
+	serviceName string
+	discovery   registry.Discovery
+	client      resolver.ClientConn
+	ctx         context.Context
+	cancel      context.CancelFunc
+	secure      bool
+	state       *backendState
+}
+
 func (b *backendResolverBuilder) Build(target resolver.Target, cc resolver.ClientConn, opts resolver.BuildOptions) (resolver.Resolver, error) {
 	serviceName := strings.TrimPrefix(target.URL.Path, "/")
 	if !locate.ValidServiceName(serviceName) {
@@ -43,14 +53,10 @@ func (b *backendResolverBuilder) Build(target resolver.Target, cc resolver.Clien
 
 func (*backendResolverBuilder) Scheme() string { return "discovery" }
 
-type backendResolver struct {
-	serviceName string
-	discovery   registry.Discovery
-	client      resolver.ClientConn
-	ctx         context.Context
-	cancel      context.CancelFunc
-	secure      bool
-	state       *backendState
+func (r *backendResolver) ResolveNow(resolver.ResolveNowOptions) {}
+
+func (r *backendResolver) Close() {
+	r.cancel()
 }
 
 func (r *backendResolver) watch() {
@@ -92,21 +98,6 @@ func (r *backendResolver) consume(watcher registry.Watcher) error {
 	}
 }
 
-func (r *backendResolver) retry(err error) bool {
-	if errors.Is(err, context.Canceled) || r.ctx.Err() != nil {
-		return false
-	}
-	slog.Error("watch node discovery failed", "service", r.serviceName, "error", err)
-	timer := time.NewTimer(time.Second)
-	defer timer.Stop()
-	select {
-	case <-r.ctx.Done():
-		return false
-	case <-timer.C:
-		return true
-	}
-}
-
 func (r *backendResolver) update(instances []*registry.ServiceInstance) {
 	snapshot, addresses, err := resolveBackendInstances(r.serviceName, instances, r.secure)
 	if err != nil {
@@ -140,6 +131,21 @@ func (r *backendResolver) reject(err error) {
 	r.state.markUnavailable()
 	_ = r.client.UpdateState(resolver.State{})
 	r.client.ReportError(err)
+}
+
+func (r *backendResolver) retry(err error) bool {
+	if errors.Is(err, context.Canceled) || r.ctx.Err() != nil {
+		return false
+	}
+	slog.Error("watch node discovery failed", "service", r.serviceName, "error", err)
+	timer := time.NewTimer(time.Second)
+	defer timer.Stop()
+	select {
+	case <-r.ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
 }
 
 func resolveBackendInstances(serviceName string, instances []*registry.ServiceInstance, secure bool) (backendSnapshot, []resolver.Address, error) {
@@ -189,9 +195,15 @@ func resolveBackendInstance(serviceName string, service *registry.ServiceInstanc
 	if err != nil {
 		return false, "", fmt.Errorf("gateway: node service %q: %w", serviceName, err)
 	}
-	host, endpointMismatch := grpcInstanceHost(service.Endpoints, secure)
-	if host == "" {
-		if !endpointMismatch {
+	if len(service.Endpoints) != 1 {
+		return false, "", fmt.Errorf(
+			"gateway: node service %q must have exactly one gRPC endpoint",
+			serviceName,
+		)
+	}
+	host, err := grpcendpoint.Host(service.Endpoints[0], secure)
+	if err != nil {
+		if !errors.Is(err, grpcendpoint.ErrTransportSecurity) {
 			return false, "", fmt.Errorf("gateway: node service %q has no gRPC endpoint", serviceName)
 		}
 		wantScheme := "grpc://"
@@ -238,30 +250,10 @@ func (i backendIdentities) add(serviceName, nodeID, host string) error {
 	return nil
 }
 
-func (r *backendResolver) ResolveNow(resolver.ResolveNowOptions) {}
-
-func (r *backendResolver) Close() {
-	r.cancel()
-}
-
 func secureTransport(opts resolver.BuildOptions) bool {
 	creds := opts.DialCreds
 	if creds == nil && opts.CredsBundle != nil {
 		creds = opts.CredsBundle.TransportCredentials()
 	}
 	return creds != nil && !strings.EqualFold(creds.Info().SecurityProtocol, "insecure")
-}
-
-func grpcInstanceHost(endpoints []string, secure bool) (string, bool) {
-	endpointMismatch := false
-	for _, endpoint := range endpoints {
-		host, err := grpcendpoint.Host(endpoint, secure)
-		if err == nil {
-			return host, false
-		}
-		if errors.Is(err, grpcendpoint.ErrTransportSecurity) {
-			endpointMismatch = true
-		}
-	}
-	return "", endpointMismatch
 }

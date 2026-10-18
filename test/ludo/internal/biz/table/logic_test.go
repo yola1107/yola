@@ -14,15 +14,6 @@ import (
 	"yola/test/ludo/pkg/codes"
 )
 
-type tableRepoStub struct {
-	logoutCount int
-}
-
-func (repo *tableRepoStub) LogoutGame(*player.Player, int32, string) error {
-	repo.logoutCount++
-	return nil
-}
-
 func TestMoveTimeoutAdvancesTurn(t *testing.T) {
 	room := &conf.Room{
 		Table:    &conf.Room_Table{TableNum: 1, ChairNum: 2},
@@ -264,11 +255,7 @@ func TestResultPushSchedulesRobotExit(t *testing.T) {
 	repo := new(tableRepoStub)
 	tables := newStartedManager(t, room, repo)
 	useManualTimers(t, tables)
-	robot := player.New(&player.Raw{
-		ID:       1,
-		IsRobot:  true,
-		BaseData: &player.BaseData{UID: 1, Money: 500},
-	})
+	robot := newRobotPlayer(1)
 	var exitTimerID int64
 	if err := tables.call(context.Background(), 1, func(gameTable *Table) error {
 		if !seatForTest(gameTable, robot) {
@@ -309,11 +296,7 @@ func TestRobotReservedTablesRoundUpMinPlayCount(t *testing.T) {
 		LogCache: &conf.Room_LogCache{},
 	}
 	tables := newStartedManager(t, room, new(tableRepoStub))
-	robot := player.New(&player.Raw{
-		ID:       1,
-		IsRobot:  true,
-		BaseData: &player.BaseData{UID: 1, Money: 500},
-	})
+	robot := newRobotPlayer(1)
 	if !tables.table(2).robotLogic.canEnter(robot) {
 		t.Fatal("second table was not reserved for the fifth robot")
 	}
@@ -332,12 +315,8 @@ func TestRobotTimerIgnoresPlayerAfterTableExit(t *testing.T) {
 	repo := new(tableRepoStub)
 	tables := newStartedManager(t, room, repo)
 	useManualTimers(t, tables)
-	robot := player.New(&player.Raw{
-		ID:       1,
-		IsRobot:  true,
-		BaseData: &player.BaseData{UID: 1, Money: 500},
-	})
-	var timerID int64
+	robot := newRobotPlayer(1)
+	var robotTimerID int64
 	if err := tables.call(context.Background(), 1, func(gameTable *Table) error {
 		if !seatForTest(gameTable, robot) {
 			return fmt.Errorf("seat robot")
@@ -346,7 +325,9 @@ func TestRobotTimerIgnoresPlayerAfterTableExit(t *testing.T) {
 		gameTable.activeChair = robot.GetChairID()
 		gameTable.stage.Set(StDice, time.Second, 0)
 		gameTable.robotLogic.onActivePlayer(robot, &v1.ActivePush{Active: robot.GetChairID()})
-		timerID = latestTableTimerID(tables)
+		robotTimerID = latestTableTimerID(tables)
+
+		// 在机器人动作触发前离桌，留下待触发的旧定时器。
 		robot.Reset()
 		gameTable.stage.Set(StWait, time.Second, 0)
 		exited, exitErr := gameTable.Exit(robot, codes.Success, "logout")
@@ -357,8 +338,8 @@ func TestRobotTimerIgnoresPlayerAfterTableExit(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if !fireTableTimer(t, tables, timerID) {
-		t.Fatalf("robot timer %d is missing", timerID)
+	if !fireTableTimer(t, tables, robotTimerID) {
+		t.Fatalf("robot timer %d is missing", robotTimerID)
 	}
 	if err := tables.call(context.Background(), 1, func(gameTable *Table) error {
 		if gameTable.playerAt(0) != nil || robot.GetTableID() != player.TableIDDetached {
@@ -374,6 +355,10 @@ func TestRobotTimerIgnoresPlayerAfterTableExit(t *testing.T) {
 }
 
 func TestRobotTimerIgnoresStaleStageToken(t *testing.T) {
+	const (
+		initialStageTimerID int64 = 11
+		currentStageTimerID int64 = 12
+	)
 	room := &conf.Room{
 		Table:    &conf.Room_Table{TableNum: 1, ChairNum: 1},
 		Game:     &conf.Room_Game{MinMoney: 100, MaxMoney: 1000, BaseMoney: 100},
@@ -382,12 +367,8 @@ func TestRobotTimerIgnoresStaleStageToken(t *testing.T) {
 	}
 	tables := newStartedManager(t, room, new(tableRepoStub))
 	useManualTimers(t, tables)
-	robot := player.New(&player.Raw{
-		ID:       1,
-		IsRobot:  true,
-		BaseData: &player.BaseData{UID: 1, Money: 500},
-	})
-	var timerID int64
+	robot := newRobotPlayer(1)
+	var robotTimerID int64
 	if err := tables.call(context.Background(), 1, func(gameTable *Table) error {
 		if !seatForTest(gameTable, robot) {
 			return fmt.Errorf("seat robot")
@@ -397,33 +378,29 @@ func TestRobotTimerIgnoresStaleStageToken(t *testing.T) {
 		gameTable.activeChair = robot.GetChairID()
 		gameTable.board = model.NewBoard([]int32{0}, 4, true)
 		robot.SetPieces(gameTable.board.GetPieceIDsByColor(0))
-		gameTable.stage.Set(StDice, time.Second, 11)
+
+		gameTable.stage.Set(StDice, time.Second, initialStageTimerID)
 		gameTable.robotLogic.onActivePlayer(robot, &v1.ActivePush{Active: robot.GetChairID()})
-		timerID = latestTableTimerID(tables)
-		gameTable.stage.Set(StDice, time.Second, 12)
+		robotTimerID = latestTableTimerID(tables)
+
+		// 再次设置相同的掷骰阶段会推进 generation，使先前安排的机器人动作失效。
+		gameTable.stage.Set(StDice, time.Second, currentStageTimerID)
 		return nil
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if !fireTableTimer(t, tables, timerID) {
-		t.Fatalf("robot timer %d is missing", timerID)
+	if !fireTableTimer(t, tables, robotTimerID) {
+		t.Fatalf("robot timer %d is missing", robotTimerID)
 	}
 	if err := tables.call(context.Background(), 1, func(gameTable *Table) error {
 		if dices := robot.DiceListInt32(); len(dices) != 0 {
 			return fmt.Errorf("stale robot timer rolled dice %v", dices)
 		}
-		if timerID := gameTable.stage.TimerID(); timerID != 12 {
-			return fmt.Errorf("stage timer ID = %d, want 12", timerID)
+		if stageTimerID := gameTable.stage.TimerID(); stageTimerID != currentStageTimerID {
+			return fmt.Errorf("stage timer ID = %d, want %d", stageTimerID, currentStageTimerID)
 		}
 		return nil
 	}); err != nil {
 		t.Fatal(err)
 	}
 }
-
-func seatForTest(gameTable *Table, p *player.Player) bool {
-	seated, err := gameTable.Seat(p)
-	return err == nil && seated
-}
-
-var _ Repo = (*tableRepoStub)(nil)

@@ -107,58 +107,6 @@ func (c *Client) Channel() *Channel {
 	return c.channel
 }
 
-func (c *Client) readLoop() {
-	ch := c.channel
-	defer func() {
-		_ = ch.closeWithReason("read loop stopped")
-		<-ch.writerDone
-		c.shutdownWith(ch, nil)
-	}()
-	for {
-		p := &v1.Proto{}
-		if err := ch.readFrame(p); err != nil {
-			warnUnexpectedNetworkError("[websocket] read failed", ch.ConnID(), err)
-			return
-		}
-		if err := c.dispatchMessage(p); err != nil {
-			if errors.Is(err, queue.ErrFull) {
-				slog.Warn("[websocket] callback queue full",
-					"conn_id", ch.ConnID(),
-					"operation", p.Op,
-				)
-			}
-			return
-		}
-	}
-}
-
-func (c *Client) heartbeat() {
-	ch := c.channel
-	ticker := time.NewTicker(c.pingInterval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ch.ctx.Done():
-			return
-		case <-ticker.C:
-			switch ch.heartbeat.Tick() {
-			case heartbeat.TickPending:
-				continue
-			case heartbeat.TickTimeout:
-				slog.Warn("[websocket] heartbeat reply timed out")
-				_ = ch.closeWithReason("heartbeat timeout")
-				return
-			}
-			if err := ch.sendHeartbeat(); err != nil {
-				ch.heartbeat.CancelQueue()
-				slog.Warn("[websocket] heartbeat send failed", "error", err)
-				_ = ch.closeWithReason("heartbeat failed")
-				return
-			}
-		}
-	}
-}
-
 // Request 发送请求并等待响应、取消、超时或断连。
 // 取消或超时只结束本地等待；已发送请求仍可能执行，迟到响应按序号丢弃。
 func (c *Client) Request(ctx context.Context, command int32, msg proto.Message) ([]byte, int32, error) {
@@ -189,94 +137,12 @@ func (c *Client) Request(ctx context.Context, command int32, msg proto.Message) 
 	return pending.Wait(ctx)
 }
 
-func (c *Client) dispatchMessage(p *v1.Proto) error {
-	switch p.Op {
-	case v1.OpResponse:
-		c.requests.Resolve(p)
-	case v1.OpPush:
-		if handler := c.pushHandlers[p.Cmd]; handler != nil {
-			return c.callbacks.Submit(func() { handler(p.Body) })
-		}
-	case v1.OpHeartbeatReply:
-		if !c.channel.heartbeat.Reply() {
-			slog.Warn("[websocket] unexpected heartbeat reply")
-			_ = c.channel.closeWithReason("unexpected heartbeat reply")
-			return errors.New("websocket: unexpected heartbeat reply")
-		}
-	case v1.OpHeartbeat:
-		slog.Warn("[websocket] unexpected inbound heartbeat")
-	case v1.OpKick:
-		var kick func()
-		if c.kickHandler != nil {
-			kick = func() { c.kickHandler(p.Code) }
-		}
-		c.shutdownWith(c.channel, kick)
-		return network.ErrConnectionClosed
-	default:
-		slog.Warn("[websocket] unknown incoming operation", "operation", p.Op)
-	}
-	return nil
-}
-
 // Close 关闭客户端连接。
 func (c *Client) Close() {
 	if c == nil {
 		return
 	}
 	c.shutdownWith(c.channel, nil)
-}
-
-func (c *Client) shutdownWith(ch *Channel, beforeDisconnect func()) {
-	var finishCallbacks func()
-	c.closeOnce.Do(func() {
-		terminals := make([]func(), 0, 2)
-		if beforeDisconnect != nil {
-			terminals = append(terminals, beforeDisconnect)
-		}
-		if c.disconnectFunc != nil {
-			terminals = append(terminals, func() { c.disconnectFunc(ch) })
-		}
-		if c.callbacks != nil {
-			finishCallbacks = c.callbacks.BeginTermination(terminals...)
-		}
-		if ch != nil {
-			_ = ch.closeWithReason("client closed")
-		}
-		c.requests.Fail(ErrNotConnected)
-	})
-	if finishCallbacks != nil {
-		finishCallbacks()
-	}
-}
-
-func logCallbackPanic(value any, stack []byte) {
-	slog.Error("[websocket] callback panic",
-		"value", value,
-		"stack", string(stack),
-	)
-}
-
-func callbackSlot(enabled bool) int {
-	if enabled {
-		return 1
-	}
-	return 0
-}
-
-func (c *Client) initialCallbacks(connect func(*Channel), pending []*v1.Proto) []func() {
-	callbacks := make([]func(), 0, len(pending)+callbackSlot(connect != nil))
-	if connect != nil {
-		callbacks = append(callbacks, func() { connect(c.channel) })
-	}
-	for _, message := range pending {
-		handler := c.pushHandlers[message.Cmd]
-		if handler == nil {
-			continue
-		}
-		body := message.Body
-		callbacks = append(callbacks, func() { handler(body) })
-	}
-	return callbacks
 }
 
 func (o *clientOptions) authenticate(ctx context.Context, conn *websocket.Conn) ([]*v1.Proto, error) {
@@ -336,4 +202,138 @@ func (o *clientOptions) readAuthenticationReply(authCtx context.Context, conn *w
 			return reply, nil
 		},
 	)
+}
+
+func (c *Client) initialCallbacks(connect func(*Channel), pending []*v1.Proto) []func() {
+	callbacks := make([]func(), 0, len(pending)+callbackSlot(connect != nil))
+	if connect != nil {
+		callbacks = append(callbacks, func() { connect(c.channel) })
+	}
+	for _, message := range pending {
+		handler := c.pushHandlers[message.Cmd]
+		if handler == nil {
+			continue
+		}
+		body := message.Body
+		callbacks = append(callbacks, func() { handler(body) })
+	}
+	return callbacks
+}
+
+func (c *Client) readLoop() {
+	ch := c.channel
+	defer func() {
+		_ = ch.closeWithReason("read loop stopped")
+		<-ch.writerDone
+		c.shutdownWith(ch, nil)
+	}()
+	for {
+		p := &v1.Proto{}
+		if err := ch.readFrame(p); err != nil {
+			warnUnexpectedNetworkError("[websocket] read failed", ch.ConnID(), err)
+			return
+		}
+		if err := c.dispatchMessage(p); err != nil {
+			if errors.Is(err, queue.ErrFull) {
+				slog.Warn("[websocket] callback queue full",
+					"conn_id", ch.ConnID(),
+					"operation", p.Op,
+				)
+			}
+			return
+		}
+	}
+}
+
+func (c *Client) dispatchMessage(p *v1.Proto) error {
+	switch p.Op {
+	case v1.OpResponse:
+		c.requests.Resolve(p)
+	case v1.OpPush:
+		if handler := c.pushHandlers[p.Cmd]; handler != nil {
+			return c.callbacks.Submit(func() { handler(p.Body) })
+		}
+	case v1.OpHeartbeatReply:
+		if !c.channel.heartbeat.Reply() {
+			slog.Warn("[websocket] unexpected heartbeat reply")
+			_ = c.channel.closeWithReason("unexpected heartbeat reply")
+			return errors.New("websocket: unexpected heartbeat reply")
+		}
+	case v1.OpHeartbeat:
+		slog.Warn("[websocket] unexpected inbound heartbeat")
+	case v1.OpKick:
+		var kick func()
+		if c.kickHandler != nil {
+			kick = func() { c.kickHandler(p.Code) }
+		}
+		c.shutdownWith(c.channel, kick)
+		return network.ErrConnectionClosed
+	default:
+		slog.Warn("[websocket] unknown incoming operation", "operation", p.Op)
+	}
+	return nil
+}
+
+func (c *Client) heartbeat() {
+	ch := c.channel
+	ticker := time.NewTicker(c.pingInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ch.ctx.Done():
+			return
+		case <-ticker.C:
+			switch ch.heartbeat.Tick() {
+			case heartbeat.TickPending:
+				continue
+			case heartbeat.TickTimeout:
+				slog.Warn("[websocket] heartbeat reply timed out")
+				_ = ch.closeWithReason("heartbeat timeout")
+				return
+			}
+			if err := ch.sendHeartbeat(); err != nil {
+				ch.heartbeat.CancelQueue()
+				slog.Warn("[websocket] heartbeat send failed", "error", err)
+				_ = ch.closeWithReason("heartbeat failed")
+				return
+			}
+		}
+	}
+}
+
+func (c *Client) shutdownWith(ch *Channel, beforeDisconnect func()) {
+	var finishCallbacks func()
+	c.closeOnce.Do(func() {
+		terminals := make([]func(), 0, 2)
+		if beforeDisconnect != nil {
+			terminals = append(terminals, beforeDisconnect)
+		}
+		if c.disconnectFunc != nil {
+			terminals = append(terminals, func() { c.disconnectFunc(ch) })
+		}
+		if c.callbacks != nil {
+			finishCallbacks = c.callbacks.BeginTermination(terminals...)
+		}
+		if ch != nil {
+			_ = ch.closeWithReason("client closed")
+		}
+		c.requests.Fail(ErrNotConnected)
+	})
+	if finishCallbacks != nil {
+		finishCallbacks()
+	}
+}
+
+func logCallbackPanic(value any, stack []byte) {
+	slog.Error("[websocket] callback panic",
+		"value", value,
+		"stack", string(stack),
+	)
+}
+
+func callbackSlot(enabled bool) int {
+	if enabled {
+		return 1
+	}
+	return 0
 }

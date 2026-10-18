@@ -22,14 +22,11 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/emptypb"
+	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
-func TestSlowForwardDoesNotBlockHeartbeat(t *testing.T) {
-	for _, transportName := range []string{"tcp", "websocket"} {
-		t.Run(transportName, func(t *testing.T) {
-			checkHeartbeatDuringForward(t, transportName, 50*time.Millisecond, 3*time.Second)
-		})
-	}
+type gatewayRequestClient interface {
+	Request(context.Context, int32, proto.Message) ([]byte, int32, error)
 }
 
 func TestDefaultHeartbeatSurvivesExtendedForward(t *testing.T) {
@@ -41,102 +38,6 @@ func TestDefaultHeartbeatSurvivesExtendedForward(t *testing.T) {
 			}
 			checkHeartbeatDuringForward(t, transportName, interval, 3*interval)
 		})
-	}
-}
-
-func checkHeartbeatDuringForward(t *testing.T, transportName string, pingInterval, handlerTimeout time.Duration) {
-	t.Helper()
-	started := make(chan struct{})
-	release := make(chan struct{})
-	defer close(release)
-	endpoint := startBackendNode(t, &blockedForwardNode{started: started, release: release})
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-	grpcListener, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-	heartbeats := make(chan struct{}, 4)
-	observeHeartbeat := func(next middleware.Handler) middleware.Handler {
-		return func(ctx context.Context, req any) (any, error) {
-			reply, handleErr := next(ctx, req)
-			if message, ok := reply.(*protocolv1.Proto); handleErr == nil && ok && message.Op == protocolv1.OpHeartbeatReply {
-				select {
-				case <-started:
-					select {
-					case heartbeats <- struct{}{}:
-					default:
-					}
-				default:
-				}
-			}
-			return reply, handleErr
-		}
-	}
-	var transport ClientTransport
-	if transportName == "tcp" {
-		transport = tcp.NewServer(tcp.Listener(listener), tcp.Middleware(observeHeartbeat), tcp.Timeout(handlerTimeout))
-	} else {
-		transport = websocket.NewServer(websocket.Listener(listener), websocket.Middleware(observeHeartbeat), websocket.Timeout(handlerTimeout))
-	}
-	gate := newTestGateway(t, testLocator(t), endpoint,
-		Listener(grpcListener), Endpoint(&url.URL{Scheme: "grpc", Host: grpcListener.Addr().String()}),
-		Transport(transport), RPCTimeout(handlerTimeout),
-	)
-	startTestApp(t, gate)
-	disconnected := make(chan struct{})
-	var client interface {
-		gatewayRequestClient
-		Close()
-	}
-	if transportName == "tcp" {
-		client, err = tcp.NewClient(context.Background(),
-			tcp.WithAddress(listener.Addr().String()), tcp.WithServiceName("game"), tcp.WithToken("synthetic-token"),
-			tcp.WithPingInterval(pingInterval), tcp.WithDisconnectFunc(func() { close(disconnected) }),
-			tcp.WithRequestTimeout(handlerTimeout+time.Second),
-		)
-	} else {
-		client, err = websocket.NewClient(context.Background(),
-			websocket.WithEndpoint("ws://"+listener.Addr().String()),
-			websocket.WithServiceName("game"), websocket.WithToken("synthetic-token"),
-			websocket.WithPingInterval(pingInterval),
-			websocket.WithRequestTimeout(handlerTimeout+time.Second),
-			websocket.WithDisconnectFunc(func(*websocket.Channel) { close(disconnected) }),
-		)
-	}
-	require.NoError(t, err)
-	t.Cleanup(client.Close)
-	requestDone := make(chan error, 1)
-	go func() {
-		_, _, requestErr := client.Request(context.Background(), 1, &emptypb.Empty{})
-		requestDone <- requestErr
-	}()
-	receiveWithin(t, started)
-	// 两轮回复证明业务仍阻塞时客户端已确认上一轮心跳。
-	for range 2 {
-		select {
-		case <-heartbeats:
-		case <-disconnected:
-			t.Fatal("slow Forward caused a heartbeat disconnect")
-		case <-time.After(pingInterval + time.Second):
-			t.Fatal("heartbeat did not pass the blocked Forward")
-		}
-	}
-	client.Close()
-	require.Error(t, receiveWithin(t, requestDone))
-}
-
-type blockedForwardNode struct {
-	clusterv1.UnimplementedNodeServer
-	started chan struct{}
-	release <-chan struct{}
-}
-
-func (n *blockedForwardNode) Forward(ctx context.Context, _ *clusterv1.ForwardRequest) (*clusterv1.ForwardReply, error) {
-	close(n.started)
-	select {
-	case <-n.release:
-		return &clusterv1.ForwardReply{}, nil
-	case <-ctx.Done():
-		return nil, ctx.Err()
 	}
 }
 
@@ -242,6 +143,205 @@ func TestHeartbeatBeforeAuthenticationClosesConnection(t *testing.T) {
 			require.Error(t, err)
 			require.Zero(t, backend.calls.Load())
 		})
+	}
+}
+
+func TestNewServerWiresTCPTransport(t *testing.T) {
+	store := testLocator(t)
+	grpcEndpoint := startTestNode(t)
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	grpcLis, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	gate := newTestGateway(
+		t, store, grpcEndpoint,
+		Listener(grpcLis), Endpoint(&url.URL{Scheme: "grpc", Host: grpcLis.Addr().String()}),
+		Transport(tcp.NewServer(tcp.Listener(lis))),
+	)
+	startTestApp(t, gate)
+
+	connected := make(chan struct{})
+	pushes := make(chan []byte, 1)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	client, err := tcp.NewClient(ctx,
+		tcp.WithAddress(lis.Addr().String()),
+		tcp.WithServiceName("game"),
+		tcp.WithToken("synthetic-token"),
+		tcp.WithConnectFunc(func() { close(connected) }),
+		tcp.WithPushHandler(map[int32]tcp.PushHandler{3: func(body []byte) { pushes <- body }}),
+	)
+	require.NoError(t, err)
+	t.Cleanup(client.Close)
+	select {
+	case <-connected:
+	case <-ctx.Done():
+		t.Fatal("TCP authentication timed out")
+	}
+
+	assertGatewayRequests(ctx, t, client, pushes, 1, 2)
+}
+
+func TestNewServerWiresWebSocketTransport(t *testing.T) {
+	store := testLocator(t)
+	grpcEndpoint := startTestNode(t)
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	grpcLis, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	channelConfig := &websocket.ChannelConfig{
+		WriteTimeout:  time.Second,
+		ReadDeadline:  time.Second,
+		SendQueueSize: 32,
+	}
+	heartbeats := make(chan struct{}, 2)
+	wsServer := websocket.NewServer(
+		websocket.Listener(lis), websocket.ServerChannelConfig(channelConfig), websocket.HandshakeTimeout(time.Second),
+		websocket.Middleware(func(next middleware.Handler) middleware.Handler {
+			return func(ctx context.Context, req any) (any, error) {
+				reply, handleErr := next(ctx, req)
+				if message, ok := reply.(*protocolv1.Proto); handleErr == nil && ok && message.Op == protocolv1.OpHeartbeatReply {
+					select {
+					case heartbeats <- struct{}{}:
+					default:
+					}
+				}
+				return reply, handleErr
+			}
+		}),
+	)
+	gate := newTestGateway(
+		t, store, grpcEndpoint,
+		Listener(grpcLis), Endpoint(&url.URL{Scheme: "grpc", Host: grpcLis.Addr().String()}),
+		Transport(wsServer),
+	)
+	startTestApp(t, gate)
+
+	connected := make(chan struct{})
+	pushes := make(chan []byte, 1)
+	client, err := websocket.NewClient(context.Background(),
+		websocket.WithEndpoint("ws://"+lis.Addr().String()),
+		websocket.WithServiceName("game"),
+		websocket.WithToken("synthetic-token"),
+		websocket.WithChannelConfig(channelConfig),
+		websocket.WithPingInterval(100*time.Millisecond),
+		websocket.WithConnectFunc(func(*websocket.Channel) { close(connected) }),
+		websocket.WithPushHandler(map[int32]websocket.PushHandler{3: func(body []byte) { pushes <- body }}),
+	)
+	require.NoError(t, err)
+	defer client.Close()
+	select {
+	case <-connected:
+	case <-time.After(time.Second):
+		t.Fatal("websocket authentication timed out")
+	}
+	requestCtx, cancelRequest := context.WithTimeout(context.Background(), time.Second)
+	defer cancelRequest()
+	assertGatewayRequests(requestCtx, t, client, pushes, 2)
+	// 第二轮心跳证明客户端已确认第一轮回复，不依赖固定 sleep 猜测处理进度。
+	for range 2 {
+		select {
+		case <-heartbeats:
+		case <-requestCtx.Done():
+			t.Fatal("websocket heartbeat timed out")
+		}
+	}
+	require.True(t, client.IsAlive(), "websocket heartbeat closed an authenticated connection")
+}
+
+func checkHeartbeatDuringForward(t *testing.T, transportName string, pingInterval, handlerTimeout time.Duration) {
+	t.Helper()
+	started := make(chan struct{})
+	release := make(chan struct{})
+	defer close(release)
+	endpoint := startBackendNode(t, &blockedForwardNode{started: started, release: release})
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	grpcListener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	heartbeats := make(chan struct{}, 4)
+	observeHeartbeat := func(next middleware.Handler) middleware.Handler {
+		return func(ctx context.Context, req any) (any, error) {
+			reply, handleErr := next(ctx, req)
+			if message, ok := reply.(*protocolv1.Proto); handleErr == nil && ok && message.Op == protocolv1.OpHeartbeatReply {
+				select {
+				case <-started:
+					select {
+					case heartbeats <- struct{}{}:
+					default:
+					}
+				default:
+				}
+			}
+			return reply, handleErr
+		}
+	}
+	var transport ClientTransport
+	if transportName == "tcp" {
+		transport = tcp.NewServer(tcp.Listener(listener), tcp.Middleware(observeHeartbeat), tcp.Timeout(handlerTimeout))
+	} else {
+		transport = websocket.NewServer(websocket.Listener(listener), websocket.Middleware(observeHeartbeat), websocket.Timeout(handlerTimeout))
+	}
+	gate := newTestGateway(t, testLocator(t), endpoint,
+		Listener(grpcListener), Endpoint(&url.URL{Scheme: "grpc", Host: grpcListener.Addr().String()}),
+		Transport(transport), RPCTimeout(handlerTimeout),
+	)
+	startTestApp(t, gate)
+	disconnected := make(chan struct{})
+	var client interface {
+		gatewayRequestClient
+		Close()
+	}
+	if transportName == "tcp" {
+		client, err = tcp.NewClient(context.Background(),
+			tcp.WithAddress(listener.Addr().String()), tcp.WithServiceName("game"), tcp.WithToken("synthetic-token"),
+			tcp.WithPingInterval(pingInterval), tcp.WithDisconnectFunc(func() { close(disconnected) }),
+			tcp.WithRequestTimeout(handlerTimeout+time.Second),
+		)
+	} else {
+		client, err = websocket.NewClient(context.Background(),
+			websocket.WithEndpoint("ws://"+listener.Addr().String()),
+			websocket.WithServiceName("game"), websocket.WithToken("synthetic-token"),
+			websocket.WithPingInterval(pingInterval),
+			websocket.WithRequestTimeout(handlerTimeout+time.Second),
+			websocket.WithDisconnectFunc(func(*websocket.Channel) { close(disconnected) }),
+		)
+	}
+	require.NoError(t, err)
+	t.Cleanup(client.Close)
+	requestDone := make(chan error, 1)
+	go func() {
+		_, _, requestErr := client.Request(context.Background(), 1, &emptypb.Empty{})
+		requestDone <- requestErr
+	}()
+	receiveWithin(t, started)
+	// 两轮回复证明业务仍阻塞时客户端已确认上一轮心跳。
+	for range 2 {
+		select {
+		case <-heartbeats:
+		case <-disconnected:
+			t.Fatal("slow Forward caused a heartbeat disconnect")
+		case <-time.After(pingInterval + time.Second):
+			t.Fatal("heartbeat did not pass the blocked Forward")
+		}
+	}
+	client.Close()
+	require.Error(t, receiveWithin(t, requestDone))
+}
+
+type blockedForwardNode struct {
+	clusterv1.UnimplementedNodeServer
+	started chan struct{}
+	release <-chan struct{}
+}
+
+func (n *blockedForwardNode) Forward(ctx context.Context, _ *clusterv1.ForwardRequest) (*clusterv1.ForwardReply, error) {
+	close(n.started)
+	select {
+	case <-n.release:
+		return &clusterv1.ForwardReply{}, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
 }
 
@@ -356,4 +456,25 @@ func (n *pipelineNode) Forward(ctx context.Context, request *clusterv1.ForwardRe
 
 func (*pipelineNode) Disconnect(context.Context, *clusterv1.DisconnectRequest) (*emptypb.Empty, error) {
 	return &emptypb.Empty{}, nil
+}
+
+func assertGatewayRequests(ctx context.Context, t *testing.T, client gatewayRequestClient, pushes <-chan []byte, commands ...int32) {
+	t.Helper()
+	request := wrapperspb.String("request")
+	body, err := proto.Marshal(request)
+	require.NoError(t, err)
+	for _, command := range commands {
+		reply, code, err := client.Request(ctx, command, request)
+		require.NoError(t, err)
+		require.Zero(t, code)
+		require.Equal(t, append([]byte("node:"), body...), reply)
+	}
+	var push protocolv1.Proto
+	select {
+	case pushBody := <-pushes:
+		require.NoError(t, proto.Unmarshal(pushBody, &push))
+	case <-ctx.Done():
+		t.Fatal("gateway push timed out")
+	}
+	require.Equal(t, body, push.Body)
 }

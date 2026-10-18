@@ -20,15 +20,25 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-var (
-	errNilPayload            = errors.New("websocket: nil payload")
-	errInvalidHeartbeatState = errors.New("websocket: invalid heartbeat state")
-)
-
 const _maxCloseReasonSize = 123
+
+var errInvalidHeartbeatState = errors.New("websocket: invalid heartbeat state")
 
 var _readFrameBuffers = sync.Pool{
 	New: func() any { return new([v1.MaxProtoSize]byte) },
+}
+
+var (
+	_ network.Connection         = (*Channel)(nil)
+	_ network.PreparedConnection = (*Channel)(nil)
+)
+
+type outboundFrame struct {
+	body         []byte
+	payloadBytes int64
+	heartbeat    bool
+	// done 仅在最后一帧非 nil，也标识 writer 终止。
+	done chan error
 }
 
 // Channel 持有一条 Gorilla WebSocket 连接。
@@ -52,14 +62,6 @@ type Channel struct {
 	writerDone          chan struct{}
 	pendingPayloadBytes atomic.Int64
 	queueDropped        atomic.Uint64
-}
-
-type outboundFrame struct {
-	body         []byte
-	payloadBytes int64
-	heartbeat    bool
-	// done 仅在最后一帧非 nil，也标识 writer 终止。
-	done chan error
 }
 
 func newChannel(ctx context.Context, conn *websocket.Conn, codec encoding.Codec, config ChannelConfig) *Channel {
@@ -128,6 +130,36 @@ func (ch *Channel) SendPrepared(message *network.PreparedProto) error {
 	})
 }
 
+// CloseWithProto 写入最后一个 Binary 帧后关闭连接。
+func (ch *Channel) CloseWithProto(ctx context.Context, p *v1.Proto) error {
+	body, err := marshalFrame(ch.codec, p)
+	if err != nil {
+		return err
+	}
+	ch.sendMu.Lock()
+	if ch.closed.Load() {
+		ch.sendMu.Unlock()
+		return network.ErrConnectionClosed
+	}
+	ch.closed.Store(true)
+	ch.sendMu.Unlock()
+	frame := outboundFrame{body: body, payloadBytes: int64(len(p.Body)), done: make(chan error, 1)}
+	ch.pendingPayloadBytes.Add(frame.payloadBytes)
+	select {
+	case ch.outbound <- frame:
+	case <-ch.writerDone:
+		ch.pendingPayloadBytes.Add(-frame.payloadBytes)
+		return ch.writerError()
+	case <-ctx.Done():
+		ch.pendingPayloadBytes.Add(-frame.payloadBytes)
+		return errors.Join(ctx.Err(), ch.abort())
+	}
+	return ch.waitFinal(ctx, frame.done)
+}
+
+// Close 关闭 WebSocket channel。
+func (ch *Channel) Close() error { return ch.closeWithReason("channel closed") }
+
 // sendHeartbeat 标记心跳帧，由 writeLoop 推进回复超时状态，
 // 入队路径不推进该状态。
 func (ch *Channel) sendHeartbeat() error {
@@ -161,33 +193,6 @@ func (ch *Channel) enqueueFrame(payloadBytes int, heartbeat bool, encode func() 
 	ch.pendingPayloadBytes.Add(int64(payloadBytes))
 	ch.outbound <- outboundFrame{body: body, payloadBytes: int64(payloadBytes), heartbeat: heartbeat}
 	return nil
-}
-
-// CloseWithProto 写入最后一个 Binary 帧后关闭连接。
-func (ch *Channel) CloseWithProto(ctx context.Context, p *v1.Proto) error {
-	body, err := marshalFrame(ch.codec, p)
-	if err != nil {
-		return err
-	}
-	ch.sendMu.Lock()
-	if ch.closed.Load() {
-		ch.sendMu.Unlock()
-		return network.ErrConnectionClosed
-	}
-	ch.closed.Store(true)
-	ch.sendMu.Unlock()
-	frame := outboundFrame{body: body, payloadBytes: int64(len(p.Body)), done: make(chan error, 1)}
-	ch.pendingPayloadBytes.Add(frame.payloadBytes)
-	select {
-	case ch.outbound <- frame:
-	case <-ch.writerDone:
-		ch.pendingPayloadBytes.Add(-frame.payloadBytes)
-		return ch.writerError()
-	case <-ctx.Done():
-		ch.pendingPayloadBytes.Add(-frame.payloadBytes)
-		return errors.Join(ctx.Err(), ch.abort())
-	}
-	return ch.waitFinal(ctx, frame.done)
 }
 
 func (ch *Channel) waitFinal(ctx context.Context, result <-chan error) error {
@@ -243,34 +248,6 @@ func (ch *Channel) readFrame(p *v1.Proto) error {
 	return unmarshalFrame(ch.codec, body, p)
 }
 
-func readBoundedFrame(reader io.Reader, buffer []byte) ([]byte, error) {
-	read := 0
-	for {
-		if read == len(buffer) {
-			var extra [1]byte
-			n, err := reader.Read(extra[:])
-			switch {
-			case n > 0:
-				return nil, network.ErrFrameTooLarge
-			case errors.Is(err, io.EOF):
-				return buffer[:read], nil
-			case err != nil:
-				return nil, err
-			default:
-				continue
-			}
-		}
-		n, err := reader.Read(buffer[read:])
-		read += n
-		switch {
-		case errors.Is(err, io.EOF):
-			return buffer[:read], nil
-		case err != nil:
-			return nil, err
-		}
-	}
-}
-
 func (ch *Channel) writeLoop() {
 	var writeErr error
 	defer func() { ch.finishWriter(writeErr) }()
@@ -316,9 +293,6 @@ func (ch *Channel) writeMessage(body []byte) error {
 	}
 	return ch.conn.WriteMessage(websocket.BinaryMessage, body)
 }
-
-// Close 关闭 WebSocket channel。
-func (ch *Channel) Close() error { return ch.closeWithReason("channel closed") }
 
 func (ch *Channel) closeWithReason(reason string) error {
 	ch.markClosed()
@@ -371,17 +345,17 @@ func (ch *Channel) markClosed() {
 	ch.sendMu.Unlock()
 }
 
-func isNetworkClosedError(err error) bool {
-	return errors.Is(err, network.ErrConnectionClosed) || errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) ||
-		errors.Is(err, websocket.ErrCloseSent) || websocket.IsCloseError(err, websocket.CloseGoingAway,
-		websocket.CloseNormalClosure, websocket.CloseAbnormalClosure, websocket.CloseMessageTooBig)
-}
-
 func warnUnexpectedNetworkError(message, connID string, err error) {
 	if isNetworkClosedError(err) {
 		return
 	}
 	slog.Warn(message, "conn_id", connID, "error", err)
+}
+
+func isNetworkClosedError(err error) bool {
+	return errors.Is(err, network.ErrConnectionClosed) || errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) ||
+		errors.Is(err, websocket.ErrCloseSent) || websocket.IsCloseError(err, websocket.CloseGoingAway,
+		websocket.CloseNormalClosure, websocket.CloseAbnormalClosure, websocket.CloseMessageTooBig)
 }
 
 func formatCloseFrame(reason string) []byte {
@@ -391,8 +365,3 @@ func formatCloseFrame(reason string) []byte {
 	}
 	return websocket.FormatCloseMessage(websocket.CloseNormalClosure, reason)
 }
-
-var (
-	_ network.Connection         = (*Channel)(nil)
-	_ network.PreparedConnection = (*Channel)(nil)
-)

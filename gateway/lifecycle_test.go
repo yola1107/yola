@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"net"
-	"net/url"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -12,91 +11,230 @@ import (
 	"time"
 
 	"yola/api/protocol/v1"
+	"yola/internal/contextwait"
+	"yola/internal/gateclient"
 	"yola/locate"
 	"yola/network/tcp"
 
 	"github.com/go-kratos/kratos/v3"
-	"github.com/go-kratos/kratos/v3/registry"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/codes"
 )
 
-func TestBeforeStartUsesInternalGRPCEndpoint(t *testing.T) {
-	lis, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-	want := &url.URL{Scheme: "grpc", Host: lis.Addr().String()}
-	server := newTestGateway(
-		t, testLocator(t), "grpc://127.0.0.1:1",
-		Listener(lis), Endpoint(want),
-	)
-	t.Cleanup(func() { require.NoError(t, server.Stop(context.Background())) })
-	ctx := kratos.NewContext(context.Background(), testAppInfo{
-		id: "gate-a", name: "gateway", endpoints: []string{"grpc://127.0.0.1:2", want.String()},
-	})
-
-	require.NoError(t, server.BeforeStart(ctx))
-	require.Equal(t, want.String(), server.identity.endpoint)
-}
-
-func TestBeforeStartFailureReleasesInternalGRPCListener(t *testing.T) {
+func TestStopTimeoutKeepsOneCleanupForLaterCallers(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	address := listener.Addr().String()
-	server := newTestServer(t, Listener(listener))
-	_, err = server.Endpoint()
-	require.NoError(t, err)
-
-	ctx := kratos.NewContext(context.Background(), testAppInfo{name: "gateway"})
-	require.EqualError(t, server.BeforeStart(ctx), "gateway: application ID is required")
+	started := make(chan struct{})
+	stopping := make(chan struct{})
+	release := make(chan struct{})
+	unblock := sync.OnceFunc(func() { close(release) })
+	var stops atomic.Int32
+	gate := newTestServer(t, Listener(listener), Transport(&stubTransport{
+		start: func(ctx context.Context) error {
+			close(started)
+			<-ctx.Done()
+			return nil
+		},
+		stop: func(context.Context) error {
+			stops.Add(1)
+			close(stopping)
+			<-release
+			return nil
+		},
+	}))
+	done := make(chan error, 1)
+	ctx := kratos.NewContext(context.Background(), testAppInfo{id: "gate-a", name: "gateway"})
+	go func() { done <- gate.Start(ctx) }()
+	t.Cleanup(func() {
+		unblock()
+		require.NoError(t, gate.Stop(context.Background()))
+	})
+	receiveWithin(t, started)
+	stopCtx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	require.ErrorIs(t, gate.Stop(stopCtx), context.DeadlineExceeded)
+	receiveWithin(t, stopping)
+	stopped := make(chan error, 1)
+	go func() { stopped <- gate.Stop(context.Background()) }()
+	select {
+	case stopErr := <-stopped:
+		t.Fatalf("later Stop returned before cleanup: %v", stopErr)
+	default:
+	}
+	require.Error(t, gate.Open(t.Context(), newTestConnection("conn-stopping")))
+	unblock()
+	require.NoError(t, receiveWithin(t, stopped))
+	require.NoError(t, receiveWithin(t, done))
+	require.NoError(t, gate.Stop(context.Background()))
+	require.Equal(t, int32(1), stops.Load())
 	rebound, err := net.Listen("tcp", address)
 	require.NoError(t, err)
 	require.NoError(t, rebound.Close())
-	require.NoError(t, server.Stop(context.Background()))
 }
 
-func TestBeforeStartUsesCallerContext(t *testing.T) {
-	pinged := make(chan context.Context, 1)
-	gate := newTestServer(t, Locator(&initializationLocator{
-		Locator: testLocator(t), pinged: pinged,
-	}))
-	baseCtx, cancel := context.WithCancel(context.Background())
-	ctx := kratos.NewContext(baseCtx, testAppInfo{
-		id: "gate-a", name: "gate", endpoints: []string{"grpc://127.0.0.1:9100"},
+func TestShutdownTimeoutClosesNetworkBeforeStalledSessionFinishes(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	address := listener.Addr().String()
+	ready := make(chan struct{})
+	deadline := make(chan struct{})
+	release := make(chan struct{})
+	unblock := sync.OnceFunc(func() { close(release) })
+	conn := newTestConnection("conn-stalled-shutdown")
+	conn.closeWithProto = func(ctx context.Context, _ *v1.Proto) error {
+		<-ctx.Done()
+		close(deadline)
+		<-release
+		return ctx.Err()
+	}
+	gate := newTestServer(
+		t,
+		Listener(listener),
+		ShutdownTimeout(20*time.Millisecond),
+		CleanupTimeout(200*time.Millisecond),
+		Transport(&stubTransport{
+			start: func(context.Context) error {
+				close(ready)
+				return nil
+			},
+		}),
+	)
+	started := make(chan error, 1)
+	appCtx := kratos.NewContext(context.Background(), testAppInfo{id: "gate-a", name: "gateway"})
+	go func() { started <- gate.Start(appCtx) }()
+	t.Cleanup(func() {
+		unblock()
+		_ = gate.Stop(context.Background())
 	})
-	prepared := make(chan error, 1)
-	go func() { prepared <- gate.BeforeStart(ctx) }()
-	preparationCtx := receiveWithin(t, pinged)
-	require.EqualError(t, gate.BeforeStart(ctx), "gateway: server is already preparing or prepared")
-	gate.lifecycle.mu.Lock()
-	require.Equal(t, _stPreparing, gate.lifecycle.state)
-	gate.lifecycle.mu.Unlock()
-	cancel()
-	require.ErrorIs(t, preparationCtx.Err(), context.Canceled)
-	require.ErrorIs(t, <-prepared, context.Canceled)
-	require.NoError(t, gate.Stop(context.Background()))
+	receiveWithin(t, ready)
+	require.NoError(t, gate.Open(t.Context(), conn))
+	callerCtx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
+	defer cancel()
+	require.ErrorIs(t, gate.Stop(callerCtx), context.DeadlineExceeded)
+	select {
+	case <-deadline:
+	case <-time.After(150 * time.Millisecond):
+		t.Fatal("session drain did not use the shutdown budget")
+	}
+	receiveWithin(t, conn.closed)
+	require.Eventually(t, func() bool {
+		return tcpAddressReusable(address)
+	}, time.Second, time.Millisecond)
+	stopped := make(chan error, 1)
+	go func() { stopped <- gate.Stop(context.Background()) }()
+	select {
+	case err := <-stopped:
+		t.Fatalf("Stop returned before late session cleanup: %v", err)
+	default:
+	}
+	unblock()
+	require.ErrorIs(t, receiveWithin(t, stopped), context.DeadlineExceeded)
+	require.ErrorIs(t, receiveWithin(t, started), context.DeadlineExceeded)
 }
 
-func TestBeforeStartReentryMakesPreparedServerTerminal(t *testing.T) {
-	var stopCalls atomic.Int32
-	gate := newTestServer(t, Transport(&stubTransport{stop: func(context.Context) error {
-		stopCalls.Add(1)
-		return nil
-	}}))
-	t.Cleanup(func() { require.NoError(t, gate.Stop(context.Background())) })
-	ctx := kratos.NewContext(context.Background(), testAppInfo{id: "gate-a", name: "gateway"})
+func TestShutdownTimeoutWaitsForAdmittedRemoteTakeover(t *testing.T) {
+	store := testLocator(t)
+	previousGate := newTestServer(t, Address("127.0.0.1:0"), Locator(store))
+	initTestGateway(t, previousGate)
+	previous := testBinding()
+	previous.GateID, previous.GateEndpoint = previousGate.identity.id, previousGate.identity.endpoint
+	previous.ConnID = "conn-previous"
+	previousConn := newTestConnection(previous.ConnID)
+	kicking := make(chan struct{})
+	releaseKick := make(chan struct{})
+	finishKick := sync.OnceFunc(func() { close(releaseKick) })
+	defer finishKick()
+	previousConn.closeWithProto = func(_ context.Context, msg *v1.Proto) error {
+		if msg.Code != v1.KickCodeSessionReplaced {
+			return errors.New("unexpected Kick code")
+		}
+		close(kicking)
+		<-releaseKick
+		return previousConn.Close()
+	}
+	require.NoError(t, previousGate.Open(t.Context(), previousConn))
+	lease, _, err := store.BindGate(t.Context(), previous, time.Minute)
+	require.NoError(t, err)
+	require.True(t, previousGate.sessions.get(previous.ConnID).finishAuthentication(lease, time.Now()))
 
-	require.NoError(t, gate.BeforeStart(ctx))
-	gate.lifecycle.mu.Lock()
-	require.Equal(t, _stPrepared, gate.lifecycle.state)
-	gate.lifecycle.mu.Unlock()
-	require.EqualError(t, gate.BeforeStart(ctx), "gateway: server is already preparing or prepared")
-	gate.lifecycle.mu.Lock()
-	require.Equal(t, _stStopping, gate.lifecycle.state)
-	gate.lifecycle.mu.Unlock()
-	require.Zero(t, stopCalls.Load())
-	require.EqualError(t, gate.Start(ctx), "gateway: server is stopping or stopped")
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = listener.Close() })
+	ready, stopping := make(chan struct{}), make(chan struct{})
+	releaseStop := make(chan struct{})
+	finishStop := sync.OnceFunc(func() { close(releaseStop) })
+	gate := newTestServer(
+		t,
+		Listener(listener),
+		Locator(store),
+		ShutdownTimeout(20*time.Millisecond),
+		CleanupTimeout(time.Second),
+		Transport(&stubTransport{
+			start: func(ctx context.Context) error {
+				close(ready)
+				<-ctx.Done()
+				return nil
+			},
+			stop: func(context.Context) error {
+				close(stopping)
+				<-releaseStop
+				return nil
+			},
+		}),
+	)
+	started, startDone := make(chan error, 1), make(chan struct{})
+	appCtx := kratos.NewContext(context.Background(), testAppInfo{id: "gate-b", name: "gateway"})
+	go func() {
+		defer close(startDone)
+		started <- gate.Start(appCtx)
+	}()
+	t.Cleanup(func() {
+		finishKick()
+		finishStop()
+		_ = gate.Stop(context.Background())
+		receiveWithin(t, startDone)
+	})
+	receiveWithin(t, ready)
+	conn := newTestConnection("conn-current")
+	require.NoError(t, gate.Open(t.Context(), conn))
+	auth := authMessage(t)
+	handled := make(chan error, 1)
+	go func() {
+		_, handleErr := gate.Handle(context.Background(), conn, auth)
+		handled <- handleErr
+	}()
+	receiveWithin(t, kicking)
+	current, err := store.LocateGate(t.Context(), previous.ServiceName, previous.UID)
+	require.NoError(t, err)
+	require.Equal(t, "gate-b", current.Binding.GateID)
 
-	require.NoError(t, gate.Stop(context.Background()))
-	require.Equal(t, int32(1), stopCalls.Load())
+	callerCtx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
+	defer cancel()
+	require.ErrorIs(t, gate.Stop(callerCtx), context.DeadlineExceeded)
+	receiveWithin(t, stopping)
+	require.Eventually(t, func() bool {
+		return tcpAddressReusable(listener.Addr().String())
+	}, time.Second, time.Millisecond, "远端接管与迟到 Stop 不得阻止内部 listener 关闭")
+	stopped := make(chan error, 1)
+	go func() { stopped <- gate.Stop(context.Background()) }()
+
+	finishKick()
+	require.NoError(t, receiveWithin(t, handled))
+	require.Zero(t, auth.Code)
+	require.True(t, isClosed(previousConn.closed)())
+	require.Eventually(t, func() bool {
+		return errors.Is(gate.gateways.Kick(t.Context(), previous, v1.KickCodeSessionReplaced), gateclient.ErrUnavailable)
+	}, time.Second, time.Millisecond, "接管结束后由 shutdown 关闭回程连接池，再汇合迟到 Stop")
+	select {
+	case stopErr := <-stopped:
+		t.Fatalf("Stop returned before the admitted transport cleanup finished: %v", stopErr)
+	default:
+	}
+	finishStop()
+	require.ErrorIs(t, receiveWithin(t, stopped), context.DeadlineExceeded)
+	require.ErrorIs(t, receiveWithin(t, started), context.DeadlineExceeded)
+	require.ErrorIs(t, gate.Stop(context.Background()), context.DeadlineExceeded)
 }
 
 func TestStopWaitsForPreparationRollback(t *testing.T) {
@@ -107,163 +245,169 @@ func TestStopWaitsForPreparationRollback(t *testing.T) {
 	releasePreparation := sync.OnceFunc(func() { close(releasePrepare) })
 	releaseCleanup := sync.OnceFunc(func() { close(releaseRollback) })
 	var stopCalls atomic.Int32
-	clientTransport := &stubTransport{
+	gate := newTestServer(t, Transport(&stubTransport{
 		prepare: func(context.Context) error {
 			close(prepareStarted)
 			<-releasePrepare
 			return nil
 		},
 		stop: func(context.Context) error {
-			if stopCalls.Add(1) == 1 {
-				close(rollbackStarted)
-				<-releaseRollback
-			}
+			stopCalls.Add(1)
+			close(rollbackStarted)
+			<-releaseRollback
 			return nil
 		},
-	}
-	gate := newTestServer(t, Transport(clientTransport))
+	}))
 	t.Cleanup(func() {
 		releasePreparation()
 		releaseCleanup()
-		_ = gate.shutdown(context.Background())
+		_ = gate.Stop(context.Background())
 	})
 	ctx := kratos.NewContext(context.Background(), testAppInfo{id: "gate-a", name: "gateway"})
-	prepared := make(chan error, 1)
-	go func() { prepared <- gate.BeforeStart(ctx) }()
+	started := make(chan error, 1)
+	go func() { started <- gate.Start(ctx) }()
 	receiveWithin(t, prepareStarted)
-	require.Equal(t, identity{}, gate.identity)
-
-	stopped := make(chan error, 1)
-	go func() { stopped <- gate.Stop(context.Background()) }()
-	require.Eventually(t, func() bool {
-		gate.lifecycle.mu.Lock()
-		defer gate.lifecycle.mu.Unlock()
-		return gate.lifecycle.state == _stStopping
-	}, time.Second, time.Millisecond)
-	select {
-	case err := <-stopped:
-		t.Fatalf("Stop returned before preparation completed: %v", err)
-	default:
-	}
-
-	releasePreparation()
-	receiveWithin(t, rollbackStarted)
-	select {
-	case err := <-stopped:
-		t.Fatalf("Stop returned before preparation rollback completed: %v", err)
-	default:
-	}
-	releaseCleanup()
-	require.EqualError(t, receiveWithin(t, prepared), "gateway: server is stopping or stopped")
-	require.NoError(t, receiveWithin(t, stopped))
-	require.GreaterOrEqual(t, stopCalls.Load(), int32(1))
-	gate.lifecycle.mu.Lock()
-	require.Equal(t, _stStopping, gate.lifecycle.state)
-	require.Equal(t, identity{}, gate.identity)
-	gate.lifecycle.mu.Unlock()
-}
-
-func TestStopTimeoutLeavesPreparationOwnerToRollback(t *testing.T) {
-	prepareStarted := make(chan struct{})
-	releasePrepare := make(chan struct{})
-	rolledBack := make(chan struct{})
-	releasePreparation := sync.OnceFunc(func() { close(releasePrepare) })
-	var rollbackOnce sync.Once
-	clientTransport := &stubTransport{
-		prepare: func(context.Context) error {
-			close(prepareStarted)
-			<-releasePrepare
-			return nil
-		},
-		stop: func(context.Context) error {
-			rollbackOnce.Do(func() { close(rolledBack) })
-			return nil
-		},
-	}
-	gate := newTestServer(t, Transport(clientTransport))
-	t.Cleanup(func() {
-		releasePreparation()
-		_ = gate.shutdown(context.Background())
-	})
-	ctx := kratos.NewContext(context.Background(), testAppInfo{id: "gate-a", name: "gateway"})
-	prepared := make(chan error, 1)
-	go func() { prepared <- gate.BeforeStart(ctx) }()
-	receiveWithin(t, prepareStarted)
-
 	stopCtx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
 	require.ErrorIs(t, gate.Stop(stopCtx), context.DeadlineExceeded)
 	releasePreparation()
-	require.EqualError(t, receiveWithin(t, prepared), "gateway: server is stopping or stopped")
-	receiveWithin(t, rolledBack)
-	gate.lifecycle.mu.Lock()
-	require.Equal(t, _stStopping, gate.lifecycle.state)
-	require.Equal(t, identity{}, gate.identity)
-	gate.lifecycle.mu.Unlock()
+	receiveWithin(t, rollbackStarted)
+	stopped := make(chan error, 1)
+	go func() { stopped <- gate.Stop(context.Background()) }()
+	select {
+	case err := <-stopped:
+		t.Fatalf("Stop returned before rollback completed: %v", err)
+	default:
+	}
+	releaseCleanup()
+	require.ErrorIs(t, receiveWithin(t, started), context.Canceled)
+	require.NoError(t, receiveWithin(t, stopped))
+	require.NoError(t, gate.Stop(context.Background()))
+	require.Equal(t, int32(1), stopCalls.Load())
+}
+
+func TestPreparationTimeoutClosesAlreadyPreparedClientListener(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	address := listener.Addr().String()
+	preparing := make(chan struct{})
+	release := make(chan struct{})
+	resume := sync.OnceFunc(func() { close(release) })
+	var stops atomic.Int32
+	gate := newTestServer(t, ShutdownTimeout(20*time.Millisecond), Transport(
+		tcp.NewServer(tcp.Listener(listener)),
+		&stubTransport{
+			prepare: func(context.Context) error {
+				close(preparing)
+				<-release
+				return nil
+			},
+			stop: func(context.Context) error {
+				stops.Add(1)
+				return nil
+			},
+		},
+	))
+	started := make(chan error, 1)
+	go func() {
+		started <- gate.Start(kratos.NewContext(context.Background(), testAppInfo{id: "gate-a", name: "gateway"}))
+	}()
+	t.Cleanup(func() {
+		resume()
+		_ = gate.Stop(context.Background())
+	})
+	receiveWithin(t, preparing)
+	stopped := make(chan error, 1)
+	go func() { stopped <- gate.Stop(context.Background()) }()
+	require.Eventually(t, func() bool {
+		return tcpAddressReusable(address)
+	}, time.Second, time.Millisecond, "prepared client listener must close before late preparation returns")
+	require.Zero(t, stops.Load(), "the in-flight transport still belongs to its creator")
+	resume()
+	require.ErrorIs(t, receiveWithin(t, stopped), context.DeadlineExceeded)
+	require.Error(t, receiveWithin(t, started))
+	require.Equal(t, int32(1), stops.Load())
+}
+
+func TestShutdownTimeoutClosesNetworkBeforeLateTransportStop(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	address := listener.Addr().String()
+	ready := make(chan struct{})
+	expired := make(chan struct{})
+	release := make(chan struct{})
+	resume := sync.OnceFunc(func() { close(release) })
+	gate := newTestServer(t, Listener(listener), ShutdownTimeout(20*time.Millisecond), Transport(&stubTransport{
+		start: func(context.Context) error {
+			close(ready)
+			return nil
+		},
+		stop: func(ctx context.Context) error {
+			<-ctx.Done()
+			close(expired)
+			<-release
+			return ctx.Err()
+		},
+	}))
+	started := make(chan error, 1)
+	go func() {
+		started <- gate.Start(kratos.NewContext(context.Background(), testAppInfo{id: "gate-a", name: "gateway"}))
+	}()
+	t.Cleanup(func() {
+		resume()
+		_ = gate.Stop(context.Background())
+	})
+	receiveWithin(t, ready)
+	stopped := make(chan error, 1)
+	go func() { stopped <- gate.Stop(context.Background()) }()
+	receiveWithin(t, expired)
+	require.Eventually(t, func() bool {
+		return tcpAddressReusable(address)
+	}, time.Second, time.Millisecond)
+	resume()
+	require.ErrorIs(t, receiveWithin(t, stopped), context.DeadlineExceeded)
+	require.ErrorIs(t, receiveWithin(t, started), context.DeadlineExceeded)
 }
 
 func TestGatewayCleansUpAfterTransportFailure(t *testing.T) {
 	transportErr := errors.New("transport failed")
 	grpcLis, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
-	gate := newTestGateway(
-		t, testLocator(t), "grpc://127.0.0.1:1",
-		Listener(grpcLis),
-		Transport(tcp.NewServer(tcp.Listener(&failingListener{acceptErr: transportErr}))),
-	)
-	app := newTestApp(gate)
-	err = app.Run()
-	require.ErrorIs(t, err, transportErr)
-	require.False(t, gate.admission.accepting.Load())
-	require.EqualError(t, gate.Start(context.Background()), "gateway: server is stopping or stopped")
+	address := grpcLis.Addr().String()
+	gate := newTestGateway(t, testLocator(t), "grpc://127.0.0.1:1", Listener(grpcLis),
+		Transport(tcp.NewServer(tcp.Listener(&failingListener{acceptErr: transportErr}))))
+	require.ErrorIs(t, newTestApp(gate).Run(), transportErr)
+	require.Error(t, gate.Open(t.Context(), newTestConnection("conn-after-failure")))
+	rebound, err := net.Listen("tcp", address)
+	require.NoError(t, err)
+	require.NoError(t, rebound.Close())
 	require.NoError(t, gate.Stop(context.Background()))
-}
-
-func TestStartLabelsClientAndGRPCTransportFailures(t *testing.T) {
-	t.Run("client transport", func(t *testing.T) {
-		startErr := errors.New("start failed")
-		gate := newTestServer(t, Transport(
-			&stubTransport{},
-			&stubTransport{start: func(context.Context) error { return startErr }},
-		))
-		ctx := kratos.NewContext(context.Background(), testAppInfo{id: "gate-a", name: "gateway"})
-		require.NoError(t, gate.BeforeStart(ctx))
-		require.NoError(t, gate.grpcServer.Stop(context.Background()))
-
-		err := gate.Start(ctx)
-		require.ErrorIs(t, err, startErr)
-		require.ErrorContains(t, err, "gateway: start client transport 1 (*gateway.stubTransport)")
-		require.NoError(t, gate.Stop(context.Background()))
-	})
-
-	t.Run("gRPC transport", func(t *testing.T) {
-		gate := newTestServer(t)
-		ctx := kratos.NewContext(context.Background(), testAppInfo{id: "gate-a", name: "gateway"})
-		require.NoError(t, gate.BeforeStart(ctx))
-		require.NoError(t, gate.grpcListener.Close())
-
-		err := gate.Start(ctx)
-		require.Error(t, err)
-		require.ErrorContains(t, err, "gateway: start gRPC transport")
-		require.NoError(t, gate.Stop(context.Background()))
-	})
 }
 
 func TestStopLabelsEachClientTransportFailure(t *testing.T) {
 	firstErr := errors.New("first stop failed")
 	secondErr := errors.New("second stop failed")
+	ready := make(chan struct{})
 	gate := newTestServer(t, Transport(
 		&stubTransport{stop: func(context.Context) error { return firstErr }},
-		&stubTransport{stop: func(context.Context) error { return secondErr }},
+		&stubTransport{
+			start: func(context.Context) error {
+				close(ready)
+				return nil
+			},
+			stop: func(context.Context) error { return secondErr },
+		},
 	))
+	started := make(chan error, 1)
 	ctx := kratos.NewContext(context.Background(), testAppInfo{id: "gate-a", name: "gateway"})
-	require.NoError(t, gate.BeforeStart(ctx))
-
+	go func() { started <- gate.Start(ctx) }()
+	receiveWithin(t, ready)
 	err := gate.Stop(context.Background())
 	require.ErrorIs(t, err, firstErr)
 	require.ErrorIs(t, err, secondErr)
 	require.ErrorContains(t, err, "gateway: stop client transport 0 (*gateway.stubTransport)")
 	require.ErrorContains(t, err, "gateway: stop client transport 1 (*gateway.stubTransport)")
+	require.ErrorIs(t, receiveWithin(t, started), firstErr)
 }
 
 func TestDrainSessionsSendsShutdownKick(t *testing.T) {
@@ -275,12 +419,12 @@ func TestDrainSessionsSendsShutdownKick(t *testing.T) {
 		cleanupTimeout: time.Second,
 	}
 
-	require.NoError(t, gate.drainSessions(context.Background()))
+	receiveWithin(t, gate.startSessionDrain(context.Background(), gate.sessions.takeAll()))
 
 	require.True(t, isClosed(conn.closed)())
 	require.Nil(t, gate.sessions.byConnID)
 	require.Nil(t, gate.sessions.get(conn.ConnID()))
-	require.False(t, gate.sessions.add(newTestConnection("conn-late"), time.Second))
+	require.Error(t, gate.sessions.add(newTestConnection("conn-late"), time.Second))
 	select {
 	case msg := <-conn.pushes:
 		require.Equal(t, v1.OpKick, msg.Op)
@@ -290,38 +434,100 @@ func TestDrainSessionsSendsShutdownKick(t *testing.T) {
 	}
 }
 
-func TestQuiesceHonorsAdmissionDeadline(t *testing.T) {
-	gate := newTestServer(t)
-	gate.admission.wg.Add(1)
-	var releaseOnce sync.Once
-	release := func() { releaseOnce.Do(gate.admission.wg.Done) }
-	t.Cleanup(release)
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
-	defer cancel()
-	stopped := make(chan error, 1)
-	go func() { stopped <- gate.quiesce(ctx) }()
-
-	select {
-	case err := <-stopped:
-		require.ErrorIs(t, err, context.DeadlineExceeded)
-	case <-time.After(200 * time.Millisecond):
-		release()
-		t.Fatal("quiesce ignored the admission deadline")
-	}
-}
-
-func TestStopWaitsWhenCallerHasNoDeadline(t *testing.T) {
-	gate := newTestServer(t)
-	gate.admission.wg.Add(1)
+func TestShutdownTimeoutCleansLateAuthentication(t *testing.T) {
+	store := newBlockingBindLocator(testLocator(t))
+	ready, stopping := make(chan struct{}), make(chan struct{})
+	gate := newTestServer(t, Locator(store), ShutdownTimeout(20*time.Millisecond), Transport(&stubTransport{
+		start: func(ctx context.Context) error {
+			close(ready)
+			<-ctx.Done()
+			return nil
+		},
+		stop: func(context.Context) error {
+			close(stopping)
+			return nil
+		},
+	}))
+	started := make(chan error, 1)
+	go func() {
+		started <- gate.Start(kratos.NewContext(context.Background(), testAppInfo{id: "gate-a", name: "gateway"}))
+	}()
+	t.Cleanup(func() {
+		store.unblock()
+		_ = gate.Stop(context.Background())
+	})
+	receiveWithin(t, ready)
+	conn := newTestConnection("conn-late-authentication")
+	require.NoError(t, gate.Open(t.Context(), conn))
+	auth := authMessage(t)
+	handled := make(chan error, 1)
+	go func() {
+		_, err := gate.Handle(context.Background(), conn, auth)
+		handled <- err
+	}()
+	candidate := receiveWithin(t, store.entered)
 	stopped := make(chan error, 1)
 	go func() { stopped <- gate.Stop(context.Background()) }()
+
+	receiveWithin(t, stopping)
+	receiveWithin(t, conn.closed)
+	require.Error(t, gate.Open(t.Context(), newTestConnection("conn-after-stop")))
 	select {
 	case err := <-stopped:
-		t.Fatalf("Stop returned without a caller deadline or admission release: %v", err)
-	case <-time.After(20 * time.Millisecond):
+		t.Fatalf("Stop returned before late authentication cleanup: %v", err)
+	default:
 	}
-	gate.admission.wg.Done()
+	store.unblock()
+
+	require.NoError(t, receiveWithin(t, handled))
+	require.Equal(t, int32(codes.Aborted), auth.Code)
+	_, err := store.LocateGate(t.Context(), candidate.ServiceName, candidate.UID)
+	require.ErrorIs(t, err, locate.ErrGateNotFound)
+	require.ErrorIs(t, receiveWithin(t, stopped), context.DeadlineExceeded)
+	require.ErrorIs(t, receiveWithin(t, started), context.DeadlineExceeded)
+}
+
+func TestOpenConcurrentWithStopRetainsAcceptedConnectionForDrain(t *testing.T) {
+	ready, canceling := make(chan struct{}), make(chan struct{})
+	gate := newTestServer(t, Transport(&stubTransport{
+		start: func(ctx context.Context) error {
+			close(ready)
+			<-ctx.Done()
+			close(canceling)
+			return nil
+		},
+	}))
+	started := make(chan error, 1)
+	go func() {
+		started <- gate.Start(kratos.NewContext(context.Background(), testAppInfo{id: "gate-a", name: "gateway"}))
+	}()
+	conn := &blockingOpenConnection{
+		testConnection: newTestConnection("conn-opening"),
+		entered:        make(chan struct{}),
+		release:        make(chan struct{}),
+	}
+	unblock := sync.OnceFunc(func() { close(conn.release) })
+	t.Cleanup(func() {
+		unblock()
+		_ = gate.Stop(context.Background())
+	})
+	receiveWithin(t, ready)
+	opened := make(chan error, 1)
+	go func() { opened <- gate.Open(t.Context(), conn) }()
+	receiveWithin(t, conn.entered)
+	stopped := make(chan error, 1)
+	go func() { stopped <- gate.Stop(context.Background()) }()
+	// Start 的取消证明 Stop 已开始；Open 仍持有登记和准入共用的锁。
+	receiveWithin(t, canceling)
+	unblock()
+
+	require.NoError(t, receiveWithin(t, opened))
 	require.NoError(t, receiveWithin(t, stopped))
+	require.NoError(t, receiveWithin(t, started))
+	require.True(t, isClosed(conn.closed)())
+	require.Equal(t, v1.KickCodeServerShutdown, receiveWithin(t, conn.pushes).Code)
+	require.Nil(t, gate.sessions.get(conn.connID))
+	require.Error(t, gate.Open(t.Context(), newTestConnection("conn-after-stop")))
 }
 
 func TestDrainSessionsRedistributesWorkFromBlockedWorker(t *testing.T) {
@@ -347,12 +553,7 @@ func TestDrainSessionsRedistributesWorkFromBlockedWorker(t *testing.T) {
 		registry.byConnID[connID] = &session{conn: conn}
 	}
 	gate := &Server{sessions: registry, cleanupTimeout: time.Second}
-	drained := make(chan struct{})
-	drainResult := make(chan error, 1)
-	go func() {
-		drainResult <- gate.drainSessions(context.Background())
-		close(drained)
-	}()
+	drained := gate.startSessionDrain(context.Background(), gate.sessions.takeAll())
 	t.Cleanup(func() {
 		releaseConnections()
 		<-drained
@@ -363,7 +564,6 @@ func TestDrainSessionsRedistributesWorkFromBlockedWorker(t *testing.T) {
 	}, time.Second, time.Millisecond)
 	releaseConnections()
 	receiveWithin(t, drained)
-	require.NoError(t, <-drainResult)
 }
 
 func TestDrainSessionsPreservesShutdownDeadlineForCleanup(t *testing.T) {
@@ -372,7 +572,7 @@ func TestDrainSessionsPreservesShutdownDeadlineForCleanup(t *testing.T) {
 	store := &blockingUnbindLocator{Locator: testLocator(t), called: make(chan context.Context, 1)}
 	gate := &Server{
 		locator:        store,
-		backends:       newBackends(staticDiscovery{}, nil, 300*time.Millisecond),
+		backends:       newBackends(staticDiscovery{}, nil, 300*time.Millisecond, store),
 		sessions:       &sessionRegistry{byConnID: map[string]*session{binding.ConnID: activeSession(conn, binding)}},
 		cleanupTimeout: 300 * time.Millisecond,
 	}
@@ -380,7 +580,7 @@ func TestDrainSessionsPreservesShutdownDeadlineForCleanup(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
 	started := time.Now()
-	_ = gate.drainSessions(ctx)
+	_ = contextwait.Done(ctx, gate.startSessionDrain(ctx, gate.sessions.takeAll()))
 	require.Less(t, time.Since(started), 150*time.Millisecond)
 	cleanupCtx := receiveWithin(t, store.called)
 	deadline, ok := cleanupCtx.Deadline()
@@ -388,97 +588,54 @@ func TestDrainSessionsPreservesShutdownDeadlineForCleanup(t *testing.T) {
 	require.LessOrEqual(t, deadline.Sub(started), 50*time.Millisecond)
 }
 
-func TestGatewayPreparationFailurePreventsRegistration(t *testing.T) {
-	store := &failingPingLocator{Locator: testLocator(t)}
-	gateway := newTestServer(t, Locator(store))
-	t.Cleanup(func() { require.NoError(t, gateway.Stop(context.Background())) })
-	registrar := &countingRegistrar{}
-	app := kratos.New(
-		kratos.ID("gate-a"),
-		kratos.Name("gateway"),
-		kratos.BeforeStart(gateway.BeforeStart),
-		kratos.Server(gateway),
-		kratos.Registrar(registrar),
-	)
-
-	require.EqualError(t, app.Run(), "transient ping failure")
-	require.Zero(t, registrar.registered.Load())
-}
-
-func TestGatewayTransportPreparationFailurePreventsRegistration(t *testing.T) {
-	prepareErr := errors.New("transport preparation failed")
-	var cleanupErr error
-	prepared := &stubTransport{stop: func(ctx context.Context) error {
-		cleanupErr = ctx.Err()
-		return nil
-	}}
-	firstRollback := true
-	failing := &stubTransport{
-		prepareErr: prepareErr,
-		stop: func(ctx context.Context) error {
-			if firstRollback {
-				firstRollback = false
-				<-ctx.Done()
-				return ctx.Err()
-			}
-			return nil
-		},
+func TestSessionDetachForClose(t *testing.T) {
+	binding := testBinding()
+	tests := []struct {
+		name    string
+		binding locate.GateBinding
+	}{
+		{name: "authenticated", binding: binding},
+		{name: "unauthenticated"},
 	}
-	gate := newTestServer(t, CleanupTimeout(20*time.Millisecond), Transport(prepared, failing))
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			sess := &session{
+				conn:          newTestConnection(binding.ConnID),
+				binding:       test.binding,
+				leaseDeadline: time.Now().Add(time.Minute),
+			}
+
+			require.Equal(t, test.binding, sess.detachForClose())
+			require.Empty(t, sess.binding)
+			require.True(t, sess.leaseDeadline.IsZero())
+		})
+	}
+}
+
+func TestRPCTimeoutDoesNotCancelCleanup(t *testing.T) {
+	gate := newTestServer(t, RPCTimeout(time.Nanosecond))
 	t.Cleanup(func() { require.NoError(t, gate.Stop(context.Background())) })
-	registrar := &countingRegistrar{}
-	app := kratos.New(
-		kratos.ID("gate-a"),
-		kratos.Name("gateway"),
-		kratos.BeforeStart(gate.BeforeStart),
-		kratos.Server(gate),
-		kratos.Registrar(registrar),
-	)
-
-	err := app.Run()
-	require.ErrorIs(t, err, prepareErr)
-	require.ErrorContains(t, err, "gateway: prepare client transport 1 (*gateway.stubTransport)")
-	require.ErrorContains(t, err, "gateway: roll back client transport 1 (*gateway.stubTransport)")
-	require.NoError(t, cleanupErr)
-	require.Zero(t, registrar.registered.Load())
-	require.False(t, gate.admission.accepting.Load())
-	require.EqualError(t, gate.Start(context.Background()), "gateway: server is stopping or stopped")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	cleanupCtx, cancelCleanup := gate.cleanupContext(ctx)
+	defer cancelCleanup()
+	require.NoError(t, cleanupCtx.Err())
+	deadline, ok := cleanupCtx.Deadline()
+	require.True(t, ok)
+	require.Greater(t, time.Until(deadline), time.Second)
 }
 
-type initializationLocator struct {
-	locate.Locator
-	pinged chan<- context.Context
+type blockingOpenConnection struct {
+	*testConnection
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
 }
 
-type failingPingLocator struct {
-	locate.Locator
+func (c *blockingOpenConnection) ConnID() string {
+	c.once.Do(func() {
+		close(c.entered)
+		<-c.release
+	})
+	return c.testConnection.ConnID()
 }
-
-type countingRegistrar struct {
-	registered atomic.Int32
-}
-
-type failingListener struct {
-	acceptErr error
-}
-
-func (l *failingListener) Accept() (net.Conn, error) { return nil, l.acceptErr }
-
-func (*failingListener) Close() error { return nil }
-
-func (*failingListener) Addr() net.Addr { return &net.TCPAddr{IP: net.ParseIP("127.0.0.1")} }
-
-func (s *initializationLocator) Ping(ctx context.Context) error {
-	s.pinged <- ctx
-	<-ctx.Done()
-	return ctx.Err()
-}
-
-func (*failingPingLocator) Ping(context.Context) error { return errors.New("transient ping failure") }
-
-func (r *countingRegistrar) Register(context.Context, *registry.ServiceInstance) error {
-	r.registered.Add(1)
-	return nil
-}
-
-func (*countingRegistrar) Deregister(context.Context, *registry.ServiceInstance) error { return nil }

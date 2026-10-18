@@ -104,6 +104,8 @@ func assertWhotStage(t *testing.T, gameTable *Table, want StageID) {
 	}
 }
 
+var _ Repo = (*roundRepoStub)(nil)
+
 type roundRepoStub struct{}
 
 func (*roundRepoStub) LogoutGame(*player.Player, int32, string) error { return nil }
@@ -171,5 +173,3 @@ func fireTableTimer(t *testing.T, manager *Manager, timers *tableTimerStub, time
 	drainTable(t, manager, 1)
 	return true
 }
-
-var _ Repo = (*roundRepoStub)(nil)

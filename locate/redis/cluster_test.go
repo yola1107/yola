@@ -25,6 +25,7 @@ const (
 	_clusterTransitionPrimaryCount = 3
 	_clusterTransitionNodeCount    = 6
 	_clusterTransitionTimeout      = 20 * time.Second
+	_clusterTransitionFailoverWait = 6 * time.Second
 	_clusterTransitionPoll         = 50 * time.Millisecond
 	_clusterTransitionEpochTTL     = 3 * time.Minute
 )
@@ -46,15 +47,24 @@ func TestNodeBindingClusterMigration(t *testing.T) {
 	store := locateredis.New(client)
 	require.NoError(t, store.RegisterNodeEpoch(ctx, service, "node-a", "current", _clusterTransitionEpochTTL))
 	require.NoError(t, store.BindNode(ctx, service, "player", "node-a", "current"))
+	require.True(t, client.PExpire(ctx, keys[0], time.Minute).Val())
+	before, err := client.PTTL(ctx, keys[0]).Result()
+	require.NoError(t, err)
 	require.NoError(t, target.primary.Do(ctx, "CLUSTER", "SETSLOT", slot, "IMPORTING", source.primaryID).Err())
 	require.NoError(t, source.primary.Do(ctx, "CLUSTER", "SETSLOT", slot, "MIGRATING", target.primaryID).Err())
 	require.NoError(t, migrateClusterTransitionKey(ctx, source.primary, target.primary, keys[1]))
 
 	// Redis 用 TRYAGAIN 拒绝分别位于源、目标节点的同 slot 多 key Lua。
-	err := store.BindNode(ctx, service, "player", "node-a", "current")
+	err = store.BindNode(ctx, service, "player", "node-a", "current")
 	require.True(t, redis.HasErrorPrefix(err, "TRYAGAIN"), "partial migration Bind: %v", err)
 	err = store.UnbindNode(ctx, service, "player", "node-a", "current")
 	require.True(t, redis.HasErrorPrefix(err, "TRYAGAIN"), "partial migration Unbind: %v", err)
+	err = store.RenewNode(ctx, service, "player", "node-a", "current")
+	require.True(t, redis.HasErrorPrefix(err, "TRYAGAIN"), "partial migration Renew: %v", err)
+	after, err := client.PTTL(ctx, keys[0]).Result()
+	require.NoError(t, err)
+	require.Positive(t, after)
+	require.LessOrEqual(t, after, before, "rejected renewal must not extend TTL")
 	value, err := source.primary.Get(ctx, keys[0]).Result()
 	require.NoError(t, err)
 	require.Equal(t, "node-a", value)
@@ -68,6 +78,17 @@ func TestNodeBindingClusterMigration(t *testing.T) {
 	// slot 尚未发布新 owner，两个 key 均在 IMPORTING 目标时验证 ASK 重试。
 	require.NoError(t, store.BindNode(ctx, service, "player", "node-a", "current"))
 	require.ErrorIs(t, store.UnbindNode(ctx, service, "player", "node-a", "old"), locate.ErrNodeEpochConflict)
+	assertClusterTransitionRenewal(t, client, store, service)
+	require.NoError(t, store.UnbindNode(ctx, service, "player", "node-a", "current"))
+	// 导入阶段无法判定缺失 key 是否尚未迁入；路由错误也不得创建绑定。
+	err = store.RenewNode(ctx, service, "player", "node-a", "current")
+	require.True(t, redis.HasErrorPrefix(err, "ASK") || redis.HasErrorPrefix(err, "TRYAGAIN"), "missing importing binding: %v", err)
+	importing := target.primary.Conn()
+	t.Cleanup(func() { require.NoError(t, importing.Close()) })
+	require.NoError(t, importing.Do(ctx, "ASKING").Err())
+	count, err := importing.Exists(ctx, keys[0]).Result()
+	require.NoError(t, err)
+	require.Zero(t, count)
 	require.NoError(t, target.primary.Do(ctx, "CLUSTER", "SETSLOT", slot, "NODE", target.primaryID).Err())
 	for _, shard := range shards {
 		if shard.primaryID != target.primaryID {
@@ -83,6 +104,8 @@ func TestNodeBindingClusterMigration(t *testing.T) {
 	require.NoError(t, store.BindNode(ctx, service, "player", "node-a", "current"))
 	require.ErrorIs(t, store.BindNode(ctx, service, "player", "node-a", "old"), locate.ErrNodeEpochConflict)
 	require.ErrorIs(t, store.UnbindNode(ctx, service, "player", "node-a", "old"), locate.ErrNodeEpochConflict)
+	assertClusterTransitionRenewal(t, client, store, service)
+	assertClusterTransitionMissingRenewal(t, store, service)
 	value, err = store.LocateNode(ctx, service, "player")
 	require.NoError(t, err)
 	require.Equal(t, "node-a", value)
@@ -102,11 +125,21 @@ func TestNodeBindingClusterCooperativeFailover(t *testing.T) {
 	}
 	service, slot, sourceIndex := emptyClusterTransitionSlot(t, client, shards)
 	source := shards[sourceIndex]
+	reverse := source
+	reverse.primary, reverse.primaryID = source.replica, source.replicaID
+	reverse.replica, reverse.replicaID = source.primary, source.primaryID
+	failoverTimeout, timeoutErr := clusterTransitionFailoverTimeout(t.Context(), shards)
+	require.NoError(t, timeoutErr)
 	keys := nodeBindingTestKeys(service)
 	marker := keys[0] + ":replication-marker"
 	keys = append(keys, marker)
+	failover := func(ctx context.Context, from clusterTransitionShard) error {
+		ctx, cancel := context.WithTimeout(ctx, failoverTimeout)
+		defer cancel()
+		return failoverClusterTransition(ctx, shards, slot, from, marker)
+	}
 	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*_clusterTransitionTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), failoverTimeout+2*_clusterTransitionTimeout)
 		defer cancel()
 		view, restoreErr := waitClusterTransitionView(ctx, shards, slot, "", false)
 		if restoreErr == nil {
@@ -114,13 +147,7 @@ func TestNodeBindingClusterCooperativeFailover(t *testing.T) {
 			case source.primaryID:
 				// 命令接受不代表切换完成；原主仍正确时不发起额外 FAILOVER。
 			case source.replicaID:
-				restoreErr = acknowledgeClusterTransitionMarker(ctx, source.replica, source.primary, marker)
-				if restoreErr == nil {
-					restoreErr = source.primary.ClusterFailover(ctx).Err()
-				}
-				if restoreErr == nil {
-					_, restoreErr = waitClusterTransitionView(ctx, shards, slot, source.primaryID, false)
-				}
+				restoreErr = failover(ctx, reverse)
 			default:
 				restoreErr = fmt.Errorf("slot %d has an unexpected owner %s; topology not reset", slot, view.owner)
 			}
@@ -150,24 +177,140 @@ func TestNodeBindingClusterCooperativeFailover(t *testing.T) {
 	store := locateredis.New(client)
 	require.NoError(t, store.RegisterNodeEpoch(ctx, service, "node-a", "current", _clusterTransitionEpochTTL))
 	require.NoError(t, store.BindNode(ctx, service, "player", "node-a", "current"))
-	require.NoError(t, acknowledgeClusterTransitionMarker(ctx, source.primary, source.replica, marker), "replication before failover")
-	require.NoError(t, source.replica.ClusterFailover(ctx).Err())
-	transitionCtx, cancel := context.WithTimeout(ctx, _clusterTransitionTimeout)
-	_, err := waitClusterTransitionView(transitionCtx, shards, slot, source.replicaID, false)
-	cancel()
-	require.NoError(t, err)
-	err = source.primary.Get(ctx, keys[0]).Err()
-	require.True(t, redis.HasErrorPrefix(err, "MOVED"), "demoted primary lookup: %v", err)
-	value, err := store.LocateNode(ctx, service, "player")
-	require.NoError(t, err)
-	require.Equal(t, "node-a", value)
-	epoch, err := store.LocateNodeEpoch(ctx, service, "node-a")
-	require.NoError(t, err)
-	require.Equal(t, "current", epoch)
-	require.ErrorIs(t, store.BindNode(ctx, service, "player", "node-a", "old"), locate.ErrNodeEpochConflict)
-	require.ErrorIs(t, store.UnbindNode(ctx, service, "player", "node-a", "old"), locate.ErrNodeEpochConflict)
-	require.NoError(t, store.BindNode(ctx, service, "player", "node-a", "current"))
+	// 同一分片再次切主，覆盖上一轮选举状态尚未过期的窗口。
+	for round := range 2 {
+		if round != 0 {
+			require.NoError(t, failover(ctx, reverse))
+		}
+		require.NoError(t, failover(ctx, source))
+		err := source.primary.Get(ctx, keys[0]).Err()
+		require.True(t, redis.HasErrorPrefix(err, "MOVED"), "demoted primary lookup: %v", err)
+		value, err := store.LocateNode(ctx, service, "player")
+		require.NoError(t, err)
+		require.Equal(t, "node-a", value)
+		epoch, err := store.LocateNodeEpoch(ctx, service, "node-a")
+		require.NoError(t, err)
+		require.Equal(t, "current", epoch)
+		require.ErrorIs(t, store.BindNode(ctx, service, "player", "node-a", "old"), locate.ErrNodeEpochConflict)
+		require.ErrorIs(t, store.UnbindNode(ctx, service, "player", "node-a", "old"), locate.ErrNodeEpochConflict)
+		require.NoError(t, store.BindNode(ctx, service, "player", "node-a", "current"))
+		assertClusterTransitionRenewal(t, client, store, service)
+		assertClusterTransitionMissingRenewal(t, store, service)
+	}
 	t.Logf("slot %d: SET+WAIT confirmed before cooperative FAILOVER; this does not test asynchronous write loss", slot)
+}
+
+func assertClusterTransitionRenewal(t *testing.T, client *redis.ClusterClient, store locate.NodeLocator, service string) {
+	t.Helper()
+	ctx := t.Context()
+	key := nodeBindingTestKeys(service)[0]
+	require.True(t, client.PExpire(ctx, key, time.Minute).Val())
+	require.NoError(t, store.RenewNode(ctx, service, "player", "node-a", "current"))
+	ttl, err := client.PTTL(ctx, key).Result()
+	require.NoError(t, err)
+	require.Greater(t, ttl, _testNodeTTL-time.Minute)
+	require.LessOrEqual(t, ttl, _testNodeTTL)
+
+	require.NoError(t, store.RegisterNodeEpoch(ctx, service, "node-b", "other", _clusterTransitionEpochTTL))
+	for _, input := range []struct {
+		name         string
+		binding      string
+		bindingEpoch string
+		renewEpoch   string
+		want         error
+	}{
+		{name: "stale epoch", binding: "node-a", bindingEpoch: "current", renewEpoch: "old", want: locate.ErrNodeEpochConflict},
+		{name: "replacement binding", binding: "node-b", bindingEpoch: "other", renewEpoch: "current", want: locate.ErrNodeConflict},
+	} {
+		require.NoError(t, store.BindNode(ctx, service, "player", input.binding, input.bindingEpoch))
+		require.True(t, client.PExpire(ctx, key, time.Minute).Val())
+		before, beforeErr := client.PTTL(ctx, key).Result()
+		require.NoError(t, beforeErr)
+		require.ErrorIs(t, store.RenewNode(ctx, service, "player", "node-a", input.renewEpoch), input.want, input.name)
+		nodeID, locateErr := store.LocateNode(ctx, service, "player")
+		require.NoError(t, locateErr)
+		require.Equal(t, input.binding, nodeID, input.name)
+		after, afterErr := client.PTTL(ctx, key).Result()
+		require.NoError(t, afterErr)
+		require.Positive(t, after)
+		require.LessOrEqual(t, after, before, input.name)
+	}
+	require.NoError(t, store.BindNode(ctx, service, "player", "node-a", "current"))
+	require.NoError(t, store.UnregisterNodeEpoch(ctx, service, "node-b", "other"))
+}
+
+func assertClusterTransitionMissingRenewal(t *testing.T, store locate.NodeLocator, service string) {
+	t.Helper()
+	ctx := t.Context()
+	require.NoError(t, store.UnbindNode(ctx, service, "player", "node-a", "current"))
+	require.ErrorIs(t, store.RenewNode(ctx, service, "player", "node-a", "current"), locate.ErrNodeNotFound)
+	_, err := store.LocateNode(ctx, service, "player")
+	require.ErrorIs(t, err, locate.ErrNodeNotFound)
+	require.NoError(t, store.BindNode(ctx, service, "player", "node-a", "current"))
+}
+
+// clusterTransitionFailoverTimeout 为依赖的选举重试窗口和拓扑收敛分别留出预算。
+func clusterTransitionFailoverTimeout(ctx context.Context, shards []clusterTransitionShard) (time.Duration, error) {
+	retryWindow := 4 * time.Second
+	for _, shard := range shards {
+		for _, client := range []*redis.Client{shard.primary, shard.replica} {
+			config, err := client.ConfigGet(ctx, "cluster-node-timeout").Result()
+			if err != nil {
+				return 0, err
+			}
+			milliseconds, err := strconv.ParseInt(config["cluster-node-timeout"], 10, 64)
+			if err != nil || milliseconds <= 0 {
+				return 0, fmt.Errorf("invalid cluster-node-timeout for %s", client.Options().Addr)
+			}
+			// Redis 的选举重试窗口为两倍选举超时；选举超时至少为 2s。
+			retryWindow = max(retryWindow, 4*time.Duration(milliseconds)*time.Millisecond)
+		}
+	}
+	return retryWindow + _clusterTransitionTimeout, nil
+}
+
+// failoverClusterTransition 只在原拓扑完整恢复后重试已过期的手动切主。
+func failoverClusterTransition(
+	ctx context.Context, shards []clusterTransitionShard, slot int, source clusterTransitionShard, marker string,
+) error {
+
+	view, err := waitClusterTransitionView(ctx, shards, slot, source.primaryID, false)
+	if err != nil {
+		return err
+	}
+	previousEpoch := view.nodes[source.primaryID].epoch
+	for {
+		if view.owner == source.replicaID {
+			if view.nodes[source.replicaID].epoch <= previousEpoch {
+				return errors.New("promoted replica did not advance the configuration epoch")
+			}
+			return nil
+		}
+		if view.owner != source.primaryID || view.nodes[source.replicaID].primaryID != source.primaryID {
+			return errors.New("failover source topology changed; no further failover requested")
+		}
+		previousEpoch = view.nodes[source.primaryID].epoch
+		if err = acknowledgeClusterTransitionMarker(ctx, source.primary, source.replica, marker); err != nil {
+			return err
+		}
+		if err = source.replica.ClusterFailover(ctx).Err(); err != nil {
+			return err
+		}
+		// Redis 的手动切主窗口为 5s；快速再次切主可能沿用旧选举状态并退回原主。
+		attemptCtx, cancel := context.WithTimeout(ctx, _clusterTransitionFailoverWait)
+		view, err = waitClusterTransitionView(attemptCtx, shards, slot, source.replicaID, false)
+		cancel()
+		if err == nil {
+			continue
+		}
+		if ctx.Err() != nil {
+			return errors.Join(ctx.Err(), err)
+		}
+		view, err = waitClusterTransitionView(ctx, shards, slot, "", false)
+		if err != nil {
+			return err
+		}
+	}
 }
 
 type clusterTransitionShard struct {
@@ -193,7 +336,11 @@ func clusterTransitionClients(t *testing.T) (*redis.ClusterClient, []clusterTran
 	}
 	password := os.Getenv("YOLA_REDIS_PASSWORD")
 	client := redis.NewClusterClient(&redis.ClusterOptions{
-		Addrs: allowed, Password: password, MaxRedirects: 4, MaxRetries: -1, ContextTimeoutEnabled: true,
+		Addrs:                 allowed,
+		Password:              password,
+		MaxRedirects:          4,
+		MaxRetries:            -1,
+		ContextTimeoutEnabled: true,
 	})
 	t.Cleanup(func() { require.NoError(t, client.Close()) })
 	shards, err := client.ClusterShards(t.Context()).Result()
@@ -208,7 +355,10 @@ func clusterTransitionClients(t *testing.T) (*redis.ClusterClient, []clusterTran
 			address := net.JoinHostPort(node.IP, strconv.FormatInt(node.Port, 10))
 			require.Contains(t, allowed, address, "all advertised nodes must be explicitly authorized")
 			direct := redis.NewClient(&redis.Options{
-				Addr: address, Password: password, MaxRetries: -1, ContextTimeoutEnabled: true,
+				Addr:                  address,
+				Password:              password,
+				MaxRetries:            -1,
+				ContextTimeoutEnabled: true,
 			})
 			t.Cleanup(func() { require.NoError(t, direct.Close()) })
 			switch node.Role {

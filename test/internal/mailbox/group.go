@@ -26,15 +26,6 @@ type Group struct {
 	wg        sync.WaitGroup
 }
 
-type mailboxQueue struct {
-	group     *Group
-	mu        sync.Mutex
-	queue     []func()
-	scheduled bool
-	running   int
-	space     chan struct{}
-}
-
 func NewGroup(mailboxCount, workerCount, queueSize, batchSize int) (*Group, error) {
 	if mailboxCount <= 0 || workerCount <= 0 || queueSize <= 0 || batchSize <= 0 {
 		return nil, fmt.Errorf("mailbox group counts and sizes must be positive")
@@ -169,6 +160,24 @@ func (g *Group) run() {
 	}
 }
 
+func (g *Group) changePending(delta int64) {
+	g.pendingMu.Lock()
+	g.pending += delta
+	if g.pending == 0 {
+		g.idle.Broadcast()
+	}
+	g.pendingMu.Unlock()
+}
+
+type mailboxQueue struct {
+	group     *Group
+	mu        sync.Mutex
+	queue     []func()
+	scheduled bool
+	running   int
+	space     chan struct{}
+}
+
 func (mailbox *mailboxQueue) TryPost(job func()) error {
 	if job == nil {
 		return ErrNilJob
@@ -207,55 +216,6 @@ func (mailbox *mailboxQueue) Call(ctx context.Context, job func() error) error {
 		return err
 	}
 	return call.wait(ctx)
-}
-
-type mailboxCall struct {
-	state  atomic.Int32
-	result chan error
-	job    func() error
-}
-
-const (
-	callQueued int32 = iota
-	callStarted
-	callCanceled
-)
-
-func newMailboxCall(ctx context.Context, job func() error) (context.Context, *mailboxCall, error) {
-	if job == nil {
-		return ctx, nil, ErrNilJob
-	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	if err := ctx.Err(); err != nil {
-		return ctx, nil, err
-	}
-	return ctx, &mailboxCall{result: make(chan error, 1), job: job}, nil
-}
-
-func (c *mailboxCall) run() {
-	if !c.state.CompareAndSwap(callQueued, callStarted) {
-		return
-	}
-	defer func() {
-		if recovered := recover(); recovered != nil {
-			c.result <- fmt.Errorf("mailbox job panic: %v", recovered)
-		}
-	}()
-	c.result <- c.job()
-}
-
-func (c *mailboxCall) wait(ctx context.Context) error {
-	select {
-	case <-ctx.Done():
-		if c.state.CompareAndSwap(callQueued, callCanceled) {
-			return ctx.Err()
-		}
-		return <-c.result
-	case runErr := <-c.result:
-		return runErr
-	}
 }
 
 func (mailbox *mailboxQueue) Stats() Stats {
@@ -313,11 +273,51 @@ func (mailbox *mailboxQueue) waitForSpace(ctx context.Context) error {
 	}
 }
 
-func (g *Group) changePending(delta int64) {
-	g.pendingMu.Lock()
-	g.pending += delta
-	if g.pending == 0 {
-		g.idle.Broadcast()
+const (
+	callQueued int32 = iota
+	callStarted
+	callCanceled
+)
+
+type mailboxCall struct {
+	state  atomic.Int32
+	result chan error
+	job    func() error
+}
+
+func newMailboxCall(ctx context.Context, job func() error) (context.Context, *mailboxCall, error) {
+	if job == nil {
+		return ctx, nil, ErrNilJob
 	}
-	g.pendingMu.Unlock()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return ctx, nil, err
+	}
+	return ctx, &mailboxCall{result: make(chan error, 1), job: job}, nil
+}
+
+func (c *mailboxCall) run() {
+	if !c.state.CompareAndSwap(callQueued, callStarted) {
+		return
+	}
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			c.result <- fmt.Errorf("mailbox job panic: %v", recovered)
+		}
+	}()
+	c.result <- c.job()
+}
+
+func (c *mailboxCall) wait(ctx context.Context) error {
+	select {
+	case <-ctx.Done():
+		if c.state.CompareAndSwap(callQueued, callCanceled) {
+			return ctx.Err()
+		}
+		return <-c.result
+	case runErr := <-c.result:
+		return runErr
+	}
 }

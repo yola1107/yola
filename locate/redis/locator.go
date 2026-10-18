@@ -12,6 +12,19 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+const (
+	_statusOK           int64 = 1
+	_statusMissing      int64 = 0
+	_statusConflict     int64 = -1
+	_statusBadLease     int64 = -2
+	_statusInvalid      int64 = -3
+	_statusMalformed    int64 = -4
+	_statusNodeMissing  int64 = -5
+	_statusNodeConflict int64 = -6
+)
+
+var errInvalidScriptResult = errors.New("locate redis returned an invalid result")
+
 var _ locate.Locator = (*locator)(nil)
 
 type locator struct {
@@ -56,4 +69,31 @@ func locatorError(ctx context.Context, err error) error {
 		return errors.Join(err, context.DeadlineExceeded)
 	}
 	return err
+}
+
+func (l *locator) runScript(ctx context.Context, script *redis.Script, keys []string, args ...any) ([]any, error) {
+	values, err := script.Run(ctx, l.client, keys, args...).Slice()
+	return values, locatorError(ctx, err)
+}
+
+func scriptStatus(values []any) int64 {
+	if len(values) == 0 {
+		return _statusMalformed
+	}
+	status, ok := values[0].(int64)
+	if !ok {
+		return _statusMalformed
+	}
+	return status
+}
+
+// ackIdempotentUnbind 判断解绑或注销脚本的返回状态是否成功。
+// Missing 和 Conflict 均视为成功，以保持重试幂等。
+func ackIdempotentUnbind(status int64) bool {
+	switch status {
+	case _statusOK, _statusMissing, _statusConflict:
+		return true
+	default:
+		return false
+	}
 }

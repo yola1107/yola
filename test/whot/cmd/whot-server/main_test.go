@@ -24,20 +24,19 @@ func TestNewAppReleasesNodeAfterRegistrationFailure(t *testing.T) {
 	address := listener.Addr().String()
 	drainContexts := make(chan context.Context, 1)
 	var drainCalls atomic.Int32
-	server, err := node.NewServer(node.Listener(listener), node.Drain(func(ctx context.Context) error {
+	startupErr := errors.New("register failed")
+	registrar := &failedRegistrar{err: startupErr}
+	server, err := node.NewServer(node.Registration(registrar), node.Listener(listener), node.Drain(func(ctx context.Context) error {
 		drainCalls.Add(1)
 		drainContexts <- ctx
 		return ctx.Err()
 	}))
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, server.Stop(context.Background())) })
-	startupErr := errors.New("register failed")
-	registrar := &failedRegistrar{err: startupErr}
 	app, cleanup := newApp(
 		"node-test",
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 		server,
-		registrar,
 	)
 	t.Cleanup(cleanup)
 
@@ -65,13 +64,13 @@ func TestNewAppReleasesNodeAfterRegistrationFailure(t *testing.T) {
 func TestNewAppCleanupPreservesFailedDrain(t *testing.T) {
 	drainErr := errors.New("drain failed")
 	var drainCalls int
-	server, err := node.NewServer(node.Drain(func(context.Context) error {
+	server, err := node.NewServer(node.Registration(&failedRegistrar{}), node.Drain(func(context.Context) error {
 		drainCalls++
 		return drainErr
 	}))
 	require.NoError(t, err)
 	var logs bytes.Buffer
-	_, cleanup := newApp("node-test", slog.New(slog.NewJSONHandler(&logs, nil)), server, nil)
+	_, cleanup := newApp("node-test", slog.New(slog.NewJSONHandler(&logs, nil)), server)
 	t.Cleanup(cleanup)
 
 	cleanup()

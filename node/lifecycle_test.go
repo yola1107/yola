@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"net"
+	"net/url"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"yola/api/cluster/v1"
@@ -15,754 +17,616 @@ import (
 	"yola/locate"
 
 	"github.com/go-kratos/kratos/v3"
+	"github.com/go-kratos/kratos/v3/registry"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials/insecure"
+	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
-func TestBeforeStartValidatesApplicationIdentity(t *testing.T) {
-	tests := []struct {
-		name string
-		app  invalidNodeAppInfo
-	}{
-		{name: "service name", app: invalidNodeAppInfo{id: "node-a"}},
-		{name: "instance ID", app: invalidNodeAppInfo{name: "game"}},
+func TestStartValidatesApplicationIdentity(t *testing.T) {
+	for _, app := range []nodeTestAppInfo{{id: "node-a"}, {name: "game"}} {
+		server := newTestServer(t)
+		require.EqualError(t, server.Start(kratos.NewContext(context.Background(), app)), "node: invalid application identity")
+		require.NoError(t, server.Stop(context.Background()))
 	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			server := newTestServer(t)
-			t.Cleanup(func() { require.NoError(t, server.Stop(context.Background())) })
-			ctx := kratos.NewContext(context.Background(), test.app)
-
-			require.EqualError(t, server.BeforeStart(ctx), "node: invalid application identity")
-		})
-	}
+	server := newTestServer(t)
+	require.EqualError(t, server.Start(context.Background()), "node: application context is required")
+	require.NoError(t, server.Stop(context.Background()))
 }
 
-func TestBeforeStartFailureReleasesInternalGRPCListener(t *testing.T) {
+func TestConstructionHasNoListenerOrEpochSideEffects(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	address := listener.Addr().String()
-	server := newTestServer(t, Listener(listener))
-	_, err = server.Endpoint()
-	require.NoError(t, err)
-
-	ctx := kratos.NewContext(context.Background(), invalidNodeAppInfo{name: "game"})
-	require.EqualError(t, server.BeforeStart(ctx), "node: invalid application identity")
+	require.NoError(t, listener.Close())
+	store := newMemoryNodeStore()
+	server := newTestServer(t, Address(address), Stateful(store))
 	rebound, err := net.Listen("tcp", address)
 	require.NoError(t, err)
 	require.NoError(t, rebound.Close())
-	require.NoError(t, server.Stop(context.Background()))
-}
-
-func TestBeforeStartRejectsStoppedServerBeforeEpochRegistration(t *testing.T) {
-	locator := newMemoryLocator()
-	server := newTestServer(t, Locator(locator))
-	require.NoError(t, server.Stop(context.Background()))
-	ctx := kratos.NewContext(context.Background(), nodeTestAppInfo{metadata: instance.StickyMetadata()})
-
-	require.EqualError(t, server.BeforeStart(ctx), "node: server is stopping or stopped")
-	_, err := locator.LocateNodeEpoch(context.Background(), "game", "node-a")
+	_, err = store.LocateNodeEpoch(context.Background(), "game", "node-a")
 	require.ErrorIs(t, err, locate.ErrNodeEpochNotFound)
+	require.NoError(t, server.Stop(context.Background()))
+	require.EqualError(t, server.Start(testNodeContext()), "node: server is stopping or stopped")
 }
 
-func TestBeforeStartReentryWhilePreparingKeepsOwnerState(t *testing.T) {
-	base := newMemoryLocator()
-	pinged := make(chan context.Context, 1)
-	server := newTestServer(t, Locator(&initializationNodeLocator{Locator: base, pinged: pinged}))
-	t.Cleanup(func() { require.NoError(t, server.Stop(context.Background())) })
-	baseCtx, cancel := context.WithCancel(context.Background())
-	ctx := kratos.NewContext(baseCtx, nodeTestAppInfo{metadata: instance.StickyMetadata()})
-	prepared := make(chan error, 1)
-	go func() { prepared <- server.BeforeStart(ctx) }()
-	select {
-	case <-pinged:
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for Node locator ping")
+func TestRegistrationKeepsRPCAndHealthClosedUntilSuccess(t *testing.T) {
+	registrar := newLifecycleRegistrar()
+	release := make(chan struct{})
+	resume := sync.OnceFunc(func() { close(release) })
+	registrar.register = func(context.Context, *registry.ServiceInstance) error {
+		<-release
+		return nil
 	}
-
-	require.EqualError(t, server.BeforeStart(ctx), "node: server is already preparing or prepared")
-	server.lifecycleMu.Lock()
-	require.Equal(t, _stPreparing, server.state)
-	server.lifecycleMu.Unlock()
-	require.False(t, server.requests.isClosed())
-	cancel()
-	require.ErrorIs(t, receiveNodeValue(t, prepared), context.Canceled)
-}
-
-func TestBeforeStartReentryMakesPreparedServerTerminal(t *testing.T) {
-	locator := newMemoryLocator()
-	server := newTestServer(t, Locator(locator))
-	t.Cleanup(func() { require.NoError(t, server.Stop(context.Background())) })
-	ctx := kratos.NewContext(context.Background(), nodeTestAppInfo{metadata: instance.StickyMetadata()})
-
-	require.NoError(t, server.BeforeStart(ctx))
-	identity := server.currentIdentity()
-	require.NotEmpty(t, identity.epoch)
-	require.EqualError(t, server.BeforeStart(ctx), "node: server is already preparing or prepared")
-	require.True(t, server.requests.isClosed())
-	require.EqualError(t, server.Start(ctx), "node: server is stopping or stopped")
-	epoch, err := locator.LocateNodeEpoch(context.Background(), identity.serviceName, identity.nodeID)
+	server := newTestServer(t, Address("127.0.0.1:0"), Registration(registrar))
+	server.RegisterRawHandler(1, func(context.Context, []byte) ([]byte, error) { return []byte("ready"), nil })
+	done := make(chan error, 1)
+	go func() { done <- server.Start(testNodeContext()) }()
+	t.Cleanup(func() {
+		resume()
+		_ = server.Stop(context.Background())
+	})
+	record := receiveNodeValue(t, registrar.entered)
+	client, health := nodeClients(t, record)
+	require.Equal(t, healthpb.HealthCheckResponse_NOT_SERVING, healthStatus(t, health))
+	_, err := client.Forward(context.Background(), &v1.ForwardRequest{Route: clusterroute.FromBinding(testBinding("player-a", "conn-a")), Command: 1})
+	require.Equal(t, codes.Unavailable, status.Code(err))
+	resume()
+	require.Eventually(t, func() bool { return healthStatus(t, health) == healthpb.HealthCheckResponse_SERVING }, time.Second, time.Millisecond)
+	reply, err := client.Forward(context.Background(), &v1.ForwardRequest{Route: clusterroute.FromBinding(testBinding("player-a", "conn-a")), Command: 1})
 	require.NoError(t, err)
-	require.Equal(t, identity.epoch, epoch)
-
+	require.Equal(t, []byte("ready"), reply.Body)
 	require.NoError(t, server.Stop(context.Background()))
-	_, err = locator.LocateNodeEpoch(context.Background(), identity.serviceName, identity.nodeID)
-	require.ErrorIs(t, err, locate.ErrNodeEpochNotFound)
+	require.NoError(t, receiveNodeValue(t, done))
+	require.Equal(t, int32(1), registrar.deregistered.Load())
 }
 
-func TestStopWaitsForBeforeStartEpochRollback(t *testing.T) {
-	for _, test := range []struct {
-		name        string
-		blockBefore bool
-	}{
-		{name: "before registration", blockBefore: true},
-		{name: "after registration"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			base := newMemoryLocator()
-			registrationReached := make(chan struct{})
-			releaseRegistration := make(chan struct{})
-			unregisterStarted := make(chan struct{})
-			releaseUnregister := make(chan struct{})
-			releaseRegister := sync.OnceFunc(func() { close(releaseRegistration) })
-			releaseCleanup := sync.OnceFunc(func() { close(releaseUnregister) })
-			locator := &blockingEpochRegistrationLocator{
-				Locator:             base,
-				blockBefore:         test.blockBefore,
-				registrationReached: registrationReached,
-				releaseRegistration: releaseRegistration,
-				unregisterStarted:   unregisterStarted,
-				releaseUnregister:   releaseUnregister,
+func TestRegistrationDerivesOnlyInternalNodeRecord(t *testing.T) {
+	for _, stateful := range []bool{false, true} {
+		t.Run(map[bool]string{false: "stateless", true: "stateful"}[stateful], func(t *testing.T) {
+			registrar := newLifecycleRegistrar()
+			opts := []Option{Address("127.0.0.1:0"), Registration(registrar)}
+			if stateful {
+				opts = append(opts, Stateful(newMemoryNodeStore()))
 			}
-			server := newTestServer(t, Locator(locator))
-			t.Cleanup(func() {
-				releaseRegister()
-				releaseCleanup()
-				_ = server.grpcServer.Stop(context.Background())
-				_ = server.gateways.Close()
+			server := newTestServer(t, opts...)
+			ctx := kratos.NewContext(context.Background(), nodeTestAppInfo{
+				id:       "node-a",
+				name:     "game",
+				metadata: map[string]string{"business": "metadata", instance.StickyMetadataKey: "invalid"},
 			})
-			ctx := kratos.NewContext(context.Background(), nodeTestAppInfo{metadata: instance.StickyMetadata()})
-			prepared := make(chan error, 1)
-			go func() { prepared <- server.BeforeStart(ctx) }()
-			waitNodeSignal(t, registrationReached)
-			require.Equal(t, nodeIdentity{}, server.currentIdentity())
-
-			if test.blockBefore {
-				_, err := base.LocateNodeEpoch(context.Background(), "game", "node-a")
-				require.ErrorIs(t, err, locate.ErrNodeEpochNotFound)
+			startTestNode(ctx, t, server)
+			record := registrar.instance()
+			require.Equal(t, "node-a", record.ID)
+			require.Equal(t, "game", record.Name)
+			require.Len(t, record.Endpoints, 1)
+			endpoint, err := url.Parse(record.Endpoints[0])
+			require.NoError(t, err)
+			require.Equal(t, "grpc", endpoint.Scheme)
+			if stateful {
+				require.Equal(t, instance.StickyMetadata(), record.Metadata)
 			} else {
-				epoch, err := base.LocateNodeEpoch(context.Background(), "game", "node-a")
-				require.NoError(t, err)
-				require.NotEmpty(t, epoch)
+				require.Empty(t, record.Metadata)
 			}
-
-			stopped := make(chan error, 1)
-			go func() { stopped <- server.Stop(context.Background()) }()
-			require.Eventually(t, server.requests.isClosed, time.Second, time.Millisecond)
-			select {
-			case err := <-stopped:
-				t.Fatalf("Stop returned before epoch registration completed: %v", err)
-			default:
-			}
-
-			releaseRegister()
-			waitNodeSignal(t, unregisterStarted)
-			select {
-			case err := <-stopped:
-				t.Fatalf("Stop returned before epoch rollback completed: %v", err)
-			default:
-			}
-			releaseCleanup()
-			require.EqualError(t, receiveNodeValue(t, prepared), "node: server is stopping or stopped")
-			require.NoError(t, receiveNodeValue(t, stopped))
-			require.Equal(t, nodeIdentity{}, server.currentIdentity())
-			require.True(t, server.requests.isClosed())
-			_, err := base.LocateNodeEpoch(context.Background(), "game", "node-a")
-			require.ErrorIs(t, err, locate.ErrNodeEpochNotFound)
-
-			replacement := newTestServer(t, Locator(base))
-			require.NoError(t, replacement.BeforeStart(ctx))
-			require.NoError(t, replacement.Stop(context.Background()))
+			assertHandlerRegistrationFrozen(t, server)
+			require.EqualError(t, server.Start(ctx), "node: server is already started")
 		})
 	}
 }
 
-func TestStopTimeoutLeavesBeforeStartOwnerToReleaseEpoch(t *testing.T) {
-	base := newMemoryLocator()
-	registrationReached := make(chan struct{})
-	releaseRegistration := make(chan struct{})
-	unregistered := make(chan struct{})
-	releaseRegister := sync.OnceFunc(func() { close(releaseRegistration) })
-	locator := &blockingEpochRegistrationLocator{
-		Locator:             base,
-		registrationReached: registrationReached,
-		releaseRegistration: releaseRegistration,
-		unregistered:        unregistered,
-	}
-	server := newTestServer(t, Locator(locator))
-	t.Cleanup(func() {
-		releaseRegister()
-		_ = server.grpcServer.Stop(context.Background())
-		_ = server.gateways.Close()
+func TestRegistrationWaitsForInitialEpochRenewal(t *testing.T) {
+	store := &controlledEpochLocator{Store: newMemoryNodeStore()}
+	renewing := make(chan struct{})
+	release := make(chan struct{})
+	resume := sync.OnceFunc(func() { close(release) })
+	store.setRenew(func(ctx context.Context) error {
+		close(renewing)
+		select {
+		case <-release:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	})
-	ctx := kratos.NewContext(context.Background(), nodeTestAppInfo{metadata: instance.StickyMetadata()})
-	prepared := make(chan error, 1)
-	go func() { prepared <- server.BeforeStart(ctx) }()
-	waitNodeSignal(t, registrationReached)
-
-	stopCtx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
-	defer cancel()
-	require.ErrorIs(t, server.Stop(stopCtx), context.DeadlineExceeded)
-	if _, err := base.LocateNodeEpoch(context.Background(), "game", "node-a"); err != nil {
-		t.Fatalf("registered epoch disappeared before preparation owner resumed: %v", err)
-	}
-	releaseRegister()
-	require.EqualError(t, receiveNodeValue(t, prepared), "node: server is stopping or stopped")
-	waitNodeSignal(t, unregistered)
-	_, err := base.LocateNodeEpoch(context.Background(), "game", "node-a")
-	require.ErrorIs(t, err, locate.ErrNodeEpochNotFound)
-
-	replacement := newTestServer(t, Locator(base))
-	require.NoError(t, replacement.BeforeStart(ctx))
-	require.NoError(t, replacement.Stop(context.Background()))
-}
-
-func TestRollbackPreparationPreservesCauseAndEpochForRetry(t *testing.T) {
-	prepareErr := errors.New("prepare failed")
-	cleanupErr := errors.New("cleanup failed")
-	locator := &failingEpochUnregisterLocator{Locator: newMemoryLocator(), err: cleanupErr}
-	server := newTestServer(t, Locator(locator))
-	t.Cleanup(func() { require.NoError(t, server.Stop(context.Background())) })
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-
-	lease := newEpochLease(
-		locator,
-		nodeIdentity{serviceName: "game", nodeID: "node-a", epoch: "epoch-a"},
-		time.Now().Add(DefaultNodeEpochTTL),
-	)
-	err := server.rollbackPreparation(ctx, lease, prepareErr)
-	require.ErrorIs(t, err, prepareErr)
-	require.ErrorIs(t, err, cleanupErr)
-	require.ErrorContains(t, err, "node: roll back epoch")
-	require.NotNil(t, locator.ctx)
-	_, hasDeadline := locator.ctx.Deadline()
-	require.True(t, hasDeadline)
-	require.Same(t, lease, server.lease.Load())
-	require.NoError(t, lease.retryRelease(context.Background()))
-	require.Equal(t, _epochReleased, lease.releaseState)
-	require.True(t, server.requests.isClosed())
-}
-
-func TestRollbackPreparationBoundsUncanceledEpochCleanup(t *testing.T) {
-	locator := &blockingEpochUnregisterLocator{Locator: newMemoryLocator()}
-	server := newTestServer(t, Locator(locator), CleanupTimeout(20*time.Millisecond))
-	t.Cleanup(func() { require.NoError(t, server.Stop(context.Background())) })
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-
-	started := time.Now()
-	lease := newEpochLease(locator, nodeIdentity{
-		serviceName: "game", nodeID: "node-a", epoch: "epoch-a",
-	}, time.Now().Add(DefaultNodeEpochTTL))
-	err := server.rollbackPreparation(ctx, lease, errors.New("prepare failed"))
-	require.ErrorIs(t, err, context.DeadlineExceeded)
-	require.Less(t, time.Since(started), 200*time.Millisecond)
-	_, hasDeadline := locator.ctx.Deadline()
-	require.True(t, hasDeadline)
-}
-
-func TestHandlerRegistrationFrozenDuringPreparation(t *testing.T) {
-	pinged := make(chan context.Context, 1)
-	locator := &initializationNodeLocator{Locator: newMemoryLocator(), pinged: pinged}
-	server := newTestServer(t, Locator(locator))
-	t.Cleanup(func() { require.NoError(t, server.Stop(context.Background())) })
-	ctx, cancel := context.WithCancel(kratos.NewContext(
-		context.Background(),
-		nodeTestAppInfo{metadata: instance.StickyMetadata()},
-	))
-	defer cancel()
-	initialized := make(chan error, 1)
-	go func() { initialized <- server.BeforeStart(ctx) }()
-
-	var initializationCtx context.Context
+	registrar := newLifecycleRegistrar()
+	server := newTestServer(t, Address("127.0.0.1:0"), Stateful(store), Registration(registrar))
+	done := make(chan error, 1)
+	go func() { done <- server.Start(testNodeContext()) }()
+	t.Cleanup(func() {
+		resume()
+		_ = server.Stop(context.Background())
+	})
+	receiveNodeValue(t, renewing)
 	select {
-	case initializationCtx = <-pinged:
-	case <-time.After(time.Second):
-		t.Fatal("Node initialization did not reach Locator.Ping")
+	case <-registrar.entered:
+		t.Fatal("Node registered before first epoch renewal")
+	default:
 	}
-	assertHandlerRegistrationFrozen(t, server)
+	resume()
+	receiveNodeValue(t, registrar.entered)
+	require.NoError(t, server.Stop(context.Background()))
+	require.NoError(t, receiveNodeValue(t, done))
+}
+
+func TestInitialRenewalFailurePreservesCause(t *testing.T) {
+	failure := errors.New("first renewal failed")
+	store := &controlledEpochLocator{Store: newMemoryNodeStore()}
+	store.setRenew(func(context.Context) error { return failure })
+	registrar := newLifecycleRegistrar()
+	server := newTestServer(t, Stateful(store), Registration(registrar))
+	require.ErrorIs(t, server.Start(testNodeContext()), failure)
+	require.NoError(t, server.Stop(context.Background()))
+	select {
+	case <-registrar.entered:
+		t.Fatal("Node registered with failed first renewal")
+	default:
+	}
+	_, err := store.LocateNodeEpoch(context.Background(), "game", "node-a")
+	require.ErrorIs(t, err, locate.ErrNodeEpochNotFound)
+}
+
+func TestLateRegistrationHasOneCleanupOwner(t *testing.T) {
+	registrar := newLifecycleRegistrar()
+	release := make(chan struct{})
+	resume := sync.OnceFunc(func() { close(release) })
+	registrar.register = func(context.Context, *registry.ServiceInstance) error {
+		<-release
+		return nil
+	}
+	store := newMemoryNodeStore()
+	server := newTestServer(t, Address("127.0.0.1:0"), Stateful(store), Registration(registrar), ShutdownTimeout(80*time.Millisecond))
+	done := make(chan error, 1)
+	go func() { done <- server.Start(testNodeContext()) }()
+	t.Cleanup(func() {
+		resume()
+		_ = server.Stop(context.Background())
+	})
+	record := receiveNodeValue(t, registrar.entered)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	require.ErrorIs(t, server.Stop(ctx), context.DeadlineExceeded)
+	// 登记忽略取消时，已知网络也必须被有界清理。
+	require.Eventually(t, func() bool {
+		endpoint := server.grpcListener.Addr().String()
+		return tcpAddressReusable(endpoint)
+	}, time.Second, time.Millisecond)
+	resume()
+	require.Error(t, receiveNodeValue(t, done))
+	_ = server.Stop(context.Background())
+	require.Equal(t, int32(1), registrar.deregistered.Load())
+	_, err := store.LocateNodeEpoch(context.Background(), "game", "node-a")
+	require.ErrorIs(t, err, locate.ErrNodeEpochNotFound)
+	assertNodeAddressReusable(t, record)
+}
+
+func TestLateRegistrationIsReclaimedBeforeLateDrainReturns(t *testing.T) {
+	registrar := newLifecycleRegistrar()
+	registrationReleased := make(chan struct{})
+	resumeRegistration := sync.OnceFunc(func() { close(registrationReleased) })
+	registrar.register = func(context.Context, *registry.ServiceInstance) error {
+		<-registrationReleased
+		return nil
+	}
+	drainExpired := make(chan struct{})
+	drainReleased := make(chan struct{})
+	resumeDrain := sync.OnceFunc(func() { close(drainReleased) })
+	store := newMemoryNodeStore()
+	server := newTestServer(t, Address("127.0.0.1:0"), Stateful(store), Registration(registrar),
+		ShutdownTimeout(80*time.Millisecond), Drain(func(ctx context.Context) error {
+			<-ctx.Done()
+			close(drainExpired)
+			<-drainReleased
+			return nil
+		}))
+	started := make(chan error, 1)
+	go func() { started <- server.Start(testNodeContext()) }()
+	t.Cleanup(func() {
+		resumeRegistration()
+		resumeDrain()
+		_ = server.Stop(context.Background())
+	})
+	receiveNodeValue(t, registrar.entered)
+	stopped := make(chan error, 1)
+	go func() { stopped <- server.Stop(context.Background()) }()
+	receiveNodeValue(t, drainExpired)
+	resumeRegistration()
+	require.Eventually(t, func() bool { return registrar.deregistered.Load() == 1 }, time.Second, time.Millisecond,
+		"late Drain must not block cleanup of a completed registration")
+	_, err := store.LocateNodeEpoch(context.Background(), "game", "node-a")
+	require.NoError(t, err, "incomplete drain must leave epoch expiry to TTL")
+	resumeDrain()
+	require.ErrorIs(t, receiveNodeValue(t, stopped), context.DeadlineExceeded)
+	require.Error(t, receiveNodeValue(t, started))
+	require.Equal(t, int32(1), registrar.deregistered.Load())
+}
+
+func TestRegistrationRechecksEpochBeforeAdmission(t *testing.T) {
+	store := newMemoryNodeStore()
+	registrar := newLifecycleRegistrar()
+	server := newTestServer(t, Stateful(store), Registration(registrar))
+	// Register 的替身只控制存储失权；回调在租约已发布后执行。
+	registrar.register = func(context.Context, *registry.ServiceInstance) error {
+		lease := server.lease.Load()
+		lease.cancel(locate.ErrNodeEpochConflict)
+		return nil
+	}
+	require.ErrorIs(t, server.Start(testNodeContext()), locate.ErrNodeEpochConflict)
+	require.True(t, server.requests.isClosed())
+	require.Equal(t, int32(1), registrar.deregistered.Load())
+}
+
+func TestRequestAdmissionStopClosesEmptyAdmission(t *testing.T) {
+	var admission requestAdmission
+	require.False(t, admission.admit())
+	require.NoError(t, admission.stopAndWait(context.Background()))
+	admission.open()
+	require.False(t, admission.admit())
+	require.NoError(t, admission.stopAndWait(context.Background()))
+}
+
+func TestRequestAdmissionTimeoutKeepsAcceptedWorkTracked(t *testing.T) {
+	var admission requestAdmission
+	admission.open()
+	require.True(t, admission.admit())
+	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	require.ErrorIs(t, initializationCtx.Err(), context.Canceled)
-	require.ErrorIs(t, <-initialized, context.Canceled)
+
+	require.ErrorIs(t, admission.stopAndWait(ctx), context.Canceled)
+	require.False(t, admission.admit())
+	admission.done()
+	require.NoError(t, admission.stopAndWait(ctx))
+	require.False(t, admission.admit())
+}
+
+func TestStopCallerTimeoutCanKeepWaitingAndDrainRunsOnce(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	resume := sync.OnceFunc(func() { close(release) })
+	var drains atomic.Int32
+	server := newTestServer(t, Drain(func(context.Context) error {
+		drains.Add(1)
+		close(entered)
+		<-release
+		return nil
+	}))
+	t.Cleanup(resume)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	stopped := make(chan error, 1)
+	go func() { stopped <- server.Stop(ctx) }()
+	receiveNodeValue(t, entered)
+	require.ErrorIs(t, receiveNodeValue(t, stopped), context.DeadlineExceeded)
+	resume()
+	require.NoError(t, server.Stop(context.Background()))
+	require.NoError(t, server.Stop(context.Background()))
+	require.Equal(t, int32(1), drains.Load())
+}
+
+func TestDeregisterFailureStillDrainsAndReleasesResources(t *testing.T) {
+	for _, block := range []bool{false, true} {
+		t.Run(map[bool]string{false: "error", true: "timeout"}[block], func(t *testing.T) {
+			registrar := newLifecycleRegistrar()
+			failure := errors.New("directory unavailable")
+			registrar.deregister = func(ctx context.Context, _ *registry.ServiceInstance) error {
+				if block {
+					<-ctx.Done()
+					return ctx.Err()
+				}
+				return failure
+			}
+			var drains atomic.Int32
+			store := newMemoryNodeStore()
+			server := newTestServer(
+				t,
+				Address("127.0.0.1:0"),
+				Stateful(store),
+				Registration(registrar),
+				ShutdownTimeout(200*time.Millisecond),
+				Drain(func(context.Context) error {
+					drains.Add(1)
+					return nil
+				}),
+			)
+			startTestNode(testNodeContext(), t, server)
+			record := registrar.instance()
+			err := server.Stop(context.Background())
+			if block {
+				require.ErrorIs(t, err, context.DeadlineExceeded)
+			} else {
+				require.ErrorIs(t, err, failure)
+			}
+			require.Equal(t, int32(1), drains.Load())
+			_, err = store.LocateNodeEpoch(context.Background(), "game", "node-a")
+			require.ErrorIs(t, err, locate.ErrNodeEpochNotFound)
+			assertNodeAddressReusable(t, record)
+		})
+	}
+}
+
+func TestStopClosesHealthBeforeBusinessDrain(t *testing.T) {
+	registrar := newLifecycleRegistrar()
+	drainEntered := make(chan struct{})
+	resume := make(chan struct{})
+	release := sync.OnceFunc(func() { close(resume) })
+	server := newTestServer(
+		t,
+		Address("127.0.0.1:0"),
+		Registration(registrar),
+		Drain(func(context.Context) error {
+			close(drainEntered)
+			<-resume
+			return nil
+		}),
+	)
+	startTestNode(testNodeContext(), t, server)
+	client, health := nodeClients(t, registrar.instance())
+	stopped := make(chan error, 1)
+	go func() { stopped <- server.Stop(context.Background()) }()
+	t.Cleanup(release)
+	receiveNodeValue(t, drainEntered)
+	require.Equal(t, healthpb.HealthCheckResponse_NOT_SERVING, healthStatus(t, health))
+	_, err := client.Forward(context.Background(), &v1.ForwardRequest{Route: clusterroute.FromBinding(testBinding("player-a", "conn-a")), Command: 1})
+	require.Equal(t, codes.Unavailable, status.Code(err))
+	release()
+	require.NoError(t, receiveNodeValue(t, stopped))
+}
+
+func TestStartupRegistrationFailurePreservesCauseAndCleansEpoch(t *testing.T) {
+	registrar := newLifecycleRegistrar()
+	failure := errors.New("register failed")
+	registrar.register = func(context.Context, *registry.ServiceInstance) error { return failure }
+	store := newMemoryNodeStore()
+	server := newTestServer(t, Address("127.0.0.1:0"), Registration(registrar), Stateful(store), PushTimeout(time.Nanosecond))
+	require.ErrorIs(t, server.Start(testNodeContext()), failure)
+	require.NoError(t, server.Stop(context.Background()))
+	_, err := store.LocateNodeEpoch(context.Background(), "game", "node-a")
+	require.ErrorIs(t, err, locate.ErrNodeEpochNotFound)
+	assertNodeAddressReusable(t, registrar.instance())
+}
+
+func TestOwnedDrainTimeoutKeepsEpochUntilTTL(t *testing.T) {
+	store := newMemoryNodeStore()
+	registrar := newLifecycleRegistrar()
+	server := newTestServer(
+		t,
+		Address("127.0.0.1:0"),
+		Stateful(store),
+		Registration(registrar),
+		ShutdownTimeout(20*time.Millisecond),
+		Drain(func(ctx context.Context) error {
+			<-ctx.Done()
+			return ctx.Err()
+		}),
+	)
+	startTestNode(testNodeContext(), t, server)
+	require.ErrorIs(t, server.Stop(context.Background()), context.DeadlineExceeded)
+	require.ErrorIs(t, server.Stop(context.Background()), context.DeadlineExceeded)
+	_, err := store.LocateNodeEpoch(context.Background(), "game", "node-a")
+	require.NoError(t, err)
+	assertNodeAddressReusable(t, registrar.instance())
+}
+
+func TestShutdownClosesNetworkBeforeLateDrainReturns(t *testing.T) {
+	store := newMemoryNodeStore()
+	registrar := newLifecycleRegistrar()
+	expired := make(chan struct{})
+	release := make(chan struct{})
+	resume := sync.OnceFunc(func() { close(release) })
+	server := newTestServer(t, Address("127.0.0.1:0"), Stateful(store), Registration(registrar),
+		ShutdownTimeout(20*time.Millisecond), Drain(func(ctx context.Context) error {
+			<-ctx.Done()
+			close(expired)
+			<-release
+			return ctx.Err()
+		}))
+	startTestNode(testNodeContext(), t, server)
+	t.Cleanup(resume)
+	stopped := make(chan error, 1)
+	go func() { stopped <- server.Stop(context.Background()) }()
+	receiveNodeValue(t, expired)
+	endpoint, err := url.Parse(registrar.instance().Endpoints[0])
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		return tcpAddressReusable(endpoint.Host)
+	}, time.Second, time.Millisecond, "late Drain must not keep the owned listener open")
+	_, err = store.LocateNodeEpoch(context.Background(), "game", "node-a")
+	require.NoError(t, err, "incomplete drain must leave epoch expiry to TTL")
+	select {
+	case stopErr := <-stopped:
+		t.Fatalf("Stop returned before Drain handed back ownership: %v", stopErr)
+	default:
+	}
+	resume()
+	require.ErrorIs(t, receiveNodeValue(t, stopped), context.DeadlineExceeded)
 }
 
 func TestServerTransportTimeoutRecoveryAndRepeatedStop(t *testing.T) {
-	lis, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-	server := newTestServer(t, Listener(lis), HandlerTimeout(20*time.Millisecond))
+	registrar := newLifecycleRegistrar()
+	server := newTestServer(t, Address("127.0.0.1:0"), Registration(registrar), HandlerTimeout(20*time.Millisecond))
 	server.RegisterRawHandler(1, func(ctx context.Context, _ []byte) ([]byte, error) {
 		<-ctx.Done()
 		return nil, ctx.Err()
 	})
-	server.RegisterRawHandler(2, func(context.Context, []byte) ([]byte, error) {
-		panic("failed")
+	server.RegisterRawHandler(2, func(context.Context, []byte) ([]byte, error) { panic("failed") })
+	startTestNode(testNodeContext(), t, server)
+	client, _ := nodeClients(t, registrar.instance())
+	request := &v1.ForwardRequest{Route: clusterroute.FromBinding(testBinding("player-a", "conn-a")), Command: 1}
+	_, err := client.Forward(context.Background(), request)
+	require.Equal(t, codes.DeadlineExceeded, status.Code(err))
+	request.Command = 2
+	_, err = client.Forward(context.Background(), request)
+	require.Equal(t, codes.Internal, status.Code(err))
+	require.NoError(t, server.Stop(context.Background()))
+	require.NoError(t, server.Stop(context.Background()))
+}
+
+func TestStopDuringInitialRenewalReclaimsEpoch(t *testing.T) {
+	store := &controlledEpochLocator{Store: newMemoryNodeStore()}
+	entered := make(chan struct{})
+	store.setRenew(func(ctx context.Context) error {
+		close(entered)
+		<-ctx.Done()
+		return ctx.Err()
 	})
-	server.RegisterRawHandler(3, func(ctx context.Context, _ []byte) ([]byte, error) {
-		sess, _ := FromContext(ctx)
-		return nil, sess.Push(ctx, 1, wrapperspb.String("push"))
+	registrar := newLifecycleRegistrar()
+	server := newTestServer(t, Address("127.0.0.1:0"), Stateful(store), Registration(registrar))
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		require.NoError(t, server.Stop(ctx))
 	})
 	done := make(chan error, 1)
-	ctx := kratos.NewContext(context.Background(), nodeTestAppInfo{})
-	require.NoError(t, server.BeforeStart(ctx))
-	go func() { done <- server.Start(ctx) }()
+	go func() { done <- server.Start(testNodeContext()) }()
+	receiveNodeValue(t, entered)
+	assertHandlerRegistrationFrozen(t, server)
+	require.EqualError(t, server.Start(testNodeContext()), "node: server is already starting")
+	require.NoError(t, server.Stop(context.Background()))
+	require.ErrorIs(t, receiveNodeValue(t, done), context.Canceled)
+	select {
+	case <-registrar.entered:
+		t.Fatal("stopped Node registered while first renewal was pending")
+	default:
+	}
+	_, err := store.LocateNodeEpoch(context.Background(), "game", "node-a")
+	require.ErrorIs(t, err, locate.ErrNodeEpochNotFound)
+}
 
-	conn, err := grpc.NewClient(lis.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+func TestStopReclaimsLateEpochClaimWithOriginalCredentials(t *testing.T) {
+	base := newMemoryNodeStore()
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	resume := sync.OnceFunc(func() { close(release) })
+	store := &lateEpochLocator{Store: base, entered: entered, release: release}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, conn.Close()) })
-	client := v1.NewNodeClient(conn)
-	req := &v1.ForwardRequest{Route: clusterroute.FromBinding(testBinding("player-a", "conn-a"))}
+	address := listener.Addr().String()
+	server := newTestServer(t, Listener(listener), Stateful(store), ShutdownTimeout(80*time.Millisecond))
+	done := make(chan error, 1)
+	go func() { done <- server.Start(testNodeContext()) }()
+	t.Cleanup(func() {
+		resume()
+		_ = server.Stop(context.Background())
+	})
+	receiveNodeValue(t, entered)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	require.ErrorIs(t, server.Stop(ctx), context.DeadlineExceeded)
+	require.Eventually(t, func() bool {
+		return tcpAddressReusable(address)
+	}, time.Second, time.Millisecond)
+	resume()
+	require.ErrorIs(t, receiveNodeValue(t, done), context.Canceled)
+	_ = server.Stop(context.Background())
+	_, err = base.LocateNodeEpoch(context.Background(), "game", "node-a")
+	require.ErrorIs(t, err, locate.ErrNodeEpochNotFound)
+	require.NoError(t, base.RegisterNodeEpoch(context.Background(), "game", "node-a", "replacement", DefaultNodeEpochTTL))
+}
 
-	req.Command = 1
-	_, err = client.Forward(context.Background(), req)
-	require.Equal(t, codes.DeadlineExceeded, status.Code(err))
-
-	req.Command = 2
-	_, err = client.Forward(context.Background(), req)
-	require.Equal(t, codes.Internal, status.Code(err))
-
+func TestDrainKeepsStartApplicationIdentity(t *testing.T) {
+	server := newTestServer(t, Address("127.0.0.1:0"), Drain(func(ctx context.Context) error {
+		app, ok := kratos.FromContext(ctx)
+		if !ok || app.Name() != "game" || app.ID() != "node-a" {
+			return errors.New("Drain lost application identity")
+		}
+		return ctx.Err()
+	}))
+	startTestNode(testNodeContext(), t, server)
 	require.NoError(t, server.Stop(context.Background()))
-	require.NoError(t, server.Stop(context.Background()))
-	require.NoError(t, <-done)
+}
 
-	_, err = server.forward(context.Background(), testBinding("player-a", "conn-a"), 3, nil)
-	requireNodeDraining(t, err)
+func TestDefaultShutdownBudgetSurvivesShortCallerWait(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var budget time.Duration
+		server := newTestServer(t, Drain(func(ctx context.Context) error {
+			app, ok := kratos.FromContext(ctx)
+			if !ok || app.Name() != "game" {
+				return errors.New("Drain lost Stop application context")
+			}
+			deadline, ok := ctx.Deadline()
+			if !ok {
+				return errors.New("Drain has no owned deadline")
+			}
+			budget = time.Until(deadline)
+			time.Sleep(4 * time.Second)
+			return ctx.Err()
+		}))
+		ctx, cancel := context.WithTimeout(testNodeContext(), 100*time.Millisecond)
+		defer cancel()
+		require.ErrorIs(t, server.Stop(ctx), context.DeadlineExceeded)
+		require.NoError(t, server.Stop(context.Background()))
+		require.Equal(t, 10*time.Second, budget)
+	})
+}
+
+func TestStartupRollbackHasIndependentBudget(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var budget time.Duration
+		server := newTestServer(t, PushTimeout(time.Nanosecond), Drain(func(ctx context.Context) error {
+			deadline, ok := ctx.Deadline()
+			if !ok {
+				return errors.New("Drain has no rollback deadline")
+			}
+			budget = time.Until(deadline)
+			<-ctx.Done()
+			return ctx.Err()
+		}))
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		err := server.Start(kratos.NewContext(ctx, nodeTestAppInfo{id: "node-a"}))
+		require.ErrorContains(t, err, "node: invalid application identity")
+		require.ErrorIs(t, err, context.DeadlineExceeded)
+		require.ErrorIs(t, server.Stop(context.Background()), context.DeadlineExceeded)
+		require.Equal(t, 3*time.Second, budget)
+	})
 }
 
 func TestServerStartFailureClosesResources(t *testing.T) {
-	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
-	require.NoError(t, lis.Close())
-	server := newTestServer(t, Listener(lis))
-	server.RegisterRawHandler(1, func(ctx context.Context, _ []byte) ([]byte, error) {
-		sess, _ := FromContext(ctx)
-		return nil, sess.Push(ctx, 1, wrapperspb.String("push"))
-	})
-	app := kratos.New(
-		kratos.ID("node-a"),
-		kratos.Name("game"),
-		kratos.BeforeStart(server.BeforeStart),
-		kratos.Server(server),
-	)
-
+	require.NoError(t, listener.Close())
+	store := newMemoryNodeStore()
+	registrar := newLifecycleRegistrar()
+	server := newTestServer(t, Listener(listener), Stateful(store), Registration(registrar))
+	app := kratos.New(kratos.ID("node-a"), kratos.Name("game"), kratos.Server(server))
 	require.Error(t, app.Run())
+	require.NoError(t, server.Stop(context.Background()))
+	_, err = store.LocateNodeEpoch(context.Background(), "game", "node-a")
+	require.ErrorIs(t, err, locate.ErrNodeEpochNotFound)
 	_, err = server.forward(context.Background(), testBinding("player-a", "conn-a"), 1, nil)
 	requireNodeDraining(t, err)
 }
 
-func TestStickyStartFailureKeepsEpochCleanupForStop(t *testing.T) {
-	lis, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-	require.NoError(t, lis.Close())
-	base := newMemoryLocator()
-	cleanupErr := errors.New("cleanup failed")
-	locator := &failingEpochUnregisterLocator{Locator: base, err: cleanupErr}
-	server := newTestServer(t, Listener(lis), Locator(locator))
-	ctx := kratos.NewContext(context.Background(), nodeTestAppInfo{metadata: instance.StickyMetadata()})
-	require.NoError(t, server.BeforeStart(ctx))
-	require.NoError(t, server.lease.Load().ctx.Err())
-	require.ErrorIs(t, server.Start(ctx), cleanupErr)
-	require.ErrorIs(t, server.lease.Load().ctx.Err(), context.Canceled)
-	require.Empty(t, server.currentIdentity().epoch)
-	require.Equal(t, _epochReleaseFailed, server.lease.Load().releaseState)
-	require.True(t, server.requests.isClosed())
-	require.EqualError(t, server.BeforeStart(ctx), "node: server is stopping or stopped")
-	require.NoError(t, server.Stop(context.Background()))
-	require.Equal(t, _epochReleased, server.lease.Load().releaseState)
-	// 必须释放 epoch，让使用同一 NodeID 的替换进程接管。
-	require.NoError(t, base.RegisterNodeEpoch(context.Background(), "game", "node-a", "fresh", DefaultNodeEpochTTL))
-}
-
-func TestStopDrainsOnceAndRejectsForward(t *testing.T) {
-	var drains atomic.Int32
-	server := newTestServer(t, Drain(func(context.Context) error {
-		drains.Add(1)
-		return nil
-	}))
-	server.RegisterRawHandler(1, func(context.Context, []byte) ([]byte, error) {
-		return []byte("ok"), nil
-	})
-	binding := locate.GateBinding{
-		ServiceName: "game", UID: "u1", GateID: "g1", GateEndpoint: "grpc://127.0.0.1:1",
-		ConnID: "c1", BindingToken: "t1",
-	}
-	require.NoError(t, server.Stop(context.Background()))
-	require.NoError(t, server.Stop(context.Background()))
-	require.Equal(t, int32(1), drains.Load())
-	_, err := server.forward(context.Background(), binding, 1, []byte("x"))
-	requireNodeDraining(t, err)
-}
-
-func TestStopWaitsForDrainBeforeReleasingEpoch(t *testing.T) {
-	locator := newMemoryLocator()
-	const epoch = "epoch-a"
-	require.NoError(t, locator.RegisterNodeEpoch(context.Background(), "game", "node-a", epoch, DefaultNodeEpochTTL))
-	drainStarted := make(chan struct{})
-	releaseDrain := make(chan struct{})
-	server := newTestServer(t, Locator(locator), Drain(func(context.Context) error {
-		close(drainStarted)
-		<-releaseDrain
-		return nil
-	}))
-	publishTestIdentity(server, nodeIdentity{serviceName: "game", nodeID: "node-a", epoch: epoch})
-
-	stopDone := make(chan error, 1)
-	go func() { stopDone <- server.Stop(context.Background()) }()
-	<-drainStarted
-	located, err := locator.LocateNodeEpoch(context.Background(), "game", "node-a")
-	require.NoError(t, err)
-	require.Equal(t, epoch, located)
-
-	close(releaseDrain)
-	require.NoError(t, <-stopDone)
-	_, err = locator.LocateNodeEpoch(context.Background(), "game", "node-a")
-	require.ErrorIs(t, err, locate.ErrNodeEpochNotFound)
-}
-
-func TestStopRetriesTransientEpochCleanup(t *testing.T) {
-	base := newMemoryLocator()
-	const epoch = "epoch-a"
-	require.NoError(t, base.RegisterNodeEpoch(context.Background(), "game", "node-a", epoch, DefaultNodeEpochTTL))
-	cleanupErr := errors.New("cleanup failed")
-	locator := &failingEpochUnregisterLocator{Locator: base, err: cleanupErr}
-	server := newTestServer(t, Locator(locator))
-	publishTestIdentity(server, nodeIdentity{serviceName: "game", nodeID: "node-a", epoch: epoch})
-
-	require.ErrorIs(t, server.Stop(context.Background()), cleanupErr)
-	require.Equal(t, int32(1), locator.calls.Load())
-	located, err := base.LocateNodeEpoch(context.Background(), "game", "node-a")
-	require.NoError(t, err)
-	require.Equal(t, epoch, located)
-
-	const retryCount = 16
-	retry := make(chan struct{})
-	retryErrors := make(chan error, retryCount)
-	for range retryCount {
-		go func() {
-			<-retry
-			retryErrors <- server.Stop(context.Background())
-		}()
-	}
-	close(retry)
-	for range retryCount {
-		require.NoError(t, <-retryErrors)
-	}
-	require.Equal(t, int32(2), locator.calls.Load())
-	_, err = base.LocateNodeEpoch(context.Background(), "game", "node-a")
-	require.ErrorIs(t, err, locate.ErrNodeEpochNotFound)
-}
-
-func TestStopDrainFailureKeepsEpochUntilTTL(t *testing.T) {
-	locator := newMemoryLocator()
-	const epoch = "epoch-a"
-	require.NoError(t, locator.RegisterNodeEpoch(context.Background(), "game", "node-a", epoch, DefaultNodeEpochTTL))
-	drainErr := errors.New("drain failed")
-	server := newTestServer(t, Locator(locator), Drain(func(context.Context) error { return drainErr }))
-	publishTestIdentity(server, nodeIdentity{serviceName: "game", nodeID: "node-a", epoch: epoch})
-	renewCtx := server.lease.Load().ctx
-
-	require.ErrorIs(t, server.Stop(context.Background()), drainErr)
-	located, err := locator.LocateNodeEpoch(context.Background(), "game", "node-a")
-	require.NoError(t, err)
-	require.Equal(t, epoch, located)
-	require.ErrorIs(
-		t, locator.RegisterNodeEpoch(context.Background(), "game", "node-a", "epoch-b", DefaultNodeEpochTTL),
-		locate.ErrNodeEpochConflict,
-	)
-	require.ErrorIs(t, renewCtx.Err(), context.Canceled)
-	require.ErrorIs(t, server.Stop(context.Background()), drainErr)
-	located, err = locator.LocateNodeEpoch(context.Background(), "game", "node-a")
-	require.NoError(t, err)
-	require.Equal(t, epoch, located)
-}
-
-func TestStopWaitsForAcceptedForwardBeforeReleasingEpoch(t *testing.T) {
-	locator := newMemoryLocator()
-	const epoch = "epoch-a"
-	require.NoError(t, locator.RegisterNodeEpoch(context.Background(), "game", "node-a", epoch, DefaultNodeEpochTTL))
-	require.NoError(t, locator.BindNode(context.Background(), "game", "player-a", "node-a", epoch))
-	server := newTestServer(t, Locator(locator))
-	publishTestIdentity(server, nodeIdentity{serviceName: "game", nodeID: "node-a", epoch: epoch})
-	entered := make(chan struct{})
-	release := make(chan struct{})
-	server.RegisterRawHandler(1, func(ctx context.Context, _ []byte) ([]byte, error) {
-		close(entered)
-		<-release
-		sess, _ := FromContext(ctx)
-		return nil, sess.BindNode(ctx)
-	})
-
-	forwardDone := make(chan error, 1)
-	go func() {
-		_, err := server.forwardTo(
-			context.Background(), stickyClaim{NodeID: "node-a", Epoch: epoch},
-			testBinding("player-a", "conn-a"), 1, nil,
-		)
-		forwardDone <- err
-	}()
-	<-entered
-	stopDone := make(chan error, 1)
-	go func() { stopDone <- server.Stop(context.Background()) }()
-	require.Eventually(t, server.requests.isClosed, time.Second, time.Millisecond)
-
-	located, err := locator.LocateNodeEpoch(context.Background(), "game", "node-a")
-	require.NoError(t, err)
-	require.Equal(t, epoch, located)
-	select {
-	case stopErr := <-stopDone:
-		t.Fatalf("Stop returned before Forward completed: %v", stopErr)
-	case <-time.After(20 * time.Millisecond):
-	}
-
-	close(release)
-	require.NoError(t, <-forwardDone)
-	require.NoError(t, <-stopDone)
-	_, err = locator.LocateNodeEpoch(context.Background(), "game", "node-a")
-	require.ErrorIs(t, err, locate.ErrNodeEpochNotFound)
-}
-
-func TestStopTimeoutDoesNotReleaseEpoch(t *testing.T) {
-	locator := newMemoryLocator()
-	const epoch = "epoch-a"
-	require.NoError(t, locator.RegisterNodeEpoch(context.Background(), "game", "node-a", epoch, DefaultNodeEpochTTL))
-	server := newTestServer(t, Locator(locator))
-	publishTestIdentity(server, nodeIdentity{serviceName: "game", nodeID: "node-a", epoch: epoch})
-	entered := make(chan struct{})
-	release := make(chan struct{})
-	server.RegisterRawHandler(1, func(context.Context, []byte) ([]byte, error) {
-		close(entered)
-		<-release
-		return nil, nil
-	})
-
-	forwardDone := make(chan error, 1)
-	go func() {
-		_, err := server.forward(context.Background(), testBinding("player-a", "conn-a"), 1, nil)
-		forwardDone <- err
-	}()
-	<-entered
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+func healthStatus(t *testing.T, client healthpb.HealthClient) healthpb.HealthCheckResponse_ServingStatus {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	require.ErrorIs(t, server.Stop(ctx), context.DeadlineExceeded)
-
-	located, err := locator.LocateNodeEpoch(context.Background(), "game", "node-a")
+	reply, err := client.Check(ctx, &healthpb.HealthCheckRequest{}, grpc.WaitForReady(true))
 	require.NoError(t, err)
-	require.Equal(t, epoch, located)
-	close(release)
-	require.NoError(t, <-forwardDone)
+	return reply.Status
 }
 
-func TestBeforeStartValidatesStickyMetadata(t *testing.T) {
-	tests := []struct {
-		name     string
-		metadata map[string]string
-		locator  bool
-		wantErr  string
-	}{
-		{name: "sticky", metadata: instance.StickyMetadata(), locator: true},
-		{name: "stateless"},
-		{
-			name: "invalid", metadata: map[string]string{instance.StickyMetadataKey: "invalid"},
-			wantErr: "invalid sticky metadata",
-		},
-		{
-			name: "mismatch", locator: true,
-			wantErr: "sticky metadata and Node locator mismatch",
-		},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			var opts []Option
-			if test.locator {
-				opts = append(opts, Locator(newMemoryLocator()))
-			}
-			server := newTestServer(t, opts...)
-			t.Cleanup(func() { require.NoError(t, server.Stop(context.Background())) })
-			ctx := kratos.NewContext(context.Background(), nodeTestAppInfo{metadata: test.metadata})
-
-			err := server.BeforeStart(ctx)
-			if test.wantErr == "" {
-				require.NoError(t, err)
-				return
-			}
-			require.ErrorContains(t, err, test.wantErr)
-		})
-	}
+func assertNodeAddressReusable(t *testing.T, record *registry.ServiceInstance) {
+	t.Helper()
+	endpoint, err := url.Parse(record.Endpoints[0])
+	require.NoError(t, err)
+	listener, err := net.Listen("tcp", endpoint.Host)
+	require.NoError(t, err)
+	require.NoError(t, listener.Close())
 }
 
-func TestPushTimeoutDoesNotCancelStartupRollback(t *testing.T) {
-	called := false
-	var remaining time.Duration
-	server := newTestServer(t, PushTimeout(time.Nanosecond), Drain(func(ctx context.Context) error {
-		called = true
-		deadline, ok := ctx.Deadline()
-		if ok {
-			remaining = time.Until(deadline)
-		}
-		return ctx.Err()
-	}))
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	require.NoError(t, server.rollbackStart(ctx))
-	require.True(t, called, "startup rollback must reach business Drain with its own budget")
-	require.Greater(t, remaining, time.Second)
+type lateEpochLocator struct {
+	Store
+	entered chan struct{}
+	release <-chan struct{}
 }
 
-func TestPushTimeoutDoesNotCancelEpochRollback(t *testing.T) {
-	base := newMemoryLocator()
-	store := &contextCheckedUnregisterLocator{Locator: base}
-	server := newTestServer(t, Locator(store), PushTimeout(time.Nanosecond))
-	t.Cleanup(func() { require.NoError(t, server.Stop(context.Background())) })
-	identity := nodeIdentity{serviceName: "game", nodeID: "node-a", epoch: "epoch-a"}
-	require.NoError(t, base.RegisterNodeEpoch(context.Background(), identity.serviceName, identity.nodeID, identity.epoch, DefaultNodeEpochTTL))
-	lease := newEpochLease(store, identity, time.Now().Add(DefaultNodeEpochTTL))
-	cause := errors.New("preparation failed")
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	err := server.rollbackPreparation(ctx, lease, cause)
-	require.ErrorIs(t, err, cause)
-	require.NotErrorIs(t, err, context.DeadlineExceeded)
-	require.Greater(t, store.remaining, time.Second)
-	_, err = base.LocateNodeEpoch(context.Background(), identity.serviceName, identity.nodeID)
-	require.ErrorIs(t, err, locate.ErrNodeEpochNotFound)
-}
-
-func TestCleanupTimeoutBoundsStartupRollback(t *testing.T) {
-	server := newTestServer(t, PushTimeout(time.Minute), CleanupTimeout(20*time.Millisecond), Drain(func(ctx context.Context) error {
-		<-ctx.Done()
-		return ctx.Err()
-	}))
-	require.ErrorIs(t, server.rollbackStart(context.Background()), context.DeadlineExceeded)
-}
-
-func TestNormalStopKeepsCallerBudget(t *testing.T) {
-	called := false
-	server := newTestServer(t, CleanupTimeout(time.Nanosecond), Drain(func(ctx context.Context) error {
-		called = true
-		return ctx.Err()
-	}))
-	require.NoError(t, server.Stop(context.Background()))
-	require.True(t, called)
-}
-
-type initializationNodeLocator struct {
-	locate.Locator
-	pinged chan<- context.Context
-}
-
-type blockingEpochRegistrationLocator struct {
-	locate.Locator
-	blockBefore         bool
-	registrationReached chan struct{}
-	releaseRegistration <-chan struct{}
-	unregisterStarted   chan struct{}
-	releaseUnregister   <-chan struct{}
-	unregistered        chan struct{}
-}
-
-type failingEpochUnregisterLocator struct {
-	locate.Locator
-	ctx   context.Context
-	err   error
-	calls atomic.Int32
-}
-
-type blockingEpochUnregisterLocator struct {
-	locate.Locator
-	ctx   context.Context
-	calls atomic.Int32
-}
-
-func (l *initializationNodeLocator) Ping(ctx context.Context) error {
-	l.pinged <- ctx
-	<-ctx.Done()
-	return ctx.Err()
-}
-
-func (l *blockingEpochRegistrationLocator) RegisterNodeEpoch(ctx context.Context, serviceName, nodeID, epoch string, ttl time.Duration) error {
-	if l.blockBefore {
-		close(l.registrationReached)
-		<-l.releaseRegistration
-	}
-	err := l.Locator.RegisterNodeEpoch(ctx, serviceName, nodeID, epoch, ttl)
-	if !l.blockBefore {
-		close(l.registrationReached)
-		<-l.releaseRegistration
-	}
-	return err
-}
-
-func (l *blockingEpochRegistrationLocator) UnregisterNodeEpoch(ctx context.Context, serviceName, nodeID, epoch string) error {
-	if l.unregisterStarted != nil {
-		close(l.unregisterStarted)
-	}
-	if l.releaseUnregister != nil {
-		<-l.releaseUnregister
-	}
-	err := l.Locator.UnregisterNodeEpoch(ctx, serviceName, nodeID, epoch)
-	if l.unregistered != nil {
-		close(l.unregistered)
-	}
-	return err
-}
-
-func (l *failingEpochUnregisterLocator) UnregisterNodeEpoch(ctx context.Context, serviceName, nodeID, epoch string) error {
-	l.ctx = ctx
-	if l.calls.Add(1) == 1 {
-		return l.err
-	}
-	return l.Locator.UnregisterNodeEpoch(ctx, serviceName, nodeID, epoch)
-}
-
-func (l *blockingEpochUnregisterLocator) UnregisterNodeEpoch(ctx context.Context, _, _, _ string) error {
-	l.ctx = ctx
-	if l.calls.Add(1) == 1 {
-		<-ctx.Done()
-		return ctx.Err()
-	}
-	return nil
-}
-
-type invalidNodeAppInfo struct {
-	id   string
-	name string
-}
-
-func (a invalidNodeAppInfo) ID() string { return a.id }
-
-func (a invalidNodeAppInfo) Name() string { return a.name }
-
-func (invalidNodeAppInfo) Version() string { return "" }
-
-func (invalidNodeAppInfo) Metadata() map[string]string { return nil }
-
-func (invalidNodeAppInfo) Endpoint() []string { return nil }
-
-type contextCheckedUnregisterLocator struct {
-	locate.Locator
-	remaining time.Duration
-}
-
-func (l *contextCheckedUnregisterLocator) UnregisterNodeEpoch(ctx context.Context, service, nodeID, epoch string) error {
-	if deadline, ok := ctx.Deadline(); ok {
-		l.remaining = time.Until(deadline)
-	}
-	if err := ctx.Err(); err != nil {
+func (l *lateEpochLocator) RegisterNodeEpoch(ctx context.Context, service, nodeID, epoch string, ttl time.Duration) error {
+	if err := l.Store.RegisterNodeEpoch(ctx, service, nodeID, epoch, ttl); err != nil {
 		return err
 	}
-	return l.Locator.UnregisterNodeEpoch(ctx, service, nodeID, epoch)
+	close(l.entered)
+	<-l.release
+	return nil
 }

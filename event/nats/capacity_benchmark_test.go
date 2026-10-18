@@ -172,6 +172,37 @@ func BenchmarkSubscriptionCapacity(b *testing.B) {
 	}
 }
 
+// TestCapacityPublisherProcess 只作为 benchmark 的发布子进程运行，避免发布内存计入接收方 RSS。
+func TestCapacityPublisherProcess(t *testing.T) {
+	if os.Getenv("YOLA_NATS_CAPACITY_PUBLISHER") != "1" {
+		t.Skip("capacity benchmark subprocess only")
+	}
+	conn, err := natsgo.Connect(os.Getenv("YOLA_NATS_URL"), natsgo.NoReconnect())
+	require.NoError(t, err)
+	defer conn.Close()
+	decoder := json.NewDecoder(bufio.NewReader(os.Stdin))
+	encoder := json.NewEncoder(os.Stdout)
+	for {
+		var batch capacityPublishBatch
+		if err = decoder.Decode(&batch); errors.Is(err, io.EOF) {
+			return
+		}
+		require.NoError(t, err)
+		require.GreaterOrEqual(t, batch.Size, 1)
+		require.LessOrEqual(t, int64(batch.Size), conn.MaxPayload())
+		require.Greater(t, batch.Count, 0)
+		require.LessOrEqual(t, batch.Count, 4096)
+		require.True(t, event.ValidTopic(batch.Topic))
+		payload := make([]byte, batch.Size)
+		for range batch.Count {
+			require.NoError(t, conn.Publish(batch.Topic, payload))
+			// 限制 broker 的在途批量，当前基准测本地接收积压，不测发布端突发极限。
+			require.NoError(t, conn.FlushTimeout(5*time.Second))
+		}
+		require.NoError(t, encoder.Encode(batch.Count))
+	}
+}
+
 // fillSubscriptionBacklog 等待每批抵达接收队列；handler 必须已经被调用方的屏障阻塞。
 func fillSubscriptionBacklog(b *testing.B, subs []event.SubscriptionStatsProvider, capacity, overflow int, publish func(int)) {
 	b.Helper()
@@ -226,37 +257,6 @@ type capacityPublishBatch struct {
 	Topic string
 	Size  int
 	Count int
-}
-
-// TestCapacityPublisherProcess 只作为 benchmark 的发布子进程运行，避免发布内存计入接收方 RSS。
-func TestCapacityPublisherProcess(t *testing.T) {
-	if os.Getenv("YOLA_NATS_CAPACITY_PUBLISHER") != "1" {
-		t.Skip("capacity benchmark subprocess only")
-	}
-	conn, err := natsgo.Connect(os.Getenv("YOLA_NATS_URL"), natsgo.NoReconnect())
-	require.NoError(t, err)
-	defer conn.Close()
-	decoder := json.NewDecoder(bufio.NewReader(os.Stdin))
-	encoder := json.NewEncoder(os.Stdout)
-	for {
-		var batch capacityPublishBatch
-		if err = decoder.Decode(&batch); errors.Is(err, io.EOF) {
-			return
-		}
-		require.NoError(t, err)
-		require.GreaterOrEqual(t, batch.Size, 1)
-		require.LessOrEqual(t, int64(batch.Size), conn.MaxPayload())
-		require.Greater(t, batch.Count, 0)
-		require.LessOrEqual(t, batch.Count, 4096)
-		require.True(t, event.ValidTopic(batch.Topic))
-		payload := make([]byte, batch.Size)
-		for range batch.Count {
-			require.NoError(t, conn.Publish(batch.Topic, payload))
-			// 限制 broker 的在途批量，当前基准测本地接收积压，不测发布端突发极限。
-			require.NoError(t, conn.FlushTimeout(5*time.Second))
-		}
-		require.NoError(t, encoder.Encode(batch.Count))
-	}
 }
 
 func startCapacityPublisher(b *testing.B) func(string, int, int) {

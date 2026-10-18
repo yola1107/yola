@@ -264,8 +264,14 @@ func newDelayedRedisLocator(t *testing.T, address, password string) (locate.Loca
 	t.Helper()
 	replies := &redisReplyBarrier{entered: make(chan struct{}), release: make(chan struct{})}
 	client := redis.NewClient(&redis.Options{
-		Addr: address, Password: password, Dialer: replies.dial, PoolSize: 1, MaxRetries: -1,
-		ReadTimeout: 2 * time.Second, WriteTimeout: 2 * time.Second, ContextTimeoutEnabled: true,
+		Addr:                  address,
+		Password:              password,
+		Dialer:                replies.dial,
+		PoolSize:              1,
+		MaxRetries:            -1,
+		ReadTimeout:           2 * time.Second,
+		WriteTimeout:          2 * time.Second,
+		ContextTimeoutEnabled: true,
 	})
 	t.Cleanup(func() {
 		replies.unblock()

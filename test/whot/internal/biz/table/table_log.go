@@ -20,14 +20,6 @@ type Log struct {
 	sink    *filelog.Log
 }
 
-func tableLogPath(tableID int32) string {
-	root := strings.TrimSpace(os.Getenv("YOLA_TEST_LOG_DIR"))
-	if root == "" {
-		root = "logs"
-	}
-	return filepath.Join(root, "log_cache", conf.Name, fmt.Sprintf("table_%d.log", tableID))
-}
-
 func newTableLog(tableID int32, c *conf.Room_LogCache) *Log {
 	logger := &Log{tableID: tableID}
 	if c == nil || !c.Open {
@@ -60,10 +52,6 @@ func (l *Log) write(message string, args ...any) {
 }
 
 func (l *Log) enabled() bool { return l != nil && l.sink != nil }
-
-func debugLogEnabled() bool {
-	return slog.Default().Enabled(context.Background(), slog.LevelDebug)
-}
 
 func (l *Log) writePlayer(p *player.Player, message string, args ...any) {
 	if !l.enabled() {
@@ -151,6 +139,37 @@ func (l *Log) declareSuit(p *player.Player, suit v1.SUIT, currentCard int32, tim
 	l.writePlayer(p, "[Whot确定花色] 玩家:%+v 花色=%d, currCard=%v, timeout=%+v", suit, currentCard, timeout)
 }
 
+func (l *Log) settle(winner *player.Player, win, tax float64, messages ...any) {
+	if !l.enabled() {
+		return
+	}
+	logs := []string{"[结算]"}
+	if winner != nil {
+		logs = append(logs, fmt.Sprintf("<赢家>:%+v win:%.1f tax:%.1f Hands:%v", winner.Desc(), win, tax, winner.GetCards()))
+	}
+	for _, message := range messages {
+		logs = append(logs, fmt.Sprint(message))
+	}
+	l.write("%s", strings.Join(logs, "\r\n"))
+}
+
+func (l *Log) end(messages ...any) {
+	l.write("[GameEnd] %s", messages)
+	l.write("\r\n\r\n\r\n")
+}
+
+func tableLogPath(tableID int32) string {
+	root := strings.TrimSpace(os.Getenv("YOLA_TEST_LOG_DIR"))
+	if root == "" {
+		root = "logs"
+	}
+	return filepath.Join(root, "log_cache", conf.Name, fmt.Sprintf("table_%d.log", tableID))
+}
+
+func debugLogEnabled() bool {
+	return slog.Default().Enabled(context.Background(), slog.LevelDebug)
+}
+
 func descPending(pending *v1.Pending) string {
 	if pending == nil {
 		return ""
@@ -173,23 +192,4 @@ func logPlayers(players []*player.Player) string {
 		}
 	}
 	return strings.Join(logs, "\r\n")
-}
-
-func (l *Log) settle(winner *player.Player, win, tax float64, messages ...any) {
-	if !l.enabled() {
-		return
-	}
-	logs := []string{"[结算]"}
-	if winner != nil {
-		logs = append(logs, fmt.Sprintf("<赢家>:%+v win:%.1f tax:%.1f Hands:%v", winner.Desc(), win, tax, winner.GetCards()))
-	}
-	for _, message := range messages {
-		logs = append(logs, fmt.Sprint(message))
-	}
-	l.write("%s", strings.Join(logs, "\r\n"))
-}
-
-func (l *Log) end(messages ...any) {
-	l.write("[GameEnd] %s", messages)
-	l.write("\r\n\r\n\r\n")
 }

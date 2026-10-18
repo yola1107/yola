@@ -2,6 +2,7 @@ package tcp
 
 import (
 	"context"
+	"encoding/binary"
 	"net"
 	"testing"
 	"time"
@@ -9,6 +10,13 @@ import (
 	"yola/api/protocol/v1"
 	"yola/network"
 )
+
+func frameWithLength(length uint32, body []byte) []byte {
+	wire := make([]byte, _framePrefixSize+len(body))
+	binary.LittleEndian.PutUint32(wire, length)
+	copy(wire[_framePrefixSize:], body)
+	return wire
+}
 
 type tcpTestHandler struct {
 	opened chan network.Connection
@@ -47,6 +55,7 @@ func dialTCPTest(t testing.TB, address string) net.Conn {
 	if err != nil {
 		t.Fatalf("Dial(%q) error = %v", address, err)
 	}
+	t.Cleanup(func() { _ = conn.Close() })
 	return conn
 }
 

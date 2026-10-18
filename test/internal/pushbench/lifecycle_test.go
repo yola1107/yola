@@ -17,21 +17,26 @@ import (
 )
 
 func TestStartServerUsesNativeApplication(t *testing.T) {
-	server, err := node.NewServer(node.Address("127.0.0.1:0"))
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
-	observed := &observedApplicationServer{Server: server}
-	startServer(t, observed, "game", "node-a", nil, nil)
-	require.Equal(t, "node-a", observed.identity.ID())
-	require.Equal(t, "game", observed.identity.Name())
-	require.NotEmpty(t, observed.endpoints, "BeforeStart must observe the instance built by real App.Run")
+	server, err := node.NewServer(node.Listener(listener), node.Registration(new(lifecycleRegistrar)))
+	require.NoError(t, err)
+	observed := &observedApplicationServer{Server: server, identity: make(chan kratos.AppInfo, 1)}
+	startServer(t, observed, "game", "node-a", nodeReady(t, listener.Addr().String()))
+	identity := <-observed.identity
+	require.Equal(t, "node-a", identity.ID())
+	require.Equal(t, "game", identity.Name())
+	require.Empty(t, identity.Endpoint(), "the internal Node endpoint must not leak into the ordinary application record")
 }
 
 func TestStartServerRegistersAndStopsNativeApplication(t *testing.T) {
 	registrar := new(lifecycleRegistrar)
 	t.Run("application", func(t *testing.T) {
-		server, err := node.NewServer(node.Address("127.0.0.1:0"))
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
 		require.NoError(t, err)
-		startServer(t, server, "game", "node-a", nil, server.Registrar(registrar))
+		server, err := node.NewServer(node.Listener(listener), node.Registration(registrar))
+		require.NoError(t, err)
+		startServer(t, server, "game", "node-a", nodeReady(t, listener.Addr().String()))
 		require.Equal(t, int32(1), registrar.registered.Load(), "startup returned before registration")
 		require.Equal(t, "node-a", registrar.instance.ID)
 		require.Equal(t, "game", registrar.instance.Name)
@@ -41,54 +46,43 @@ func TestStartServerRegistersAndStopsNativeApplication(t *testing.T) {
 }
 
 func TestStartServerFailureCleanup(t *testing.T) {
-	if stage := os.Getenv("YOLA_PUSHBENCH_START_FAILURE"); stage != "" {
-		server, err := node.NewServer(node.Address("127.0.0.1:0"))
+	if os.Getenv("YOLA_PUSHBENCH_START_FAILURE") != "" {
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
 		require.NoError(t, err)
-		endpoint, err := server.Endpoint()
-		require.NoError(t, err)
+		address := listener.Addr().String()
 		registrar := new(rejectedRegistrar)
-		// helper 的 cleanup 必须先于本检查执行，不能依靠子进程退出释放 listener。
+		server, err := node.NewServer(node.Listener(listener), node.Registration(registrar))
+		require.NoError(t, err)
+		// helper 的 cleanup 必须先于检查，不能依赖子进程退出释放 listener。
 		t.Cleanup(func() {
-			rebound, bindErr := net.Listen("tcp", endpoint.Host)
+			rebound, bindErr := net.Listen("tcp", address)
 			require.NoError(t, bindErr)
 			require.NoError(t, rebound.Close())
 			require.False(t, registrar.deregistered.Load(), "failed registration must not deregister unknown ownership")
 			t.Log("owned Node listener reclaimed")
 		})
-		switch stage {
-		case "prepare":
-			startServer(t, &failedPreparation{Server: server}, "game", "node-a", nil, nil)
-		case "register":
-			startServer(t, server, "game", "node-a", nil, server.Registrar(registrar))
-		default:
-			t.Fatal("unknown failure stage")
-		}
+		startServer(t, server, "game", "node-a", nodeReady(t, address))
 		t.Fatal("startup failure was accepted")
 	}
 	executable, err := os.Executable()
 	require.NoError(t, err)
-	for _, stage := range []string{"prepare", "register"} {
-		t.Run(stage, func(t *testing.T) {
-			command := exec.CommandContext(t.Context(), executable, "-test.run=^TestStartServerFailureCleanup$", "-test.timeout=15s", "-test.v")
-			command.Env = append(os.Environ(), "YOLA_PUSHBENCH_START_FAILURE="+stage)
-			output, childErr := command.CombinedOutput()
-			require.Error(t, childErr, "the child must report the injected startup failure")
-			require.Contains(t, string(output), "injected "+stage+" failure")
-			require.Contains(t, string(output), "owned Node listener reclaimed")
-		})
-	}
+	command := exec.CommandContext(t.Context(), executable, "-test.run=^TestStartServerFailureCleanup$", "-test.timeout=15s", "-test.v")
+	command.Env = append(os.Environ(), "YOLA_PUSHBENCH_START_FAILURE=register")
+	output, childErr := command.CombinedOutput()
+	require.Error(t, childErr, "the child must report the injected startup failure")
+	require.Contains(t, string(output), "injected register failure")
+	require.Contains(t, string(output), "owned Node listener reclaimed")
 }
 
 type observedApplicationServer struct {
 	*node.Server
-	identity  kratos.AppInfo
-	endpoints []string
+	identity chan kratos.AppInfo
 }
 
-func (s *observedApplicationServer) BeforeStart(ctx context.Context) error {
-	s.identity, _ = kratos.FromContext(ctx)
-	s.endpoints = append([]string(nil), s.identity.Endpoint()...)
-	return s.Server.BeforeStart(ctx)
+func (s *observedApplicationServer) Start(ctx context.Context) error {
+	identity, _ := kratos.FromContext(ctx)
+	s.identity <- identity
+	return s.Server.Start(ctx)
 }
 
 type lifecycleRegistrar struct {
@@ -106,15 +100,6 @@ func (r *lifecycleRegistrar) Register(_ context.Context, instance *registry.Serv
 func (r *lifecycleRegistrar) Deregister(context.Context, *registry.ServiceInstance) error {
 	r.deregistered.Add(1)
 	return nil
-}
-
-type failedPreparation struct{ *node.Server }
-
-func (s *failedPreparation) BeforeStart(ctx context.Context) error {
-	if err := s.Server.BeforeStart(ctx); err != nil {
-		return err
-	}
-	return errors.New("injected prepare failure")
 }
 
 type rejectedRegistrar struct{ deregistered atomic.Bool }

@@ -52,15 +52,6 @@ type Scheduler struct {
 	doneOnce  sync.Once
 }
 
-type task struct {
-	id        timer.TaskID
-	execAt    time.Time
-	interval  time.Duration
-	repeated  bool
-	callback  func()
-	scheduled *time.Timer
-}
-
 // New creates a scheduler. Tasks may be registered before Start.
 func New(opts ...Option) *Scheduler {
 	o := new(options)
@@ -329,6 +320,15 @@ func (s *Scheduler) cancelAllLocked() []*time.Timer {
 	}
 	clear(s.tasks)
 	return scheduled
+}
+
+type task struct {
+	id        timer.TaskID
+	execAt    time.Time
+	interval  time.Duration
+	repeated  bool
+	callback  func()
+	scheduled *time.Timer
 }
 
 func nextExecution(previous time.Time, interval time.Duration, now time.Time) time.Time {

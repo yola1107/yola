@@ -73,19 +73,6 @@ func (q *Queue) Stop() {
 	q.closeWithTerminals(nil)
 }
 
-func (q *Queue) closeWithTerminals(terminals []func()) bool {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	if q.closed {
-		return false
-	}
-	q.closed = true
-	q.tasks = nil
-	q.terminals = terminals
-	close(q.wake)
-	return true
-}
-
 // BeginTermination 立即拒绝等待中的工作，返回的函数须在调用方关闭资源后放行终止 callback。
 func (q *Queue) BeginTermination(terminals ...func()) func() {
 	if len(terminals) == 0 || hasNilCallback(terminals) {
@@ -118,6 +105,19 @@ func (q *Queue) Run() {
 	}
 }
 
+func (q *Queue) closeWithTerminals(terminals []func()) bool {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.closed {
+		return false
+	}
+	q.closed = true
+	q.tasks = nil
+	q.terminals = terminals
+	close(q.wake)
+	return true
+}
+
 func (q *Queue) next() (callback func(), terminals []func(), closed bool) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -135,13 +135,10 @@ func (q *Queue) next() (callback func(), terminals []func(), closed bool) {
 	return callback, nil, false
 }
 
-func hasNilCallback(callbacks []func()) bool {
+func (q *Queue) invokeAll(callbacks []func()) {
 	for _, callback := range callbacks {
-		if callback == nil {
-			return true
-		}
+		q.invokeSafely(callback)
 	}
-	return false
 }
 
 func (q *Queue) invokeSafely(fn func()) {
@@ -153,8 +150,11 @@ func (q *Queue) invokeSafely(fn func()) {
 	fn()
 }
 
-func (q *Queue) invokeAll(callbacks []func()) {
+func hasNilCallback(callbacks []func()) bool {
 	for _, callback := range callbacks {
-		q.invokeSafely(callback)
+		if callback == nil {
+			return true
+		}
 	}
+	return false
 }

@@ -92,15 +92,13 @@ func TestServerHandshakeDeadlineIncludesOpen(t *testing.T) {
 	started := make(chan struct{}, 1)
 	release := make(chan struct{})
 	finished := make(chan error, 1)
-	var releaseOnce sync.Once
-	releaseOpen := func() { releaseOnce.Do(func() { close(release) }) }
+	releaseOpen := sync.OnceFunc(func() { close(release) })
 	t.Cleanup(releaseOpen)
 
 	handler := blockingOpenHandler{started: started, release: release, finished: finished}
 	endpoint := startWebSocketTestServer(t, handler, HandshakeTimeout(40*time.Millisecond))
 
 	conn := dialWebSocketTest(t, endpoint)
-	defer conn.Close()
 	<-started
 	if err := conn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
 		t.Fatal(err)
@@ -123,14 +121,12 @@ func TestServerLateSuccessfulOpenCallsClose(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})
 	closed := make(chan error, 1)
-	var releaseOnce sync.Once
-	releaseOpen := func() { releaseOnce.Do(func() { close(release) }) }
+	releaseOpen := sync.OnceFunc(func() { close(release) })
 	t.Cleanup(releaseOpen)
 
 	handler := lateSuccessfulOpenHandler{started: started, release: release, closed: closed}
 	endpoint := startWebSocketTestServer(t, handler, HandshakeTimeout(40*time.Millisecond))
 	conn := dialWebSocketTest(t, endpoint)
-	defer conn.Close()
 	select {
 	case <-started:
 	case <-time.After(time.Second):
@@ -156,23 +152,15 @@ func TestServerLateSuccessfulOpenCallsClose(t *testing.T) {
 func TestServerOpenFailureSkipsClose(t *testing.T) {
 	h := &rejectingHandler{}
 	s := newWebSocketServer(t, h, Address("127.0.0.1:0"))
-	endpoint, err := s.Endpoint()
-	if err != nil {
-		t.Fatal(err)
-	}
-	done := make(chan error, 1)
-	go func() { done <- s.Start(context.Background()) }()
-	conn := dialWebSocketTest(t, endpoint.String())
+	endpoint := serveWebSocketTestServer(t, s)
+	conn := dialWebSocketTest(t, endpoint)
 	_ = conn.SetReadDeadline(time.Now().Add(time.Second))
-	_, _, err = conn.ReadMessage()
+	_, _, err := conn.ReadMessage()
 	if err == nil {
 		t.Fatal("ReadMessage() succeeded after handler rejected the connection")
 	}
 	_ = conn.Close()
 	if err := s.Stop(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
 	if h.closed.Load() != 0 {
@@ -187,7 +175,6 @@ func TestServerCloseContextOnClientDisconnect(t *testing.T) {
 	}
 	endpoint := startWebSocketTestServer(t, h)
 	conn := dialWebSocketTest(t, endpoint)
-	t.Cleanup(func() { _ = conn.Close() })
 	waitWebSocketValue(t, h.opened)
 
 	if err := conn.Close(); err != nil {
@@ -204,23 +191,14 @@ func TestServerCloseContextOnStop(t *testing.T) {
 		closed: make(chan error, 1),
 	}
 	s := newWebSocketServer(t, h, Address("127.0.0.1:0"))
-	endpoint, err := s.Endpoint()
-	if err != nil {
-		t.Fatalf("Server.Endpoint() error = %v", err)
-	}
-	serverDone := make(chan error, 1)
-	go func() { serverDone <- s.Start(context.Background()) }()
-	conn := dialWebSocketTest(t, endpoint.String())
-	t.Cleanup(func() { _ = conn.Close() })
+	endpoint := serveWebSocketTestServer(t, s)
+	dialWebSocketTest(t, endpoint)
 	waitWebSocketValue(t, h.opened)
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	if err = s.Stop(ctx); err != nil {
+	if err := s.Stop(ctx); err != nil {
 		t.Errorf("Server.Stop() error = %v, want nil", err)
-	}
-	if err = waitWebSocketValue(t, serverDone); err != nil {
-		t.Errorf("Server.Start() error = %v, want nil", err)
 	}
 	if got := waitWebSocketValue(t, h.closed); !errors.Is(got, context.Canceled) {
 		t.Errorf("ConnectionHandler.Close() context error = %v, want %v", got, context.Canceled)
@@ -241,7 +219,7 @@ func TestServerRejectsUpgradeCommittedAfterStop(t *testing.T) {
 		started:  make(chan struct{}),
 		release:  release,
 	}
-	h := &upgradeLifecycleHandler{opened: make(chan network.Connection, 1)}
+	h := websocketTestHandler{opened: make(chan network.Connection, 1)}
 	s := newWebSocketServer(t, h, Listener(gated), Address(lis.Addr().String()))
 	endpoint, err := s.Endpoint()
 	if err != nil {
@@ -325,14 +303,8 @@ func TestServerServeFailureClosesActiveChannel(t *testing.T) {
 
 func TestServerRejectsOversizedProto(t *testing.T) {
 	h := &countingHandler{}
-	s := newWebSocketServer(t, h, Address("127.0.0.1:0"))
-	endpoint, err := s.Endpoint()
-	if err != nil {
-		t.Fatal(err)
-	}
-	done := make(chan error, 1)
-	go func() { done <- s.Start(context.Background()) }()
-	conn := dialWebSocketTest(t, endpoint.String())
+	endpoint := startWebSocketTestServer(t, h)
+	conn := dialWebSocketTest(t, endpoint)
 	body, err := proto.Marshal(&v1.Proto{Op: v1.OpRequest, Body: make([]byte, v1.MaxProtoSize)})
 	if err != nil {
 		t.Fatal(err)
@@ -346,13 +318,6 @@ func TestServerRejectsOversizedProto(t *testing.T) {
 	}
 	if h.handled.Load() != 0 {
 		t.Fatalf("handled oversized messages = %d, want 0", h.handled.Load())
-	}
-	_ = conn.Close()
-	if err := s.Stop(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if err := <-done; err != nil {
-		t.Fatal(err)
 	}
 }
 
@@ -544,21 +509,6 @@ func (*closeContextHandler) Handle(_ context.Context, _ network.Connection, mess
 func (h *closeContextHandler) Close(ctx context.Context, _ network.Connection) {
 	h.closed <- ctx.Err()
 }
-
-type upgradeLifecycleHandler struct {
-	opened chan network.Connection
-}
-
-func (h *upgradeLifecycleHandler) Open(_ context.Context, conn network.Connection) error {
-	h.opened <- conn
-	return nil
-}
-
-func (*upgradeLifecycleHandler) Handle(_ context.Context, _ network.Connection, message *v1.Proto) (*v1.Proto, error) {
-	return message, nil
-}
-
-func (*upgradeLifecycleHandler) Close(context.Context, network.Connection) {}
 
 type handshakeWriteListener struct {
 	net.Listener

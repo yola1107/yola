@@ -2,8 +2,6 @@ package gateway
 
 import (
 	"fmt"
-	"sync"
-	"sync/atomic"
 	"time"
 
 	"yola/api/cluster/v1"
@@ -20,17 +18,6 @@ import (
 var (
 	_ network.ConnectionHandler = (*Server)(nil)
 	_ transport.Server          = (*Server)(nil)
-	_ transport.Endpointer      = (*Server)(nil)
-)
-
-type lifecycleState uint8
-
-const (
-	_stNew lifecycleState = iota
-	_stPreparing
-	_stPrepared
-	_stStarted
-	_stStopping
 )
 
 // Server 持有 Gateway 连接、Node 路由和内部 gRPC transport。
@@ -38,16 +25,17 @@ type Server struct {
 	grpcServer   *grpc.Server
 	grpcListener *listener.Owner
 
-	authenticator  Authenticator
-	locator        locate.Locator
-	rpcTimeout     time.Duration
-	connectTimeout time.Duration
-	leaseTimeout   time.Duration
-	cleanupTimeout time.Duration
-	authTimeout    time.Duration
-	leaseTTL       time.Duration
-	broadcaster    *broadcaster
-	transports     []ClientTransport
+	authenticator   Authenticator
+	locator         locate.Locator
+	rpcTimeout      time.Duration
+	connectTimeout  time.Duration
+	leaseTimeout    time.Duration
+	cleanupTimeout  time.Duration
+	shutdownTimeout time.Duration
+	authTimeout     time.Duration
+	leaseTTL        time.Duration
+	broadcaster     *broadcaster
+	transports      []ClientTransport
 
 	identity identity
 	backends *backends
@@ -55,23 +43,6 @@ type Server struct {
 	gateways *gateclient.Client
 
 	lifecycle lifecycle
-	admission admission
-}
-
-// lifecycle 协调进程启动和停止，不参与单连接热路径。
-type lifecycle struct {
-	mu              sync.Mutex
-	state           lifecycleState
-	preparationDone chan struct{}
-	stopOnce        sync.Once
-	stopErr         error
-}
-
-// admission 控制是否接纳新连接和认证。
-type admission struct {
-	mu        sync.Mutex
-	accepting atomic.Bool
-	wg        sync.WaitGroup
 }
 
 type identity struct {
@@ -87,18 +58,20 @@ func NewServer(opts ...Option) (*Server, error) {
 	}
 	sessions := &sessionRegistry{byConnID: make(map[string]*session)}
 	server := &Server{
-		authenticator:  o.auth,
-		locator:        o.locator,
-		rpcTimeout:     o.rpcTimeout,
-		connectTimeout: o.connectTimeout,
-		leaseTimeout:   o.leaseTimeout,
-		cleanupTimeout: o.cleanupTimeout,
-		authTimeout:    o.authTimeout,
-		leaseTTL:       o.leaseTTL,
-		transports:     o.transports,
-		backends:       newBackends(o.discovery, o.clientTLS, o.connectTimeout),
-		sessions:       sessions,
-		gateways:       gateclient.New(o.clientTLS),
+		authenticator:   o.auth,
+		locator:         o.locator,
+		rpcTimeout:      o.rpcTimeout,
+		connectTimeout:  o.connectTimeout,
+		leaseTimeout:    o.leaseTimeout,
+		cleanupTimeout:  o.cleanupTimeout,
+		shutdownTimeout: o.shutdownTimeout,
+		authTimeout:     o.authTimeout,
+		leaseTTL:        o.leaseTTL,
+		transports:      o.transports,
+		backends:        newBackends(o.discovery, o.clientTLS, o.connectTimeout, o.locator),
+		sessions:        sessions,
+		gateways:        gateclient.New(o.clientTLS),
+		lifecycle:       lifecycle{shutdownDone: make(chan struct{})},
 	}
 	server.broadcaster = newBroadcaster(sessions, o.broadcastWorkers, o.broadcastQueueCapacity)
 	server.grpcListener = listener.New(o.network, o.address, o.listener)

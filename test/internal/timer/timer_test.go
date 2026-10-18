@@ -57,228 +57,6 @@ func TestSchedulers(t *testing.T) {
 	}
 }
 
-func testSchedulerLifecycle(t *testing.T, newScheduler schedulerConstructor) {
-	scheduler := newScheduler(t)
-	var nilContext context.Context // Context 零值为 nil，用于验证显式拒绝逻辑。
-	if err := scheduler.Start(nilContext); err == nil {
-		t.Fatal("Start accepted nil context")
-	}
-	canceledCtx, cancel := context.WithCancel(context.Background())
-	cancel()
-	if err := scheduler.Start(canceledCtx); !errors.Is(err, context.Canceled) {
-		t.Fatalf("Start canceled context error = %v", err)
-	}
-	startScheduler(t, scheduler)
-	if err := scheduler.Start(context.Background()); !errors.Is(err, timer.ErrStarted) {
-		t.Fatalf("second Start error = %v", err)
-	}
-	if err := scheduler.Stop(nilContext); err == nil {
-		t.Fatal("Stop accepted nil context")
-	}
-	stopScheduler(t, scheduler)
-}
-
-func testSchedulerOnce(t *testing.T, newScheduler schedulerConstructor) {
-	scheduler := newScheduler(t)
-	executed := make(chan struct{})
-	id, err := scheduler.Once(0, func() { close(executed) })
-	if err != nil {
-		t.Fatal(err)
-	}
-	if id == 0 || scheduler.Monitor().Total != 1 {
-		t.Fatalf("id = %d, monitor = %+v", id, scheduler.Monitor())
-	}
-	startScheduler(t, scheduler)
-	waitClosed(t, executed, time.Second, "once task did not execute")
-	waitFor(t, time.Second, func() bool { return scheduler.Monitor().Total == 0 })
-	stopScheduler(t, scheduler)
-}
-
-func testSchedulerPanic(t *testing.T, newScheduler schedulerConstructor) {
-	scheduler := newScheduler(t)
-	panicked := make(chan struct{})
-	continued := make(chan struct{})
-	if _, err := scheduler.Once(0, func() {
-		close(panicked)
-		panic("boom")
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := scheduler.Once(5*time.Millisecond, func() { close(continued) }); err != nil {
-		t.Fatal(err)
-	}
-	startScheduler(t, scheduler)
-	waitClosed(t, panicked, time.Second, "panicking callback did not run")
-	waitClosed(t, continued, time.Second, "scheduler stopped after callback panic")
-	stopScheduler(t, scheduler)
-}
-
-func testSchedulerPeriodicPanic(t *testing.T, newScheduler schedulerConstructor) {
-	scheduler := newScheduler(t)
-	var calls atomic.Int32
-	continued := make(chan struct{})
-	id, err := scheduler.ForeverNow(5*time.Millisecond, func() {
-		switch calls.Add(1) {
-		case 1:
-			panic("periodic boom")
-		case 2:
-			close(continued)
-		}
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	startScheduler(t, scheduler)
-	waitClosed(t, continued, time.Second, "periodic task stopped after callback panic")
-	if !scheduler.Cancel(id) {
-		t.Fatal("Cancel rejected periodic task after panic recovery")
-	}
-	stopScheduler(t, scheduler)
-}
-
-func testSchedulerCancel(t *testing.T, newScheduler schedulerConstructor) {
-	scheduler := newScheduler(t)
-	var executed atomic.Bool
-	id, err := scheduler.Once(20*time.Millisecond, func() { executed.Store(true) })
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !scheduler.Cancel(id) || scheduler.Cancel(id) {
-		t.Fatal("Cancel result is inconsistent")
-	}
-	startScheduler(t, scheduler)
-	time.Sleep(40 * time.Millisecond)
-	if executed.Load() {
-		t.Fatal("canceled task executed")
-	}
-	stopScheduler(t, scheduler)
-}
-
-func testSchedulerCancelAll(t *testing.T, newScheduler schedulerConstructor) {
-	scheduler := newScheduler(t)
-	firstID, err := scheduler.Once(time.Hour, func() {})
-	if err != nil {
-		t.Fatal(err)
-	}
-	secondID, err := scheduler.Forever(time.Hour, func() {})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if firstID == secondID || scheduler.Monitor().Total != 2 {
-		t.Fatalf("task IDs = (%d, %d), monitor = %+v", firstID, secondID, scheduler.Monitor())
-	}
-	scheduler.CancelAll()
-	if scheduler.Monitor().Total != 0 || scheduler.Cancel(firstID) || scheduler.Cancel(secondID) {
-		t.Fatalf("tasks remain after CancelAll: monitor = %+v", scheduler.Monitor())
-	}
-	startScheduler(t, scheduler)
-	stopScheduler(t, scheduler)
-}
-
-func testSchedulerForeverModes(t *testing.T, newScheduler schedulerConstructor) {
-	scheduler := newScheduler(t)
-	immediate := make(chan struct{})
-	delayed := make(chan struct{})
-	immediateID, err := scheduler.ForeverNow(time.Hour, func() { close(immediate) })
-	if err != nil {
-		t.Fatal(err)
-	}
-	delayedID, err := scheduler.Forever(40*time.Millisecond, func() { close(delayed) })
-	if err != nil {
-		t.Fatal(err)
-	}
-	startScheduler(t, scheduler)
-	waitClosed(t, immediate, time.Second, "ForeverNow did not execute immediately")
-	select {
-	case <-delayed:
-		t.Fatal("Forever executed before its first interval")
-	case <-time.After(10 * time.Millisecond):
-	}
-	waitClosed(t, delayed, time.Second, "Forever did not execute after its first interval")
-	if !scheduler.Cancel(immediateID) || !scheduler.Cancel(delayedID) {
-		t.Fatal("Cancel rejected active periodic task")
-	}
-	stopScheduler(t, scheduler)
-}
-
-func testSchedulerPeriodic(t *testing.T, newScheduler schedulerConstructor) {
-	scheduler := newScheduler(t)
-	var active, maximum, count atomic.Int32
-	twice := make(chan struct{})
-	_, err := scheduler.ForeverNow(time.Millisecond, func() {
-		current := active.Add(1)
-		for {
-			old := maximum.Load()
-			if current <= old || maximum.CompareAndSwap(old, current) {
-				break
-			}
-		}
-		time.Sleep(5 * time.Millisecond)
-		active.Add(-1)
-		if count.Add(1) == 2 {
-			close(twice)
-		}
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	startScheduler(t, scheduler)
-	waitClosed(t, twice, time.Second, "periodic task did not repeat")
-	scheduler.CancelAll()
-	stopScheduler(t, scheduler)
-	if maximum.Load() != 1 {
-		t.Fatalf("maximum concurrent callbacks = %d", maximum.Load())
-	}
-}
-
-func testSchedulerStop(t *testing.T, newScheduler schedulerConstructor) {
-	scheduler := newScheduler(t)
-	started := make(chan struct{})
-	release := make(chan struct{})
-	_, err := scheduler.Once(0, func() {
-		close(started)
-		<-release
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	startScheduler(t, scheduler)
-	waitClosed(t, started, time.Second, "blocking task did not start")
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Millisecond)
-	err = scheduler.Stop(ctx)
-	cancel()
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("Stop error = %v", err)
-	}
-	close(release)
-	stopScheduler(t, scheduler)
-}
-
-func testSchedulerValidation(t *testing.T, newScheduler schedulerConstructor) {
-	scheduler := newScheduler(t)
-	if _, err := scheduler.Once(-time.Second, func() {}); err == nil {
-		t.Fatal("Once accepted negative delay")
-	}
-	if _, err := scheduler.Once(0, nil); err == nil {
-		t.Fatal("Once accepted nil callback")
-	}
-	if _, err := scheduler.Forever(0, func() {}); err == nil {
-		t.Fatal("Forever accepted zero interval")
-	}
-	stopScheduler(t, scheduler)
-	canceledCtx, cancel := context.WithCancel(context.Background())
-	cancel()
-	if err := scheduler.Stop(canceledCtx); err != nil {
-		t.Fatalf("Stop completed scheduler with canceled context error = %v", err)
-	}
-	if _, err := scheduler.Once(time.Second, func() {}); !errors.Is(err, timer.ErrStopped) {
-		t.Fatalf("Once after Stop error = %v", err)
-	}
-	if err := scheduler.Start(context.Background()); !errors.Is(err, timer.ErrStopped) {
-		t.Fatalf("Start after Stop error = %v", err)
-	}
-}
-
 func TestSchedulersStopOnContextCancellation(t *testing.T) {
 	constructors := []func() (timer.Scheduler, error){
 		func() (timer.Scheduler, error) { return stdlib.New(), nil },
@@ -520,6 +298,228 @@ func TestHeapSchedulerWithWorkerPool(t *testing.T) {
 	defer stopCancel()
 	if err = pool.Stop(stopCtx); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func testSchedulerLifecycle(t *testing.T, newScheduler schedulerConstructor) {
+	scheduler := newScheduler(t)
+	var nilContext context.Context // Context 零值为 nil，用于验证显式拒绝逻辑。
+	if err := scheduler.Start(nilContext); err == nil {
+		t.Fatal("Start accepted nil context")
+	}
+	canceledCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := scheduler.Start(canceledCtx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Start canceled context error = %v", err)
+	}
+	startScheduler(t, scheduler)
+	if err := scheduler.Start(context.Background()); !errors.Is(err, timer.ErrStarted) {
+		t.Fatalf("second Start error = %v", err)
+	}
+	if err := scheduler.Stop(nilContext); err == nil {
+		t.Fatal("Stop accepted nil context")
+	}
+	stopScheduler(t, scheduler)
+}
+
+func testSchedulerOnce(t *testing.T, newScheduler schedulerConstructor) {
+	scheduler := newScheduler(t)
+	executed := make(chan struct{})
+	id, err := scheduler.Once(0, func() { close(executed) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id == 0 || scheduler.Monitor().Total != 1 {
+		t.Fatalf("id = %d, monitor = %+v", id, scheduler.Monitor())
+	}
+	startScheduler(t, scheduler)
+	waitClosed(t, executed, time.Second, "once task did not execute")
+	waitFor(t, time.Second, func() bool { return scheduler.Monitor().Total == 0 })
+	stopScheduler(t, scheduler)
+}
+
+func testSchedulerPanic(t *testing.T, newScheduler schedulerConstructor) {
+	scheduler := newScheduler(t)
+	panicked := make(chan struct{})
+	continued := make(chan struct{})
+	if _, err := scheduler.Once(0, func() {
+		close(panicked)
+		panic("boom")
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := scheduler.Once(5*time.Millisecond, func() { close(continued) }); err != nil {
+		t.Fatal(err)
+	}
+	startScheduler(t, scheduler)
+	waitClosed(t, panicked, time.Second, "panicking callback did not run")
+	waitClosed(t, continued, time.Second, "scheduler stopped after callback panic")
+	stopScheduler(t, scheduler)
+}
+
+func testSchedulerPeriodicPanic(t *testing.T, newScheduler schedulerConstructor) {
+	scheduler := newScheduler(t)
+	var calls atomic.Int32
+	continued := make(chan struct{})
+	id, err := scheduler.ForeverNow(5*time.Millisecond, func() {
+		switch calls.Add(1) {
+		case 1:
+			panic("periodic boom")
+		case 2:
+			close(continued)
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	startScheduler(t, scheduler)
+	waitClosed(t, continued, time.Second, "periodic task stopped after callback panic")
+	if !scheduler.Cancel(id) {
+		t.Fatal("Cancel rejected periodic task after panic recovery")
+	}
+	stopScheduler(t, scheduler)
+}
+
+func testSchedulerCancel(t *testing.T, newScheduler schedulerConstructor) {
+	scheduler := newScheduler(t)
+	var executed atomic.Bool
+	id, err := scheduler.Once(20*time.Millisecond, func() { executed.Store(true) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !scheduler.Cancel(id) || scheduler.Cancel(id) {
+		t.Fatal("Cancel result is inconsistent")
+	}
+	startScheduler(t, scheduler)
+	time.Sleep(40 * time.Millisecond)
+	if executed.Load() {
+		t.Fatal("canceled task executed")
+	}
+	stopScheduler(t, scheduler)
+}
+
+func testSchedulerCancelAll(t *testing.T, newScheduler schedulerConstructor) {
+	scheduler := newScheduler(t)
+	firstID, err := scheduler.Once(time.Hour, func() {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondID, err := scheduler.Forever(time.Hour, func() {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstID == secondID || scheduler.Monitor().Total != 2 {
+		t.Fatalf("task IDs = (%d, %d), monitor = %+v", firstID, secondID, scheduler.Monitor())
+	}
+	scheduler.CancelAll()
+	if scheduler.Monitor().Total != 0 || scheduler.Cancel(firstID) || scheduler.Cancel(secondID) {
+		t.Fatalf("tasks remain after CancelAll: monitor = %+v", scheduler.Monitor())
+	}
+	startScheduler(t, scheduler)
+	stopScheduler(t, scheduler)
+}
+
+func testSchedulerForeverModes(t *testing.T, newScheduler schedulerConstructor) {
+	scheduler := newScheduler(t)
+	immediate := make(chan struct{})
+	delayed := make(chan struct{})
+	immediateID, err := scheduler.ForeverNow(time.Hour, func() { close(immediate) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	delayedID, err := scheduler.Forever(40*time.Millisecond, func() { close(delayed) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	startScheduler(t, scheduler)
+	waitClosed(t, immediate, time.Second, "ForeverNow did not execute immediately")
+	select {
+	case <-delayed:
+		t.Fatal("Forever executed before its first interval")
+	case <-time.After(10 * time.Millisecond):
+	}
+	waitClosed(t, delayed, time.Second, "Forever did not execute after its first interval")
+	if !scheduler.Cancel(immediateID) || !scheduler.Cancel(delayedID) {
+		t.Fatal("Cancel rejected active periodic task")
+	}
+	stopScheduler(t, scheduler)
+}
+
+func testSchedulerPeriodic(t *testing.T, newScheduler schedulerConstructor) {
+	scheduler := newScheduler(t)
+	var active, maximum, count atomic.Int32
+	twice := make(chan struct{})
+	_, err := scheduler.ForeverNow(time.Millisecond, func() {
+		current := active.Add(1)
+		for {
+			old := maximum.Load()
+			if current <= old || maximum.CompareAndSwap(old, current) {
+				break
+			}
+		}
+		time.Sleep(5 * time.Millisecond)
+		active.Add(-1)
+		if count.Add(1) == 2 {
+			close(twice)
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	startScheduler(t, scheduler)
+	waitClosed(t, twice, time.Second, "periodic task did not repeat")
+	scheduler.CancelAll()
+	stopScheduler(t, scheduler)
+	if maximum.Load() != 1 {
+		t.Fatalf("maximum concurrent callbacks = %d", maximum.Load())
+	}
+}
+
+func testSchedulerStop(t *testing.T, newScheduler schedulerConstructor) {
+	scheduler := newScheduler(t)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	_, err := scheduler.Once(0, func() {
+		close(started)
+		<-release
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	startScheduler(t, scheduler)
+	waitClosed(t, started, time.Second, "blocking task did not start")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Millisecond)
+	err = scheduler.Stop(ctx)
+	cancel()
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Stop error = %v", err)
+	}
+	close(release)
+	stopScheduler(t, scheduler)
+}
+
+func testSchedulerValidation(t *testing.T, newScheduler schedulerConstructor) {
+	scheduler := newScheduler(t)
+	if _, err := scheduler.Once(-time.Second, func() {}); err == nil {
+		t.Fatal("Once accepted negative delay")
+	}
+	if _, err := scheduler.Once(0, nil); err == nil {
+		t.Fatal("Once accepted nil callback")
+	}
+	if _, err := scheduler.Forever(0, func() {}); err == nil {
+		t.Fatal("Forever accepted zero interval")
+	}
+	stopScheduler(t, scheduler)
+	canceledCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := scheduler.Stop(canceledCtx); err != nil {
+		t.Fatalf("Stop completed scheduler with canceled context error = %v", err)
+	}
+	if _, err := scheduler.Once(time.Second, func() {}); !errors.Is(err, timer.ErrStopped) {
+		t.Fatalf("Once after Stop error = %v", err)
+	}
+	if err := scheduler.Start(context.Background()); !errors.Is(err, timer.ErrStopped) {
+		t.Fatalf("Start after Stop error = %v", err)
 	}
 }
 

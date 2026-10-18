@@ -108,17 +108,6 @@ func (b *broadcaster) start() error {
 	return nil
 }
 
-func (b *broadcaster) finishRun(running *broadcastRun) {
-	running.cancel()
-	running.wg.Wait()
-	b.mu.Lock()
-	if b.active == running {
-		b.active = nil
-	}
-	close(running.done)
-	b.mu.Unlock()
-}
-
 func (b *broadcaster) stop(ctx context.Context) error {
 	b.mu.Lock()
 	running := b.active
@@ -145,6 +134,25 @@ func (b *broadcaster) enqueue(message *v1.Proto) error {
 	default:
 		b.recordDrop(&b.queueDropped, "queue_full")
 		return ErrBroadcastQueueFull
+	}
+}
+
+func (b *broadcaster) stats() BroadcastStats {
+	b.mu.RLock()
+	queueDepth := 0
+	if b.active != nil {
+		queueDepth = len(b.active.pushes)
+	}
+	b.mu.RUnlock()
+	return BroadcastStats{
+		QueueDepth:         queueDepth,
+		QueueCapacity:      b.queueCapacity,
+		Accepted:           b.accepted.Load(),
+		Completed:          b.completed.Load(),
+		QueueDropped:       b.queueDropped.Load(),
+		SendDropped:        b.sendDropped.Load(),
+		LastFanoutDuration: time.Duration(b.lastFanout.Load()),
+		MaxFanoutDuration:  time.Duration(b.maxFanout.Load()),
 	}
 }
 
@@ -179,7 +187,8 @@ func (b *broadcaster) fanout(running *broadcastRun, message *v1.Proto) bool {
 		end := min(offset+batchSize, len(sessions))
 		select {
 		case running.batches <- fanoutBatch{
-			message: &running.prepared, sessions: sessions[offset:end],
+			message:  &running.prepared,
+			sessions: sessions[offset:end],
 		}:
 			started++
 		case <-running.ctx.Done():
@@ -230,30 +239,15 @@ func (b *broadcaster) sendBatch(ctx context.Context, batch fanoutBatch) {
 	}
 }
 
-func (b *broadcaster) recordDrop(counter *atomic.Uint64, reason string) {
-	dropped := counter.Add(1)
-	if dropped&(dropped-1) == 0 {
-		slog.Warn("gateway broadcast dropped", "reason", reason, "dropped", dropped)
+func (b *broadcaster) finishRun(running *broadcastRun) {
+	running.cancel()
+	running.wg.Wait()
+	b.mu.Lock()
+	if b.active == running {
+		b.active = nil
 	}
-}
-
-func (b *broadcaster) stats() BroadcastStats {
-	b.mu.RLock()
-	queueDepth := 0
-	if b.active != nil {
-		queueDepth = len(b.active.pushes)
-	}
-	b.mu.RUnlock()
-	return BroadcastStats{
-		QueueDepth:         queueDepth,
-		QueueCapacity:      b.queueCapacity,
-		Accepted:           b.accepted.Load(),
-		Completed:          b.completed.Load(),
-		QueueDropped:       b.queueDropped.Load(),
-		SendDropped:        b.sendDropped.Load(),
-		LastFanoutDuration: time.Duration(b.lastFanout.Load()),
-		MaxFanoutDuration:  time.Duration(b.maxFanout.Load()),
-	}
+	close(running.done)
+	b.mu.Unlock()
 }
 
 func (b *broadcaster) recordCompleted(duration time.Duration) {
@@ -263,4 +257,11 @@ func (b *broadcaster) recordCompleted(duration time.Duration) {
 		b.maxFanout.Store(nanoseconds)
 	}
 	b.completed.Add(1)
+}
+
+func (b *broadcaster) recordDrop(counter *atomic.Uint64, reason string) {
+	dropped := counter.Add(1)
+	if dropped&(dropped-1) == 0 {
+		slog.Warn("gateway broadcast dropped", "reason", reason, "dropped", dropped)
+	}
 }

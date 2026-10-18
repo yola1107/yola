@@ -94,14 +94,15 @@ func (t *Table) broadcastUserInfo(p *player.Player) error {
 	var disconnectedPlayers []*player.Player
 	var targetErr error
 	for chair, seatedPlayer := range t.seats {
-		if seatedPlayer != nil && chair != int(p.GetChairID()) {
-			if err := t.sendUserInfo(p, seatedPlayer); errors.Is(err, ErrPlayerDisconnected) {
-				disconnectedPlayers = append(disconnectedPlayers, seatedPlayer)
-			}
-			if err := t.sendUserInfo(seatedPlayer, p); err != nil {
-				targetErr = err
-				break
-			}
+		if seatedPlayer == nil || chair == int(p.GetChairID()) {
+			continue
+		}
+		if err := t.sendUserInfo(p, seatedPlayer); errors.Is(err, ErrPlayerDisconnected) {
+			disconnectedPlayers = append(disconnectedPlayers, seatedPlayer)
+		}
+		if err := t.sendUserInfo(seatedPlayer, p); err != nil {
+			targetErr = err
+			break
 		}
 	}
 	if targetErr != nil {
@@ -123,22 +124,6 @@ func (t *Table) sendUserInfo(src *player.Player, dst *player.Player) error {
 		Status:    int32(src.GetStatus()),
 		Ip:        src.GetIP(),
 	})
-}
-
-func (t *Table) BroadcastReadyPush(p *player.Player, rsp *v1.ReadyRsp) {
-	t.sendToAllExcept(v1.GameCommand_CmdReadyPush, rsp, p.GetPlayerID())
-}
-
-func (t *Table) BroadcastChatPush(p *player.Player, rsp *v1.ChatRsp) {
-	t.sendToAllExcept(v1.GameCommand_CmdChatPush, rsp, p.GetPlayerID())
-}
-
-func (t *Table) BroadcastHostingPush(p *player.Player, rsp *v1.HostingRsp) {
-	t.sendToAllExcept(v1.GameCommand_CmdHostingPush, rsp, p.GetPlayerID())
-}
-
-func (t *Table) BroadcastForwardPush(p *player.Player, rsp *v1.ForwardRsp) {
-	t.sendToAllExcept(v1.GameCommand_CmdForwardPush, rsp, p.GetPlayerID())
 }
 
 // 广播玩家断线信息
@@ -192,19 +177,6 @@ func (t *Table) boardPieces() []*v1.Piece {
 		})
 	}
 	return pieces
-}
-
-func (t *Table) Scene() *v1.SceneRsp {
-	return &v1.SceneRsp{
-		BaseScore:   t.rc.Game.BaseMoney,
-		Stage:       int32(t.stage.State()),
-		Timeout:     int64(t.stage.Remaining().Seconds()),
-		Active:      t.activeChair,
-		FirstChair:  t.firstChair,
-		BoardConfig: t.getBoardConfig(),
-		Players:     t.getPlayersScene(),
-		Pieces:      t.boardPieces(),
-	}
 }
 
 func (t *Table) sendScene(p *player.Player) error {
@@ -348,14 +320,6 @@ func (t *Table) diceResponse(p *player.Player, dice int32) *v1.DiceRsp {
 	}
 }
 
-func (t *Table) BroadcastDicePush(requester *player.Player, rsp *v1.DiceRsp) {
-	if requester == nil {
-		t.sendToAll(v1.GameCommand_CmdDicePush, rsp)
-		return
-	}
-	t.sendToAllExcept(v1.GameCommand_CmdDicePush, rsp, requester.GetPlayerID())
-}
-
 func (t *Table) moveResponse(p *player.Player, dice int32, step *model.Step) *v1.MoveRsp {
 	move := &v1.DiceMove{}
 	killed := []*v1.DiceMove(nil)
@@ -384,6 +348,43 @@ func (t *Table) moveResponse(p *player.Player, dice int32, step *model.Step) *v1
 		Killed:    killed,
 		Pieces:    t.boardPieces(),
 	}
+}
+
+func (t *Table) BroadcastReadyPush(p *player.Player, rsp *v1.ReadyRsp) {
+	t.sendToAllExcept(v1.GameCommand_CmdReadyPush, rsp, p.GetPlayerID())
+}
+
+func (t *Table) BroadcastChatPush(p *player.Player, rsp *v1.ChatRsp) {
+	t.sendToAllExcept(v1.GameCommand_CmdChatPush, rsp, p.GetPlayerID())
+}
+
+func (t *Table) BroadcastHostingPush(p *player.Player, rsp *v1.HostingRsp) {
+	t.sendToAllExcept(v1.GameCommand_CmdHostingPush, rsp, p.GetPlayerID())
+}
+
+func (t *Table) BroadcastForwardPush(p *player.Player, rsp *v1.ForwardRsp) {
+	t.sendToAllExcept(v1.GameCommand_CmdForwardPush, rsp, p.GetPlayerID())
+}
+
+func (t *Table) Scene() *v1.SceneRsp {
+	return &v1.SceneRsp{
+		BaseScore:   t.rc.Game.BaseMoney,
+		Stage:       int32(t.stage.State()),
+		Timeout:     int64(t.stage.Remaining().Seconds()),
+		Active:      t.activeChair,
+		FirstChair:  t.firstChair,
+		BoardConfig: t.getBoardConfig(),
+		Players:     t.getPlayersScene(),
+		Pieces:      t.boardPieces(),
+	}
+}
+
+func (t *Table) BroadcastDicePush(requester *player.Player, rsp *v1.DiceRsp) {
+	if requester == nil {
+		t.sendToAll(v1.GameCommand_CmdDicePush, rsp)
+		return
+	}
+	t.sendToAllExcept(v1.GameCommand_CmdDicePush, rsp, requester.GetPlayerID())
 }
 
 func (t *Table) BroadcastMovePush(requester *player.Player, rsp *v1.MoveRsp) {

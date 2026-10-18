@@ -15,6 +15,48 @@ import (
 	"google.golang.org/grpc"
 )
 
+func TestNodeDirectorySeparatesApplicationAndEnvironment(t *testing.T) {
+	address := os.Getenv("YOLA_ETCD_INTEGRATION")
+	if address == "" {
+		t.Skip("set YOLA_ETCD_INTEGRATION to a disposable etcd instance")
+	}
+	prefix := "/yola/directory-test/" + uuid.NewString()
+	app, err := New(WithEndpoints(address), WithPrefix(prefix))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, app.Close()) })
+	node, err := NewNodeRegistry(WithEndpoints(address), WithPrefix(prefix))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, node.Close()) })
+	other, err := NewNodeRegistry(WithEndpoints(address), WithPrefix(prefix+"-other"))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, other.Close()) })
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	appRecord := &registry.ServiceInstance{ID: "same-instance", Name: "game", Endpoints: []string{"http://127.0.0.1:8080"}}
+	nodeRecord := &registry.ServiceInstance{ID: appRecord.ID, Name: appRecord.Name, Endpoints: []string{"grpc://127.0.0.1:9000"}}
+	for _, entry := range []struct {
+		provider *Registry
+		record   *registry.ServiceInstance
+	}{{app, appRecord}, {node, nodeRecord}} {
+		require.NoError(t, entry.provider.Register(ctx, entry.record))
+		t.Cleanup(func() {
+			cleanup, done := context.WithTimeout(context.Background(), 3*time.Second)
+			defer done()
+			require.NoError(t, entry.provider.Deregister(cleanup, entry.record))
+		})
+		found, lookupErr := entry.provider.GetService(ctx, entry.record.Name)
+		require.NoError(t, lookupErr)
+		require.Equal(t, []*registry.ServiceInstance{entry.record}, found)
+	}
+	found, err := other.GetService(ctx, appRecord.Name)
+	require.NoError(t, err)
+	require.Empty(t, found)
+	require.NoError(t, node.Deregister(ctx, nodeRecord))
+	found, err = app.GetService(ctx, appRecord.Name)
+	require.NoError(t, err)
+	require.Equal(t, []*registry.ServiceInstance{appRecord}, found)
+}
+
 func TestRegistryCloseStopsKeepAlive(t *testing.T) {
 	address := os.Getenv("YOLA_ETCD_INTEGRATION")
 	if address == "" {
@@ -40,8 +82,18 @@ func TestRegistryCloseStopsKeepAlive(t *testing.T) {
 	t.Cleanup(cancelRegister)
 	require.NoError(t, provider.Register(registerCtx, instance))
 	cancelRegister()
+	select {
+	case <-provider.session.Done():
+		t.Fatal("register context cancellation stopped lifetime keepalive")
+	default:
+	}
 	require.NoError(t, closeRegistry())
 	require.ErrorIs(t, provider.client.Ctx().Err(), context.Canceled)
+	select {
+	case <-provider.session.Done():
+	case <-time.After(time.Second):
+		t.Fatal("client Close left registration worker running")
+	}
 
 	// 失败回收不主动注销，注册记录由原有 etcd lease 自然过期。
 	require.Eventually(t, func() bool {
@@ -158,27 +210,6 @@ func TestRegistrationCanceledAfterCommitRollsBackOwnLease(t *testing.T) {
 	require.NoError(t, provider.Deregister(t.Context(), service))
 }
 
-func TestRegistryClientCloseStopsLeaseWorker(t *testing.T) {
-	client := integrationClient(t)
-	provider := newRegistry(client, "/yola/registry-test/"+uuid.NewString())
-	registerCtx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	service := &registry.ServiceInstance{ID: "node-a", Name: "game"}
-	require.NoError(t, provider.Register(registerCtx, service))
-	cancel()
-	select {
-	case <-provider.session.Done():
-		t.Fatal("register context cancellation stopped lifetime keepalive")
-	default:
-	}
-	require.NoError(t, client.Close())
-	select {
-	case <-provider.session.Done():
-	case <-time.After(time.Second):
-		t.Fatal("client Close left registration worker running")
-	}
-}
-
 func integrationClient(t *testing.T, opts ...grpc.DialOption) *clientv3.Client {
 	t.Helper()
 	endpoint := os.Getenv("YOLA_ETCD_INTEGRATION")
@@ -186,7 +217,9 @@ func integrationClient(t *testing.T, opts ...grpc.DialOption) *clientv3.Client {
 		t.Skip("set YOLA_ETCD_INTEGRATION to a disposable etcd instance")
 	}
 	client, err := clientv3.New(clientv3.Config{
-		Endpoints: []string{endpoint}, DialTimeout: time.Second, DialOptions: opts,
+		Endpoints:   []string{endpoint},
+		DialTimeout: time.Second,
+		DialOptions: opts,
 	})
 	require.NoError(t, err)
 	t.Cleanup(func() {

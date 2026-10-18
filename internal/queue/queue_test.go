@@ -16,21 +16,17 @@ func TestStopLetsRunningCallbackFinishAndDiscardsPending(t *testing.T) {
 	workerDone := startTestQueue(t, queue)
 	unblock := sync.OnceFunc(func() { close(release) })
 	t.Cleanup(unblock)
-	if err := queue.Submit(func() {
+	requireSubmit(t, queue, func() {
 		close(running)
 		<-release
 		close(finished)
-	}); err != nil {
-		t.Fatal(err)
-	}
-	waitSignal(t, running)
-	if err := queue.Submit(func() { pendingRan <- struct{}{} }); err != nil {
-		t.Fatal(err)
-	}
+	})
+	waitValue(t, running)
+	requireSubmit(t, queue, func() { pendingRan <- struct{}{} })
 	queue.Stop()
 	unblock()
-	waitSignal(t, finished)
-	waitSignal(t, workerDone)
+	waitValue(t, finished)
+	waitValue(t, workerDone)
 	select {
 	case <-pendingRan:
 		t.Fatal("pending callback ran after Stop")
@@ -54,7 +50,7 @@ func TestBeginTerminationRunsAfterCurrentCallbackAndDiscardsPending(t *testing.T
 		close(running)
 		<-release
 	})
-	waitSignal(t, running)
+	waitValue(t, running)
 	requireSubmit(t, queue, func() { pendingRan <- struct{}{} })
 	finish := queue.BeginTermination(func() { close(terminalRan) })
 	finish()
@@ -64,7 +60,7 @@ func TestBeginTerminationRunsAfterCurrentCallbackAndDiscardsPending(t *testing.T
 	default:
 	}
 	unblock()
-	waitSignal(t, terminalRan)
+	waitValue(t, terminalRan)
 	select {
 	case <-pendingRan:
 		t.Fatal("pending callback ran during termination")
@@ -89,7 +85,6 @@ func TestSubmitBatchIsAtomic(t *testing.T) {
 	if first, second := waitValue(t, runs), waitValue(t, runs); first != "first" || second != "second" {
 		t.Fatalf("callback order = %q, %q", first, second)
 	}
-	queue.Stop()
 }
 
 func TestTerminalCallbacksIsolatePanicsAndPreserveOrder(t *testing.T) {
@@ -134,7 +129,7 @@ func TestCallbackCanBeginTermination(t *testing.T) {
 		finish := queue.BeginTermination(func() { close(terminalRan) })
 		finish()
 	})
-	waitSignal(t, terminalRan)
+	waitValue(t, terminalRan)
 }
 
 func TestBeginTerminationWaitsForRelease(t *testing.T) {
@@ -150,7 +145,7 @@ func TestBeginTerminationWaitsForRelease(t *testing.T) {
 	default:
 	}
 	finish()
-	waitSignal(t, terminalRan)
+	waitValue(t, terminalRan)
 }
 
 func TestRunRecoversCallbackPanic(t *testing.T) {
@@ -161,17 +156,12 @@ func TestRunRecoversCallbackPanic(t *testing.T) {
 	})
 	startTestQueue(t, queue)
 
-	if err := queue.Submit(func() { panic("boom") }); err != nil {
-		t.Fatal(err)
-	}
-	if err := queue.Submit(func() { close(nextCallbackDone) }); err != nil {
-		t.Fatal(err)
-	}
+	requireSubmit(t, queue, func() { panic("boom") })
+	requireSubmit(t, queue, func() { close(nextCallbackDone) })
 	if value := waitValue(t, panicValue); value != "boom" {
 		t.Fatalf("panic value = %v, want boom", value)
 	}
-	waitSignal(t, nextCallbackDone)
-	queue.Stop()
+	waitValue(t, nextCallbackDone)
 }
 
 func TestSubmitRejectsNilCallback(t *testing.T) {
@@ -190,14 +180,14 @@ func TestSubmitRejectsNilCallback(t *testing.T) {
 	}
 
 	workerDone := startTestQueue(t, queue)
-	waitSignal(t, callbackDone)
+	waitValue(t, callbackDone)
 	select {
 	case value := <-panicked:
 		t.Fatalf("PanicHandler value = %v, want no call for nil callback", value)
 	default:
 	}
 	queue.Stop()
-	waitSignal(t, workerDone)
+	waitValue(t, workerDone)
 	if err := queue.Submit(nil); !errors.Is(err, ErrNilCallback) {
 		t.Fatalf("Submit(nil) after Stop error = %v, want %v", err, ErrNilCallback)
 	}
@@ -207,7 +197,7 @@ func TestStopWakesIdleRun(t *testing.T) {
 	queue := New(64, nil)
 	workerDone := startTestQueue(t, queue)
 	queue.Stop()
-	waitSignal(t, workerDone)
+	waitValue(t, workerDone)
 }
 
 func TestNewRejectsInvalidCapacity(t *testing.T) {
@@ -224,18 +214,13 @@ func startTestQueue(t *testing.T, queue *Queue) <-chan struct{} {
 	done := make(chan struct{})
 	t.Cleanup(func() {
 		queue.Stop()
-		waitSignal(t, done)
+		waitValue(t, done)
 	})
 	go func() {
 		defer close(done)
 		queue.Run()
 	}()
 	return done
-}
-
-func waitSignal(t *testing.T, signal <-chan struct{}) {
-	t.Helper()
-	waitValue(t, signal)
 }
 
 func requireSubmit(t *testing.T, queue *Queue, callback func()) {

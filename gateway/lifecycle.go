@@ -9,7 +9,6 @@ import (
 	"os"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"yola/api/protocol/v1"
 	"yola/internal/contextwait"
@@ -21,14 +20,182 @@ import (
 
 const _shutdownWorkerCount = 64
 
-// Endpoint 返回通过 Kratos registry 发布的内部 gRPC endpoint。
-func (s *Server) Endpoint() (*url.URL, error) {
-	s.lifecycle.mu.Lock()
-	defer s.lifecycle.mu.Unlock()
-	if s.lifecycle.state == _stStopping {
-		return nil, errors.New("gateway: server is stopping or stopped")
+type lifecycleState uint8
+
+const (
+	_stNew lifecycleState = iota
+	_stStarting
+	_stStarted
+	_stStopping
+	_stStopped
+)
+
+// lifecycle 协调进程启动和停止，不参与单连接热路径。
+type lifecycle struct {
+	mu            sync.Mutex
+	state         lifecycleState
+	startupDone   chan struct{}
+	startupCancel context.CancelFunc
+	prepared      int
+	serving       bool
+	workers       sync.WaitGroup
+	shutdownOnce  sync.Once
+	shutdownDone  chan struct{}
+	shutdownErr   error
+}
+
+// Start 准备全部依赖，内部 RPC 接收请求后才开放客户端准入。
+func (s *Server) Start(ctx context.Context) (err error) {
+	if ctx == nil {
+		ctx = context.Background()
 	}
-	return s.resolveGRPCEndpoint(context.Background())
+	s.lifecycle.mu.Lock()
+	switch s.lifecycle.state {
+	case _stStopping, _stStopped:
+		s.lifecycle.mu.Unlock()
+		return errors.New("gateway: server is stopping or stopped")
+	case _stStarting, _stStarted:
+		s.lifecycle.mu.Unlock()
+		return errors.New("gateway: server is already starting or started")
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+	startupDone := make(chan struct{})
+	s.lifecycle.state = _stStarting
+	s.lifecycle.startupDone = startupDone
+	s.lifecycle.startupCancel = cancel
+	s.lifecycle.mu.Unlock()
+	handoff := sync.OnceFunc(func() { close(startupDone) })
+	defer func() {
+		handoff()
+		s.beginShutdown()
+		<-s.lifecycle.shutdownDone
+		err = errors.Join(err, s.lifecycle.shutdownErr)
+	}()
+
+	if err := s.prepare(runCtx); err != nil {
+		return err
+	}
+	grpcResult := make(chan error, 1)
+	s.lifecycle.workers.Go(func() {
+		err := s.grpcServer.Start(runCtx)
+		if errors.Is(err, grpc.ErrServerStopped) {
+			err = nil
+		} else if err != nil {
+			err = fmt.Errorf("gateway: start gRPC transport: %w", err)
+		}
+		grpcResult <- err
+	})
+	select {
+	case <-s.grpcListener.Accepting():
+	case err := <-grpcResult:
+		if err == nil {
+			err = errors.New("gateway: gRPC transport stopped before accepting")
+		}
+		return err
+	case <-runCtx.Done():
+		return runCtx.Err()
+	}
+	s.lifecycle.mu.Lock()
+	if s.lifecycle.state != _stStarting || runCtx.Err() != nil {
+		s.lifecycle.mu.Unlock()
+		return errors.New("gateway: server is stopping or stopped")
+	}
+	s.lifecycle.state = _stStarted
+	s.lifecycle.serving = true
+	s.sessions.openAdmission()
+	clientResults := make(chan error, len(s.transports))
+	for index, clientTransport := range s.transports {
+		s.lifecycle.workers.Go(func() {
+			err := clientTransport.Start(runCtx)
+			if err != nil {
+				err = fmt.Errorf("gateway: start client transport %d (%T): %w", index, clientTransport, err)
+			}
+			clientResults <- err
+		})
+	}
+	s.lifecycle.mu.Unlock()
+	handoff()
+
+	for {
+		select {
+		case err := <-grpcResult:
+			return err
+		case err := <-clientResults:
+			if err != nil {
+				return err
+			}
+		case <-runCtx.Done():
+			return nil
+		}
+	}
+}
+
+// Stop 只限制本次等待；后台清理始终由同一所有者完成。
+func (s *Server) Stop(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	s.beginShutdown()
+	if err := contextwait.Done(ctx, s.lifecycle.shutdownDone); err != nil {
+		return err
+	}
+	return s.lifecycle.shutdownErr
+}
+
+func (s *Server) prepare(ctx context.Context) error {
+	app, ok := kratos.FromContext(ctx)
+	if err := validateApplication(app, ok); err != nil {
+		return err
+	}
+	// App endpoints 汇集所有 transport；GateBinding 只使用本 Gateway 的内部地址。
+	endpoint, err := s.resolveGRPCEndpoint(ctx)
+	if err != nil {
+		return err
+	}
+	if endpoint == nil || endpoint.Host == "" ||
+		(endpoint.Scheme != "grpc" && endpoint.Scheme != "grpcs") {
+		return errors.New("gateway: valid gRPC application endpoint is required")
+	}
+	pingCtx, cancel := context.WithTimeout(ctx, s.connectTimeout)
+	err = s.locator.Ping(pingCtx)
+	cancel()
+	if err != nil {
+		return err
+	}
+	if err := s.broadcaster.start(); err != nil {
+		return err
+	}
+	for index, clientTransport := range s.transports {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		err := clientTransport.BeforeStart(ctx)
+		s.lifecycle.mu.Lock()
+		s.lifecycle.prepared = index + 1
+		s.lifecycle.mu.Unlock()
+		if err != nil {
+			return fmt.Errorf("gateway: prepare client transport %d (%T): %w", index, clientTransport, err)
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.identity = identity{id: app.ID(), endpoint: endpoint.String()}
+	slog.InfoContext(ctx, "gateway prepared",
+		"service", app.Name(),
+		"version", app.Version(),
+		"gate_id", app.ID(),
+		"pid", os.Getpid(),
+		"endpoint", endpoint.String(),
+		"rpc_timeout", s.rpcTimeout.String(),
+		"connect_timeout", s.connectTimeout.String(),
+		"lease_timeout", s.leaseTimeout.String(),
+		"cleanup_timeout", s.cleanupTimeout.String(),
+		"shutdown_timeout", s.shutdownTimeout.String(),
+		"auth_timeout", s.authTimeout.String(),
+		"lease_ttl", s.leaseTTL.String(),
+	)
+	return nil
 }
 
 func (s *Server) resolveGRPCEndpoint(ctx context.Context) (*url.URL, error) {
@@ -52,165 +219,6 @@ func (s *Server) closeGRPCListener() error {
 	return nil
 }
 
-// BeforeStart 校验 Kratos identity，并在注册前准备外部资源。
-func (s *Server) BeforeStart(ctx context.Context) (err error) {
-	s.lifecycle.mu.Lock()
-	switch s.lifecycle.state {
-	case _stStopping:
-		s.lifecycle.mu.Unlock()
-		return errors.New("gateway: server is stopping or stopped")
-	case _stPreparing:
-		s.lifecycle.mu.Unlock()
-		return errors.New("gateway: server is already preparing or prepared")
-	case _stPrepared, _stStarted:
-		s.lifecycle.state = _stStopping
-		s.lifecycle.mu.Unlock()
-		return errors.New("gateway: server is already preparing or prepared")
-	}
-	preparationDone := make(chan struct{})
-	s.lifecycle.state = _stPreparing
-	s.lifecycle.preparationDone = preparationDone
-	s.lifecycle.mu.Unlock()
-	committed := false
-	transportAttempts := 0
-	defer func() {
-		if !committed {
-			err = s.rollbackPreparation(err, transportAttempts)
-		}
-		close(preparationDone)
-	}()
-	app, ok := kratos.FromContext(ctx)
-	if validationErr := validateApplication(app, ok); validationErr != nil {
-		return validationErr
-	}
-
-	// App endpoints 汇集了所有 transport；GateBinding 必须指向本 Gateway 的 gRPC 服务。
-	resolved, err := s.resolveGRPCEndpoint(ctx)
-	if err != nil {
-		return err
-	}
-	if resolved == nil || resolved.Host == "" ||
-		(resolved.Scheme != "grpc" && resolved.Scheme != "grpcs") {
-		return errors.New("gateway: valid gRPC application endpoint is required")
-	}
-	endpoint := resolved.String()
-	pingCtx, stopPing := context.WithTimeout(ctx, s.connectTimeout)
-	err = s.locator.Ping(pingCtx)
-	stopPing()
-	if err != nil {
-		return err
-	}
-	preparedIdentity := identity{id: app.ID(), endpoint: endpoint}
-	if err = s.broadcaster.start(); err != nil {
-		return err
-	}
-	for index, clientTransport := range s.transports {
-		transportAttempts = index + 1
-		if err := clientTransport.BeforeStart(ctx); err != nil {
-			return fmt.Errorf("gateway: prepare client transport %d (%T): %w", index, clientTransport, err)
-		}
-	}
-	s.lifecycle.mu.Lock()
-	if s.lifecycle.state != _stPreparing {
-		s.lifecycle.mu.Unlock()
-		return errors.New("gateway: server is stopping or stopped")
-	}
-	s.identity = preparedIdentity
-	s.lifecycle.state = _stPrepared
-	committed = true
-	s.lifecycle.mu.Unlock()
-	slog.InfoContext(ctx, "gateway prepared",
-		"service", app.Name(),
-		"version", app.Version(),
-		"gate_id", app.ID(),
-		"pid", os.Getpid(),
-		"endpoint", endpoint,
-		"rpc_timeout", s.rpcTimeout.String(),
-		"connect_timeout", s.connectTimeout.String(),
-		"lease_timeout", s.leaseTimeout.String(),
-		"cleanup_timeout", s.cleanupTimeout.String(),
-		"auth_timeout", s.authTimeout.String(),
-		"lease_ttl", s.leaseTTL.String(),
-	)
-	return nil
-}
-
-func (s *Server) rollbackPreparation(cause error, transportAttempts int) error {
-	stop := func(stopResource func(context.Context) error) error {
-		ctx, cancel := context.WithTimeout(context.Background(), s.cleanupTimeout)
-		defer cancel()
-		return stopResource(ctx)
-	}
-	for index := transportAttempts - 1; index >= 0; index-- {
-		if err := stop(s.transports[index].Stop); err != nil {
-			cause = errors.Join(cause, fmt.Errorf(
-				"gateway: roll back client transport %d (%T): %w",
-				index,
-				s.transports[index],
-				err,
-			))
-		}
-	}
-	cause = errors.Join(cause, stop(s.broadcaster.stop))
-	cause = errors.Join(cause, s.closeGRPCListener())
-	s.lifecycle.mu.Lock()
-	s.lifecycle.state = _stStopping
-	s.identity = identity{}
-	s.lifecycle.mu.Unlock()
-	return cause
-}
-
-func (s *Server) quiesce(ctx context.Context) error {
-	s.lifecycle.mu.Lock()
-	firstStop := s.lifecycle.state != _stStopping
-	s.lifecycle.state = _stStopping
-	s.lifecycle.mu.Unlock()
-
-	s.admission.mu.Lock()
-	s.admission.accepting.Store(false)
-	s.admission.mu.Unlock()
-	if firstStop {
-		slog.InfoContext(ctx, "gateway stopping")
-	}
-	if err := waitGroupContext(ctx, &s.admission.wg); err != nil {
-		go func() {
-			s.admission.wg.Wait()
-			_ = s.gateways.Close()
-		}()
-		return err
-	}
-	_ = s.gateways.Close()
-	return nil
-}
-
-func (s *Server) waitForPreparation(ctx context.Context) error {
-	s.lifecycle.mu.Lock()
-	preparationDone := s.lifecycle.preparationDone
-	stoppingPreparation := s.lifecycle.state == _stPreparing
-	if stoppingPreparation {
-		s.lifecycle.state = _stStopping
-	}
-	s.lifecycle.mu.Unlock()
-	if preparationDone == nil {
-		return nil
-	}
-	if stoppingPreparation {
-		slog.InfoContext(ctx, "gateway stopping")
-	}
-	return contextwait.Done(ctx, preparationDone)
-}
-
-func (s *Server) admitAuthentication(ctx context.Context, sess *session) bool {
-	s.admission.mu.Lock()
-	defer s.admission.mu.Unlock()
-	if !s.admission.accepting.Load() || !sess.canAuthenticate(ctx, time.Now()) ||
-		!s.sessions.current(sess) {
-		return false
-	}
-	s.admission.wg.Add(1)
-	return true
-}
-
 func validateApplication(app kratos.AppInfo, ok bool) error {
 	switch {
 	case !ok:
@@ -224,106 +232,139 @@ func validateApplication(app kratos.AppInfo, ok bool) error {
 	}
 }
 
-// Start 启动运行期工作，使用 BeforeStart 准备的资源提供服务。
-func (s *Server) Start(ctx context.Context) error {
+func (s *Server) beginShutdown() {
 	s.lifecycle.mu.Lock()
-	switch s.lifecycle.state {
-	case _stStopping:
-		s.lifecycle.mu.Unlock()
-		return errors.New("gateway: server is stopping or stopped")
-	case _stStarted:
-		s.lifecycle.mu.Unlock()
-		return errors.New("gateway: server is already started")
-	case _stPrepared:
-	default:
-		s.lifecycle.mu.Unlock()
-		return errors.New("gateway: server is not prepared")
+	if s.lifecycle.state != _stStopped {
+		s.lifecycle.state = _stStopping
 	}
-	s.lifecycle.state = _stStarted
-	s.admission.accepting.Store(true)
-	s.lifecycle.mu.Unlock()
-
-	serverCount := len(s.transports) + 1
-	results := make(chan error, serverCount)
-	for index, clientTransport := range s.transports {
+	if s.lifecycle.startupCancel != nil {
+		s.lifecycle.startupCancel()
+	}
+	s.sessions.closeAdmission()
+	s.lifecycle.shutdownOnce.Do(func() {
+		startupDone := s.lifecycle.startupDone
 		go func() {
-			err := clientTransport.Start(ctx)
-			if err != nil {
-				err = fmt.Errorf("gateway: start client transport %d (%T): %w", index, clientTransport, err)
+			slog.Info("gateway stopping")
+			ctx, cancel := context.WithTimeout(context.Background(), s.shutdownTimeout)
+			defer cancel()
+			var preparationErr error
+			var lateStops []<-chan error
+			var stoppedTransports int
+			// 初始化超时先关闭已交接的资源；当前准备中的 transport 仍归创建者。
+			if startupDone != nil {
+				select {
+				case <-startupDone:
+				case <-ctx.Done():
+					s.lifecycle.mu.Lock()
+					stoppedTransports = s.lifecycle.prepared
+					s.lifecycle.mu.Unlock()
+					preparationErr = errors.Join(s.closeGRPCListener(), s.broadcaster.stop(ctx))
+					pending, stopErr := s.stopClientTransports(ctx, 0, stoppedTransports, true)
+					preparationErr = errors.Join(preparationErr, stopErr)
+					lateStops = pending
+					<-startupDone
+				}
 			}
-			results <- err
+			err := errors.Join(preparationErr, s.shutdown(ctx, stoppedTransports))
+			for _, result := range lateStops {
+				err = errors.Join(err, <-result)
+			}
+			s.lifecycle.mu.Lock()
+			s.lifecycle.shutdownErr = err
+			s.lifecycle.state = _stStopped
+			s.lifecycle.mu.Unlock()
+			close(s.lifecycle.shutdownDone)
 		}()
-	}
-	go func() {
-		err := s.grpcServer.Start(ctx)
-		if errors.Is(err, grpc.ErrServerStopped) {
-			err = nil
-		} else if err != nil {
-			err = fmt.Errorf("gateway: start gRPC transport: %w", err)
-		}
-		results <- err
-	}()
-
-	for range serverCount {
-		if err := <-results; err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (s *Server) Stop(ctx context.Context) error {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	s.lifecycle.stopOnce.Do(func() {
-		s.lifecycle.stopErr = s.shutdown(ctx)
 	})
-	return s.lifecycle.stopErr
+	s.lifecycle.mu.Unlock()
 }
 
-func (s *Server) shutdown(ctx context.Context) error {
-	if err := s.waitForPreparation(ctx); err != nil {
-		return err
-	}
+func (s *Server) shutdown(ctx context.Context, stoppedTransports int) error {
 	quiesceErr := s.quiesce(ctx)
 	broadcastErr := s.broadcaster.stop(ctx)
-	var drainErr error
-	if ctx.Err() == nil && stopCompleted(broadcastErr) {
-		drainErr = s.drainSessions(ctx)
-	}
-	var transportErr error
-	for index, clientTransport := range s.transports {
-		if err := clientTransport.Stop(ctx); err != nil {
-			transportErr = errors.Join(transportErr, fmt.Errorf(
-				"gateway: stop client transport %d (%T): %w",
-				index,
-				clientTransport,
-				err,
-			))
+	sessions := s.sessions.takeAll()
+	drainDone := s.startSessionDrain(ctx, sessions)
+	drainErr := contextwait.Done(ctx, drainDone)
+	if drainErr != nil {
+		// 排空锁仍由原路径释放；先关闭物理连接，避免超时阻止其余资源回收。
+		for _, sess := range sessions {
+			_ = sess.conn.Close()
 		}
 	}
-	if err := s.grpcServer.Stop(ctx); err != nil {
+	lateStops, transportErr := s.stopClientTransports(ctx, stoppedTransports, len(s.transports), !s.lifecycle.serving)
+	grpcCtx := ctx
+	cancel := func() {}
+	if !s.lifecycle.serving {
+		grpcCtx, cancel = context.WithTimeout(context.WithoutCancel(ctx), s.cleanupTimeout)
+	}
+	if err := s.grpcServer.Stop(grpcCtx); err != nil {
 		transportErr = errors.Join(transportErr, fmt.Errorf("gateway: stop gRPC transport: %w", err))
 	}
+	cancel()
 	transportErr = errors.Join(transportErr, s.closeGRPCListener())
 	s.backends.close()
-	return errors.Join(quiesceErr, broadcastErr, drainErr, transportErr)
-}
-
-func stopCompleted(err error) bool {
-	// Stop 返回 context 错误时，其后台工作可能仍未结束。
-	return !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded)
-}
-
-// drainSessions 先发送 OpKick 再关闭连接，让客户端获知停止原因。
-func (s *Server) drainSessions(ctx context.Context) error {
-	if ctx == nil {
-		ctx = context.Background()
+	// 网络已关闭；迟到的认证、推送与连接清理继续由本轮停机负责并汇合。
+	s.sessions.authentications.Wait()
+	_ = s.gateways.Close()
+	_ = s.broadcaster.stop(context.Background())
+	<-drainDone
+	s.lifecycle.workers.Wait()
+	for _, result := range lateStops {
+		transportErr = errors.Join(transportErr, <-result)
 	}
-	sessions := s.sessions.takeAll()
+	return errors.Join(ctx.Err(), quiesceErr, broadcastErr, drainErr, transportErr)
+}
+
+func (s *Server) quiesce(ctx context.Context) error {
+	s.sessions.closeAdmission()
+	if err := waitGroupContext(ctx, &s.sessions.authentications); err != nil {
+		return err
+	}
+	return s.gateways.Close()
+}
+
+// 停止某个 transport 超时后继续回收其余资源；迟到结果由同一 owner 最后汇合。
+func (s *Server) stopClientTransports(ctx context.Context, first, end int, rollback bool) ([]<-chan error, error) {
+	var stopErr error
+	var pending []<-chan error
+	for offset := range end - first {
+		index := first + offset
+		stopCtx := ctx
+		cancel := func() {}
+		action := "stop"
+		if rollback {
+			index = end - 1 - offset
+			action = "roll back"
+			stopCtx, cancel = context.WithTimeout(context.WithoutCancel(ctx), s.cleanupTimeout)
+		}
+		clientTransport := s.transports[index]
+		wrap := func(err error) error {
+			if err == nil {
+				return nil
+			}
+			return fmt.Errorf("gateway: %s client transport %d (%T): %w", action, index, clientTransport, err)
+		}
+		result := make(chan error, 1)
+		go func() {
+			defer cancel()
+			result <- wrap(clientTransport.Stop(stopCtx))
+		}()
+		select {
+		case err := <-result:
+			stopErr = errors.Join(stopErr, err)
+		case <-stopCtx.Done():
+			stopErr = errors.Join(stopErr, wrap(stopCtx.Err()))
+			pending = append(pending, result)
+		}
+	}
+	return pending, stopErr
+}
+
+func (s *Server) startSessionDrain(ctx context.Context, sessions []*session) <-chan struct{} {
+	done := make(chan struct{})
 	if len(sessions) == 0 {
-		return nil
+		close(done)
+		return done
 	}
 	workerCount := min(_shutdownWorkerCount, len(sessions))
 	var next atomic.Uint64
@@ -333,9 +374,6 @@ func (s *Server) drainSessions(ctx context.Context) error {
 		go func() {
 			defer workers.Done()
 			for {
-				if ctx.Err() != nil {
-					return
-				}
 				index := int(next.Add(1) - 1)
 				if index >= len(sessions) {
 					return
@@ -344,7 +382,11 @@ func (s *Server) drainSessions(ctx context.Context) error {
 			}
 		}()
 	}
-	return waitGroupContext(ctx, &workers)
+	go func() {
+		workers.Wait()
+		close(done)
+	}()
+	return done
 }
 
 func (s *Server) drainSession(ctx context.Context, sess *session) {
@@ -353,7 +395,8 @@ func (s *Server) drainSession(ctx context.Context, sess *session) {
 	connID := sess.conn.ConnID()
 	binding := sess.detachForClose()
 	err := sess.conn.CloseWithProto(ctx, &v1.Proto{
-		Op: v1.OpKick, Code: v1.KickCodeServerShutdown,
+		Op:   v1.OpKick,
+		Code: v1.KickCodeServerShutdown,
 	})
 	err = errors.Join(err, sess.conn.Close())
 	if locate.ValidGateBinding(binding) && ctx.Err() == nil {

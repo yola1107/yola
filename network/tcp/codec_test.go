@@ -3,7 +3,6 @@ package tcp
 import (
 	"bufio"
 	"bytes"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -87,14 +86,6 @@ func TestReadFrameRejectsInvalidFrame(t *testing.T) {
 	}
 }
 
-type fixedSizeCodec struct {
-	size int
-}
-
-func (c fixedSizeCodec) Marshal(any) ([]byte, error) { return make([]byte, c.size), nil }
-func (fixedSizeCodec) Unmarshal([]byte, any) error   { return nil }
-func (fixedSizeCodec) Name() string                  { return "fixed-size" }
-
 func TestReadFrameDiscardsUnknownFields(t *testing.T) {
 	body, err := proto.Marshal(&v1.Proto{Op: v1.OpRequest})
 	if err != nil {
@@ -108,13 +99,6 @@ func TestReadFrameDiscardsUnknownFields(t *testing.T) {
 	if unknown := got.ProtoReflect().GetUnknown(); len(unknown) != 0 {
 		t.Fatalf("unknown fields = %x", unknown)
 	}
-}
-
-func frameWithLength(length uint32, body []byte) []byte {
-	wire := make([]byte, _framePrefixSize+len(body))
-	binary.LittleEndian.PutUint32(wire, length)
-	copy(wire[_framePrefixSize:], body)
-	return wire
 }
 
 func BenchmarkCodec(b *testing.B) {
@@ -131,6 +115,14 @@ func BenchmarkCodec(b *testing.B) {
 		b.Run(name+"/write", func(b *testing.B) { benchmarkWrite(b, p) })
 	}
 }
+
+type fixedSizeCodec struct {
+	size int
+}
+
+func (c fixedSizeCodec) Marshal(any) ([]byte, error) { return make([]byte, c.size), nil }
+func (fixedSizeCodec) Unmarshal([]byte, any) error   { return nil }
+func (fixedSizeCodec) Name() string                  { return "fixed-size" }
 
 func benchmarkRead(b *testing.B, frame []byte) {
 	var source bytes.Reader

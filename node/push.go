@@ -21,7 +21,7 @@ func (s *Server) PushToUID(ctx context.Context, uid string, command int32, msg p
 	if err := s.checkEpoch(); err != nil {
 		return err
 	}
-	if s.locator == nil {
+	if s.gateDirectory == nil {
 		return status.Error(codes.FailedPrecondition, "gate locator is not configured")
 	}
 	serviceName := s.currentIdentity().serviceName
@@ -38,7 +38,7 @@ func (s *Server) PushToUID(ctx context.Context, uid string, command int32, msg p
 	defer cancel()
 	ctx, cancelEpoch := s.lease.Load().requestContext(ctx)
 	defer cancelEpoch()
-	lease, err := s.locator.LocateGate(ctx, serviceName, uid)
+	lease, err := s.gateDirectory.LocateGate(ctx, serviceName, uid)
 	if err != nil {
 		return mapGateLocatorError(err)
 	}

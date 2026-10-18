@@ -9,6 +9,7 @@ import (
 
 	"yola/test/internal/mailbox"
 	"yola/test/ludo/internal/biz/player"
+	"yola/test/ludo/internal/conf"
 	"yola/test/ludo/pkg/codes"
 
 	"github.com/stretchr/testify/require"
@@ -42,8 +43,12 @@ func TestEnterSelectsRequestedTable(t *testing.T) {
 }
 
 func TestEnterSpecifiedTableDoesNotOverfillOrFallBack(t *testing.T) {
-	room := testRoom(2)
-	room.Table.ChairNum = 4
+	room := &conf.Room{
+		Table:    &conf.Room_Table{TableNum: 2, ChairNum: 4},
+		Game:     &conf.Room_Game{MinMoney: 100, MaxMoney: 1000, BaseMoney: 100},
+		Robot:    &conf.Room_Robot{},
+		LogCache: &conf.Room_LogCache{},
+	}
 	manager := newStartedManager(t, room, new(tableRepoStub))
 	const playerCount = 5
 	players := make([]*player.Player, playerCount)

@@ -116,79 +116,6 @@ func (t *Table) startGame() {
 	}
 }
 
-func (t *Table) readyPlayers() []*player.Player {
-	baseMoney := t.rc.Game.BaseMoney
-	players := make([]*player.Player, 0, len(t.seats))
-	for _, p := range t.seats {
-		if p != nil && p.IsReady() && p.GetAllMoney() >= baseMoney {
-			players = append(players, p)
-		}
-	}
-	return players
-}
-
-func canStartGame(players []*player.Player) bool {
-	return len(players) >= minStartPlayers && len(players)%2 == 0
-}
-
-func (t *Table) checkAutoReady(p *player.Player) {
-	if !t.rc.Game.AutoReady {
-		return
-	}
-	if p != nil && !p.IsReady() && p.GetAllMoney() >= t.rc.Game.BaseMoney {
-		p.SetReady()
-	}
-}
-
-func (t *Table) checkAutoReadyAll() {
-	for _, p := range t.seats {
-		t.checkAutoReady(p)
-	}
-}
-
-func (t *Table) prepareGame(seats []*player.Player) {
-	baseMoney := t.rc.Game.BaseMoney
-	var seatColors []int32
-	for _, p := range seats {
-		if p == nil {
-			continue
-		}
-		p.SetGaming()
-		p.StartGame(baseMoney)
-		color := p.GetChairID()
-		p.SetColor(color)
-		seatColors = append(seatColors, color)
-	}
-
-	t.board = model.NewBoard(seatColors, 4, conf.FastMode)
-
-	if conf.FastMode {
-		t.gameGeneration++
-		generation := t.gameGeneration
-		t.fastTimerID = t.manager.after(t.ID, 5*time.Minute, func(gameTable *Table) {
-			if gameTable.gameGeneration != generation {
-				return
-			}
-			// 原实现没有快速场胜者规则；超时按流局退还已扣底分。
-			gameTable.settleGame(nil, v1.FINISH_TYPE_NONE)
-		})
-	}
-
-	for _, p := range seats {
-		if p == nil || !p.IsGaming() {
-			continue
-		}
-		color := p.GetColor()
-		p.SetPieces(t.board.GetPieceIDsByColor(color))
-	}
-}
-
-func (t *Table) chooseFirstChair(players []*player.Player) {
-	index := xgo.RandInt(0, len(players))
-	t.activeChair = players[index].GetChairID()
-	t.firstChair = t.activeChair
-}
-
 func (t *Table) onSendCardTimeout() {
 	t.enterStage(StDice)
 	t.broadcastActivePlayerPush()
@@ -288,6 +215,75 @@ func (t *Table) settleGame(winner *player.Player, finishType v1.FINISH_TYPE) *v1
 	return result
 }
 
+func (t *Table) readyPlayers() []*player.Player {
+	baseMoney := t.rc.Game.BaseMoney
+	players := make([]*player.Player, 0, len(t.seats))
+	for _, p := range t.seats {
+		if p != nil && p.IsReady() && p.GetAllMoney() >= baseMoney {
+			players = append(players, p)
+		}
+	}
+	return players
+}
+
+func (t *Table) checkAutoReady(p *player.Player) {
+	if !t.rc.Game.AutoReady {
+		return
+	}
+	if p != nil && !p.IsReady() && p.GetAllMoney() >= t.rc.Game.BaseMoney {
+		p.SetReady()
+	}
+}
+
+func (t *Table) checkAutoReadyAll() {
+	for _, p := range t.seats {
+		t.checkAutoReady(p)
+	}
+}
+
+func (t *Table) prepareGame(seats []*player.Player) {
+	baseMoney := t.rc.Game.BaseMoney
+	var seatColors []int32
+	for _, p := range seats {
+		if p == nil {
+			continue
+		}
+		p.SetGaming()
+		p.StartGame(baseMoney)
+		color := p.GetChairID()
+		p.SetColor(color)
+		seatColors = append(seatColors, color)
+	}
+
+	t.board = model.NewBoard(seatColors, 4, conf.FastMode)
+
+	if conf.FastMode {
+		t.gameGeneration++
+		generation := t.gameGeneration
+		t.fastTimerID = t.manager.after(t.ID, 5*time.Minute, func(gameTable *Table) {
+			if gameTable.gameGeneration != generation {
+				return
+			}
+			// 原实现没有快速场胜者规则；超时按流局退还已扣底分。
+			gameTable.settleGame(nil, v1.FINISH_TYPE_NONE)
+		})
+	}
+
+	for _, p := range seats {
+		if p == nil || !p.IsGaming() {
+			continue
+		}
+		color := p.GetColor()
+		p.SetPieces(t.board.GetPieceIDsByColor(color))
+	}
+}
+
+func (t *Table) chooseFirstChair(players []*player.Player) {
+	index := xgo.RandInt(0, len(players))
+	t.activeChair = players[index].GetChairID()
+	t.firstChair = t.activeChair
+}
+
 func playerResult(p *player.Player, winner bool, score float64) *v1.PlayerResult {
 	return &v1.PlayerResult{
 		UserID:   p.GetPlayerID(),
@@ -295,4 +291,8 @@ func playerResult(p *player.Player, winner bool, score float64) *v1.PlayerResult
 		IsWinner: winner,
 		WinScore: score,
 	}
+}
+
+func canStartGame(players []*player.Player) bool {
+	return len(players) >= minStartPlayers && len(players)%2 == 0
 }

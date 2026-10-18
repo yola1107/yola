@@ -3,6 +3,7 @@ package table
 import (
 	"context"
 	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -31,7 +32,27 @@ func TestOnExitGameReportsSuccess(t *testing.T) {
 }
 
 func TestDrawPushKeepsPrivateHandInDrawResult(t *testing.T) {
-	table, actor, _, actorSession, observerSession := newPushTestTable(t)
+	room := &conf.Room{
+		Table:    &conf.Room_Table{TableNum: 1, ChairNum: 4},
+		Game:     &conf.Room_Game{MaxMoney: -1, BaseMoney: 1},
+		Robot:    &conf.Room_Robot{},
+		LogCache: &conf.Room_LogCache{},
+	}
+	repo := &exitTestRepo{room: room}
+	_, table := newTestTable(t, room, repo)
+	actorSession := new(captureSession)
+	observerSession := new(captureSession)
+	actor := player.New(&player.Raw{
+		Session:  actorSession,
+		BaseData: &player.BaseData{UID: 41, Money: 100},
+	})
+	observer := player.New(&player.Raw{
+		Session:  observerSession,
+		BaseData: &player.BaseData{UID: 42, Money: 100},
+	})
+	if !table.Seat(actor) || !table.Seat(observer) {
+		t.Fatal("failed to arrange players")
+	}
 	actor.AddCards([]int32{101, 102, 103})
 	actorSession.reset()
 	observerSession.reset()
@@ -54,7 +75,27 @@ func TestDrawPushKeepsPrivateHandInDrawResult(t *testing.T) {
 }
 
 func TestSceneOnlyIncludesRequestingPlayersPrivateCards(t *testing.T) {
-	table, viewer, opponent, _, _ := newPushTestTable(t)
+	room := &conf.Room{
+		Table:    &conf.Room_Table{TableNum: 1, ChairNum: 4},
+		Game:     &conf.Room_Game{MaxMoney: -1, BaseMoney: 1},
+		Robot:    &conf.Room_Robot{},
+		LogCache: &conf.Room_LogCache{},
+	}
+	repo := &exitTestRepo{room: room}
+	_, table := newTestTable(t, room, repo)
+	viewerSession := new(captureSession)
+	opponentSession := new(captureSession)
+	viewer := player.New(&player.Raw{
+		Session:  viewerSession,
+		BaseData: &player.BaseData{UID: 41, Money: 100},
+	})
+	opponent := player.New(&player.Raw{
+		Session:  opponentSession,
+		BaseData: &player.BaseData{UID: 42, Money: 100},
+	})
+	if !table.Seat(viewer) || !table.Seat(opponent) {
+		t.Fatal("failed to arrange players")
+	}
 	viewer.AddCards([]int32{101, 201})
 	opponent.AddCards([]int32{102, 202})
 	viewer.SetGaming()
@@ -116,7 +157,9 @@ func TestPushNotFoundCleanupSurvivesFullTableQueue(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		if err := manager.Close(context.Background()); err != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := manager.Close(ctx); err != nil {
 			t.Error(err)
 		}
 	})
@@ -131,6 +174,8 @@ func TestPushNotFoundCleanupSurvivesFullTableQueue(t *testing.T) {
 
 	started := make(chan struct{})
 	queueFilled := make(chan struct{})
+	unblock := sync.OnceFunc(func() { close(queueFilled) })
+	defer unblock()
 	pushDone := make(chan struct{})
 	if err := manager.mailboxes.Executor(0).TryPost(func() {
 		close(started)
@@ -140,11 +185,15 @@ func TestPushNotFoundCleanupSurvivesFullTableQueue(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	<-started
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("table command did not start")
+	}
 	if err := manager.mailboxes.Executor(0).TryPost(func() {}); err != nil {
 		t.Fatal(err)
 	}
-	close(queueFilled)
+	unblock()
 	select {
 	case <-pushDone:
 	case <-time.After(time.Second):
@@ -261,26 +310,6 @@ func testRoomConfig() *conf.Room {
 	}
 }
 
-func newPushTestTable(t *testing.T) (*Table, *player.Player, *player.Player, *captureSession, *captureSession) {
-	t.Helper()
-	repo := &exitTestRepo{room: testRoomConfig()}
-	_, table := newTestTable(t, repo.room, repo)
-	actorSession := new(captureSession)
-	observerSession := new(captureSession)
-	actor := player.New(&player.Raw{
-		Session:  actorSession,
-		BaseData: &player.BaseData{UID: 41, Money: 100},
-	})
-	observer := player.New(&player.Raw{
-		Session:  observerSession,
-		BaseData: &player.BaseData{UID: 42, Money: 100},
-	})
-	if !table.Seat(actor) || !table.Seat(observer) {
-		t.Fatal("failed to arrange players")
-	}
-	return table, actor, observer, actorSession, observerSession
-}
-
 func newTestTable(t *testing.T, room *conf.Room, repo Repo) (*Manager, *Table) {
 	t.Helper()
 	manager := newManager(room, repo, 1, 16, 8)
@@ -324,9 +353,12 @@ type captureSession struct {
 	attempts int
 }
 
+var _ player.Session = (*captureSession)(nil)
+
 func (*captureSession) UID() string                      { return "42" }
 func (*captureSession) BindingToken() string             { return "binding-test" }
 func (*captureSession) BindNode(context.Context) error   { return nil }
+func (*captureSession) RenewNode(context.Context) error  { return nil }
 func (*captureSession) UnbindNode(context.Context) error { return nil }
 func (sess *captureSession) Push(_ context.Context, command int32, message proto.Message) error {
 	sess.attempts++
@@ -362,5 +394,3 @@ func (sess *captureSession) hasCommand(command v1.GameCommand) bool {
 	}
 	return false
 }
-
-var _ player.Session = (*captureSession)(nil)

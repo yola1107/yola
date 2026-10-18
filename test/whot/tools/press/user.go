@@ -256,32 +256,6 @@ func (u *User) OnActivePush(data []byte) {
 	}
 }
 
-func actionRequest(uid int64, options []*v1.ActionOption) *v1.PlayerActionReq {
-	for _, option := range options {
-		if option == nil {
-			continue
-		}
-		request := &v1.PlayerActionReq{UserId: uid, Action: option.Action}
-		switch option.Action {
-		case v1.ACTION_PLAY_CARD:
-			if len(option.Cards) == 0 {
-				continue
-			}
-			request.OutCard = option.Cards[0]
-		case v1.ACTION_DRAW_CARD, v1.ACTION_SKIP_TURN:
-		case v1.ACTION_DECLARE_SUIT:
-			if len(option.Suits) == 0 {
-				continue
-			}
-			request.DeclareSuit = option.Suits[0]
-		default:
-			continue
-		}
-		return request
-	}
-	return nil
-}
-
 func (u *User) OnActionRsp(data []byte) error {
 	var reply v1.PlayerActionRsp
 	if err := proto.Unmarshal(data, &reply); err != nil {
@@ -324,5 +298,31 @@ func (u *User) OnLogoutRsp(data []byte) error {
 	u.chair.Store(-1)
 	u.logout.Store(true)
 	u.Release()
+	return nil
+}
+
+func actionRequest(uid int64, options []*v1.ActionOption) *v1.PlayerActionReq {
+	for _, option := range options {
+		if option == nil {
+			continue
+		}
+		request := &v1.PlayerActionReq{UserId: uid, Action: option.Action}
+		switch option.Action {
+		case v1.ACTION_PLAY_CARD:
+			if len(option.Cards) == 0 {
+				continue
+			}
+			request.OutCard = option.Cards[0]
+		case v1.ACTION_DRAW_CARD, v1.ACTION_SKIP_TURN:
+		case v1.ACTION_DECLARE_SUIT:
+			if len(option.Suits) == 0 {
+				continue
+			}
+			request.DeclareSuit = option.Suits[0]
+		default:
+			continue
+		}
+		return request
+	}
 	return nil
 }

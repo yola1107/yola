@@ -221,6 +221,45 @@ func (uc *Usecase) PlayerAction(ctx context.Context, uid int64, req *v1.PlayerAc
 	return reply, err
 }
 
+func (uc *Usecase) CreateRobot(raw *player.Raw) (*player.Player, error) {
+	base := &player.BaseData{
+		UID:       raw.ID,
+		VIP:       0,
+		NickName:  fmt.Sprintf("robot_%d", raw.ID),
+		Avatar:    fmt.Sprintf("avatar_%d", raw.ID),
+		AvatarURL: fmt.Sprintf("avatar_%d", raw.ID),
+		Money:     xgo.RandFloat(uc.rc.Game.MinMoney, uc.rc.Game.MaxMoney),
+	}
+	raw.BaseData = base
+	return player.New(raw), nil
+}
+
+func (uc *Usecase) EnterRobots(ctx context.Context, players []*player.Player) ([]int64, error) {
+	return uc.tm.EnterRobots(ctx, players)
+}
+
+func (uc *Usecase) LogoutGame(p *player.Player, code int32, msg string) error {
+	if p == nil {
+		return nil
+	}
+	uid := p.GetPlayerID()
+	if p.IsRobot() {
+		uc.rm.Leave(uid)
+		p.CancelExit()
+		return nil
+	}
+	cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), playerCleanupTimeout)
+	err := uc.persistAndUnbindPlayer(cleanupCtx, p)
+	cancelCleanup()
+	if err != nil {
+		p.CancelExit()
+		return err
+	}
+	uc.finalizePlayer(p)
+	slog.Info("logout game", "uid", uid, "code", code, "message", msg)
+	return nil
+}
+
 func (uc *Usecase) callPlayer(ctx context.Context, p *player.Player, action func(*table.Table) error) error {
 	return mapTableCallError(uc.tm.CallPlayer(ctx, p, action))
 }
@@ -231,13 +270,6 @@ func (uc *Usecase) managedPlayer(uid int64) (*player.Player, error) {
 		return nil, fmt.Errorf("%w: player %d", ErrPlayerNotFound, uid)
 	}
 	return p, nil
-}
-
-func mapTableCallError(err error) error {
-	if errors.Is(err, table.ErrTableNotFound) || errors.Is(err, table.ErrPlayerRouteChanged) {
-		return fmt.Errorf("%w: %v", ErrInvalidPlayerState, err)
-	}
-	return err
 }
 
 func (uc *Usecase) reconnect(ctx context.Context, sess player.Session, p *player.Player) (*v1.LoginRsp, error) {
@@ -312,32 +344,6 @@ func (uc *Usecase) enterRoom(ctx context.Context, sess player.Session, uid int64
 	return loginResponse(p, uid, code, message), nil
 }
 
-func loginResponse(p *player.Player, uid int64, code int32, msg string) *v1.LoginRsp {
-	reply := &v1.LoginRsp{Code: code, Msg: msg, UserID: uid, ArenaID: int32(conf.ArenaID)}
-	if p != nil {
-		reply.TableID = p.GetTableID()
-		reply.ChairID = p.GetChairID()
-	}
-	return reply
-}
-
-func (uc *Usecase) CreateRobot(raw *player.Raw) (*player.Player, error) {
-	base := &player.BaseData{
-		UID:       raw.ID,
-		VIP:       0,
-		NickName:  fmt.Sprintf("robot_%d", raw.ID),
-		Avatar:    fmt.Sprintf("avatar_%d", raw.ID),
-		AvatarURL: fmt.Sprintf("avatar_%d", raw.ID),
-		Money:     xgo.RandFloat(uc.rc.Game.MinMoney, uc.rc.Game.MaxMoney),
-	}
-	raw.BaseData = base
-	return player.New(raw), nil
-}
-
-func (uc *Usecase) EnterRobots(ctx context.Context, players []*player.Player) ([]int64, error) {
-	return uc.tm.EnterRobots(ctx, players)
-}
-
 func (uc *Usecase) createPlayer(ctx context.Context, raw *player.Raw) (*player.Player, error) {
 	p := player.New(raw)
 	base, err := uc.repo.LoadPlayer(ctx, raw.ID)
@@ -362,28 +368,6 @@ func (uc *Usecase) createPlayer(ctx context.Context, raw *player.Raw) (*player.P
 		slog.Debug("create player", "player", p.Desc())
 	}
 	return p, nil
-}
-
-func (uc *Usecase) LogoutGame(p *player.Player, code int32, msg string) error {
-	if p == nil {
-		return nil
-	}
-	uid := p.GetPlayerID()
-	if p.IsRobot() {
-		uc.rm.Leave(uid)
-		p.CancelExit()
-		return nil
-	}
-	cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), playerCleanupTimeout)
-	err := uc.persistAndUnbindPlayer(cleanupCtx, p)
-	cancelCleanup()
-	if err != nil {
-		p.CancelExit()
-		return err
-	}
-	uc.finalizePlayer(p)
-	slog.Info("logout game", "uid", uid, "code", code, "message", msg)
-	return nil
 }
 
 func (uc *Usecase) cleanupPlayers(ctx context.Context) error {
@@ -452,17 +436,18 @@ func (uc *Usecase) persistAndUnbindPlayer(ctx context.Context, p *player.Player)
 			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("save player %d: %w", uid, err))
 		}
 	}
-	if sess := p.GetSession(); sess != nil {
-		if err := ctx.Err(); err != nil {
-			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("unbind player %d: %w", uid, err))
-		} else {
-			unbindCtx, cancelUnbind := context.WithTimeout(ctx, playerCleanupOperationTimeout)
-			err := sess.UnbindNode(unbindCtx)
-			cancelUnbind()
-			if err != nil {
-				cleanupErr = errors.Join(cleanupErr, fmt.Errorf("unbind player %d: %w", uid, err))
-			}
-		}
+	sess := p.GetSession()
+	if sess == nil {
+		return cleanupErr
+	}
+	if err := ctx.Err(); err != nil {
+		return errors.Join(cleanupErr, fmt.Errorf("unbind player %d: %w", uid, err))
+	}
+	unbindCtx, cancelUnbind := context.WithTimeout(ctx, playerCleanupOperationTimeout)
+	err := sess.UnbindNode(unbindCtx)
+	cancelUnbind()
+	if err != nil {
+		cleanupErr = errors.Join(cleanupErr, fmt.Errorf("unbind player %d: %w", uid, err))
 	}
 	return cleanupErr
 }
@@ -470,4 +455,20 @@ func (uc *Usecase) persistAndUnbindPlayer(ctx context.Context, p *player.Player)
 func (uc *Usecase) finalizePlayer(p *player.Player) {
 	uc.pm.RemoveIfSame(p)
 	p.LogoutGame()
+}
+
+func mapTableCallError(err error) error {
+	if errors.Is(err, table.ErrTableNotFound) || errors.Is(err, table.ErrPlayerRouteChanged) {
+		return fmt.Errorf("%w: %v", ErrInvalidPlayerState, err)
+	}
+	return err
+}
+
+func loginResponse(p *player.Player, uid int64, code int32, msg string) *v1.LoginRsp {
+	reply := &v1.LoginRsp{Code: code, Msg: msg, UserID: uid, ArenaID: int32(conf.ArenaID)}
+	if p != nil {
+		reply.TableID = p.GetTableID()
+		reply.ChairID = p.GetChairID()
+	}
+	return reply
 }

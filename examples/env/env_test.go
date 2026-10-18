@@ -28,7 +28,7 @@ func TestNewRegistryUsesConfiguredEndpointAndPrefix(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, observer.Close()) })
 	instance := &registry.ServiceInstance{ID: "instance-a", Name: "yola-example-" + uuid.NewString()}
-	key := "/microservices/" + instance.Name + "/" + instance.ID
+	key := "/microservices/yola/nodes/" + instance.Name + "/" + instance.ID
 	t.Cleanup(func() {
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()

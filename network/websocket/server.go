@@ -115,57 +115,6 @@ func (s *Server) BeforeStart(_ context.Context) error {
 	return s.prepare()
 }
 
-func (s *Server) prepare() error {
-	if s.handler == nil {
-		return errors.New("websocket: connection handler is required")
-	}
-	if err := s.validateConfig(); err != nil {
-		return err
-	}
-	return s.listenAndEndpoint()
-}
-
-// Endpoint 返回服务 endpoint。
-func (s *Server) Endpoint() (*url.URL, error) {
-	s.lifecycleMu.Lock()
-	defer s.lifecycleMu.Unlock()
-	if s.stopped {
-		return nil, errors.New("websocket: server is stopped")
-	}
-	if err := s.validateConfig(); err != nil {
-		return nil, err
-	}
-	if err := s.listenAndEndpoint(); err != nil {
-		return nil, err
-	}
-	endpoint := *s.endpoint
-	return &endpoint, nil
-}
-
-func (s *Server) listenAndEndpoint() error {
-	created := false
-	if s.lis == nil {
-		lis, err := net.Listen(s.config.network, s.config.address)
-		if err != nil {
-			return err
-		}
-		s.lis = lis
-		created = true
-	}
-	if s.endpoint == nil {
-		addr, err := host.Extract(s.config.address, s.config.advertiseHost, s.lis)
-		if err != nil {
-			if created {
-				_ = s.lis.Close()
-				s.lis = nil
-			}
-			return err
-		}
-		s.endpoint = &url.URL{Scheme: s.config.endpointScheme(), Host: addr, Path: s.config.path}
-	}
-	return nil
-}
-
 // Start 启动 WebSocket 服务。
 func (s *Server) Start(ctx context.Context) error {
 	s.lifecycleMu.Lock()
@@ -197,15 +146,6 @@ func (s *Server) Start(ctx context.Context) error {
 	return err
 }
 
-func (s *Server) finishServing() {
-	s.lifecycleMu.Lock()
-	s.stopped = true
-	s.lis = nil
-	s.cancel()
-	s.lifecycleMu.Unlock()
-	_ = s.stopConnections(context.Background())
-}
-
 // Stop 停止 HTTP 服务、关闭 WebSocket 连接，并在 ctx 预算内等待连接任务退出。
 func (s *Server) Stop(ctx context.Context) error {
 	slog.Info("[websocket] server stopping")
@@ -233,6 +173,66 @@ func (s *Server) Stop(ctx context.Context) error {
 		return nil
 	}
 	return stopErr
+}
+
+// Endpoint 返回服务 endpoint。
+func (s *Server) Endpoint() (*url.URL, error) {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+	if s.stopped {
+		return nil, errors.New("websocket: server is stopped")
+	}
+	if err := s.validateConfig(); err != nil {
+		return nil, err
+	}
+	if err := s.listenAndEndpoint(); err != nil {
+		return nil, err
+	}
+	endpoint := *s.endpoint
+	return &endpoint, nil
+}
+
+func (s *Server) prepare() error {
+	if s.handler == nil {
+		return errors.New("websocket: connection handler is required")
+	}
+	if err := s.validateConfig(); err != nil {
+		return err
+	}
+	return s.listenAndEndpoint()
+}
+
+func (s *Server) listenAndEndpoint() error {
+	created := false
+	if s.lis == nil {
+		lis, err := net.Listen(s.config.network, s.config.address)
+		if err != nil {
+			return err
+		}
+		s.lis = lis
+		created = true
+	}
+	if s.endpoint == nil {
+		addr, err := host.Extract(s.config.address, s.config.advertiseHost, s.lis)
+		if err != nil {
+			if created {
+				_ = s.lis.Close()
+				s.lis = nil
+			}
+			return err
+		}
+		s.endpoint = &url.URL{Scheme: s.config.endpointScheme(), Host: addr, Path: s.config.path}
+	}
+	return nil
+}
+
+func (s *Server) finishServing() {
+	s.lifecycleMu.Lock()
+	s.stopped = true
+	s.lis = nil
+	s.cancel()
+	s.lifecycleMu.Unlock()
+	_ = s.stopConnections(context.Background())
 }
 
 func (s *Server) stopConnections(ctx context.Context) error {

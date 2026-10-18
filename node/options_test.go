@@ -1,6 +1,7 @@
 package node
 
 import (
+	"context"
 	"crypto/tls"
 	"errors"
 	"net"
@@ -9,14 +10,26 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/health/grpc_health_v1"
 )
 
 func TestResolveOptionsDefaultsAndZeroHandlerTimeout(t *testing.T) {
-	o, err := resolveOptions(HandlerTimeout(0))
+	o, err := resolveOptions(Registration(&countingRegistrar{}), HandlerTimeout(0))
 
 	require.NoError(t, err)
 	require.Equal(t, 3*time.Second, o.pushTimeout)
 	require.Equal(t, 3*time.Second, o.cleanupTimeout)
+	require.Equal(t, 10*time.Second, o.shutdownTimeout)
+}
+
+func TestConstructionRequiresRegistration(t *testing.T) {
+	_, err := NewServer()
+	require.EqualError(t, err, "node: registration is required")
+
+	_, err = NewServer(Registration(nil))
+	require.EqualError(t, err, "node: registration is required")
 }
 
 func TestResolveOptionsPropagatesOptionError(t *testing.T) {
@@ -64,7 +77,7 @@ func TestResolveOptionsRejectsEndpointTLSMismatch(t *testing.T) {
 func TestResolveOptionsClonesClientTLS(t *testing.T) {
 	config := &tls.Config{MinVersion: tls.VersionTLS12, ServerName: "gateway.internal"}
 
-	o, err := resolveOptions(ClientTLS(config))
+	o, err := resolveOptions(Registration(&countingRegistrar{}), ClientTLS(config))
 	require.NoError(t, err)
 	config.ServerName = "mutated.internal"
 
@@ -84,23 +97,25 @@ func TestAdvertiseHostOptionPublishesEndpoint(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			lis, err := net.Listen("tcp", "127.0.0.1:0")
 			require.NoError(t, err)
-			t.Cleanup(func() { require.NoError(t, lis.Close()) })
+
 			_, port, err := net.SplitHostPort(lis.Addr().String())
 			require.NoError(t, err)
 			opts := []Option{Listener(lis), Address("0.0.0.0:" + port), AdvertiseHost("192.168.1.10")}
 			if test.secure {
 				opts = append(opts, ServerTLS(testServerTLSConfig(t)))
 			}
-			endpoint, err := newTestServer(t, opts...).Endpoint()
-			require.NoError(t, err)
-			require.Equal(t, test.scheme+"://192.168.1.10:"+port, endpoint.String())
+			registrar := newLifecycleRegistrar()
+			opts = append(opts, Registration(registrar))
+			server := newTestServer(t, opts...)
+			startTestNode(testNodeContext(), t, server)
+			require.Equal(t, []string{test.scheme + "://192.168.1.10:" + port}, registrar.instance().Endpoints)
 		})
 	}
 }
 
 func TestAdvertiseHostRejectsUnreachableAdvertisement(t *testing.T) {
-	_, err := NewServer(Address("127.0.0.1:9001"), AdvertiseHost("192.168.1.10"))
-	require.Error(t, err)
+	_, err := NewServer(Registration(&countingRegistrar{}), Address("127.0.0.1:9001"), AdvertiseHost("192.168.1.10"))
+	require.EqualError(t, err, `node: loopback listen host "127.0.0.1" cannot advertise non-loopback host "192.168.1.10"`)
 }
 
 func TestConstructionRejectsInvalidConfiguration(t *testing.T) {
@@ -111,6 +126,7 @@ func TestConstructionRejectsInvalidConfiguration(t *testing.T) {
 	}{
 		{name: "push timeout", option: PushTimeout(0), want: "node: push timeout must be positive"},
 		{name: "cleanup timeout", option: CleanupTimeout(0), want: "node: cleanup timeout must be positive"},
+		{name: "shutdown timeout", option: ShutdownTimeout(0), want: "node: shutdown timeout must be positive"},
 		{name: "client TLS", option: ClientTLS(nil), want: "node: gRPC TLS config is required"},
 		{name: "server TLS", option: ServerTLS(nil), want: "node: TLS config is required"},
 		{
@@ -120,10 +136,53 @@ func TestConstructionRejectsInvalidConfiguration(t *testing.T) {
 		},
 		{name: "handler timeout", option: HandlerTimeout(-time.Second), want: "node: handler timeout cannot be negative"},
 		{name: "listener", option: Listener(nil), want: "node: listener is required"},
+		{name: "stateful store", option: Stateful(nil), want: "node: stateful store is required"},
+		{
+			name:   "typed nil stateful store",
+			option: Stateful((*memoryNodeStore)(nil)),
+			want:   "node: stateful store is required",
+		},
+		{name: "gate directory", option: GateDirectory(nil), want: "node: gate directory is required"},
+		{
+			name:   "typed nil gate directory",
+			option: GateDirectory((*fixedGateDirectory)(nil)),
+			want:   "node: gate directory is required",
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			_, err := NewServer(test.option)
+			server, err := NewServer(Registration(&countingRegistrar{}), test.option)
 			require.EqualError(t, err, test.want)
+			require.Nil(t, server)
 		})
 	}
+}
+
+func TestServerAcceptsTLSConnection(t *testing.T) {
+	serverTLS, clientTLS := testTLSConfigs(t)
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	server := newTestServer(t, Listener(lis), ServerTLS(serverTLS), func(*options) error {
+		// 在 Option 应用后、服务构造前修改原配置，验证证书来自副本。
+		serverTLS.Certificates = nil
+		return nil
+	})
+	ctx := testNodeContext()
+
+	done := make(chan error, 1)
+	go func() { done <- server.Start(ctx) }()
+	t.Cleanup(func() {
+		require.NoError(t, server.Stop(context.Background()))
+		require.NoError(t, <-done)
+	})
+
+	conn, err := grpc.NewClient(lis.Addr().String(), grpc.WithTransportCredentials(credentials.NewTLS(clientTLS)))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+	requestCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	reply, err := grpc_health_v1.NewHealthClient(conn).Check(
+		requestCtx, &grpc_health_v1.HealthCheckRequest{}, grpc.WaitForReady(true),
+	)
+	require.NoError(t, err)
+	require.Equal(t, grpc_health_v1.HealthCheckResponse_SERVING, reply.Status)
 }

@@ -14,20 +14,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-type cleanupContextSession struct {
-	recordingSession
-	cleanupErr    error
-	cleanupBudget time.Duration
-}
-
-func (sess *cleanupContextSession) UnbindNode(ctx context.Context) error {
-	sess.cleanupErr = ctx.Err()
-	if deadline, ok := ctx.Deadline(); ok {
-		sess.cleanupBudget = time.Until(deadline)
-	}
-	return sess.recordingSession.UnbindNode(ctx)
-}
-
 func TestLoginWaitsForEntryAndKeepsCleanupBudget(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
@@ -101,4 +87,18 @@ func TestLoginWaitsForEntryAndKeepsCleanupBudget(t *testing.T) {
 			})
 		})
 	}
+}
+
+type cleanupContextSession struct {
+	recordingSession
+	cleanupErr    error
+	cleanupBudget time.Duration
+}
+
+func (sess *cleanupContextSession) UnbindNode(ctx context.Context) error {
+	sess.cleanupErr = ctx.Err()
+	if deadline, ok := ctx.Deadline(); ok {
+		sess.cleanupBudget = time.Until(deadline)
+	}
+	return sess.recordingSession.UnbindNode(ctx)
 }

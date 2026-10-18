@@ -227,11 +227,7 @@ func (t *Table) NextPlayer(chair int32) *player.Player {
 }
 
 func (t *Table) GetActivePlayer() *player.Player {
-	active := t.active
-	if active < 0 || active >= t.maxPlayers {
-		return nil
-	}
-	return t.seats[active]
+	return t.playerAt(t.active)
 }
 
 func (t *Table) GetNextActivePlayer() *player.Player {
@@ -306,9 +302,7 @@ func (t *Table) checkKickPlayer(p *player.Player, conf *conf.Room_Game) (int32, 
 		if p.IsOffline() {
 			return codes.KickByBroke, "KICK_BY_BROKE"
 		}
-		if code, msg := CheckRoomLimit(p, conf); code != 0 {
-			return code, msg
-		}
+		return CheckRoomLimit(p, conf)
 	case StWaitEnd, StEnd:
 		if p.IsOffline() {
 			return codes.KickByBroke, "KICK_BY_BROKE"

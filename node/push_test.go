@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"yola/api/cluster/v1"
+	"yola/internal/clusterroute"
 	"yola/locate"
 
 	"github.com/go-kratos/kratos/v3/middleware"
@@ -24,76 +25,11 @@ import (
 	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
-type gatewayStub struct {
-	v1.UnimplementedGatewayServer
-	pushes chan *v1.PushRequest
-	push   func(context.Context, *v1.PushRequest) (*emptypb.Empty, error)
-}
-
-func (s *gatewayStub) Push(ctx context.Context, in *v1.PushRequest) (*emptypb.Empty, error) {
-	if s.push != nil {
-		return s.push(ctx, in)
-	}
-	s.pushes <- in
-	return &emptypb.Empty{}, nil
-}
-
-func startGatewayStub(t *testing.T, stub *gatewayStub) string {
-	t.Helper()
-	lis, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-	gate := kgrpc.NewServer(kgrpc.Listener(lis))
-	v1.RegisterGatewayServer(gate, stub)
-	done := make(chan error, 1)
-	go func() { done <- gate.Start(context.Background()) }()
-	t.Cleanup(func() {
-		require.NoError(t, gate.Stop(context.Background()))
-		require.NoError(t, receiveNodeValue(t, done))
-	})
-	return lis.Addr().String()
-}
-
-type blockingGateLocator struct {
-	locate.Locator
-}
-
-func (*blockingGateLocator) LocateGate(ctx context.Context, _, _ string) (locate.GateLease, error) {
-	<-ctx.Done()
-	return locate.GateLease{}, ctx.Err()
-}
-
-func TestSessionPushAndClose(t *testing.T) {
-	stub := &gatewayStub{pushes: make(chan *v1.PushRequest, 1)}
-	gateAddress := startGatewayStub(t, stub)
-
-	server := newDispatchTestServer(t, PushTimeout(time.Second))
-	server.RegisterRawHandler(1, func(ctx context.Context, _ []byte) ([]byte, error) {
-		sess, _ := FromContext(ctx)
-		return []byte("ok"), sess.Push(ctx, 2, wrapperspb.String("push"))
-	})
-	binding := testBinding("player-a", "conn-a")
-	binding.GateEndpoint = "grpc://" + gateAddress
-
-	body, err := server.forward(context.Background(), binding, 1, nil)
-	require.NoError(t, err)
-	require.Equal(t, []byte("ok"), body)
-	push := <-stub.pushes
-	want, err := proto.Marshal(wrapperspb.String("push"))
-	require.NoError(t, err)
-	require.Equal(t, want, push.GetBody())
-	require.Equal(t, binding.BindingToken, push.GetRoute().GetBindingToken())
-
-	require.NoError(t, server.Stop(context.Background()))
-	require.NoError(t, server.Stop(context.Background()))
-	_, err = server.forward(context.Background(), binding, 1, nil)
-	requireNodeDraining(t, err)
-}
-
 func TestSessionPushUsesConfiguredTimeout(t *testing.T) {
-	var enteredOnce sync.Once
 	entered := make(chan struct{})
+	markEntered := sync.OnceFunc(func() { close(entered) })
 	stub := &gatewayStub{push: func(ctx context.Context, _ *v1.PushRequest) (*emptypb.Empty, error) {
-		enteredOnce.Do(func() { close(entered) })
+		markEntered()
 		<-ctx.Done()
 		return nil, ctx.Err()
 	}}
@@ -157,56 +93,27 @@ func TestAcceptedHandlerPushToUIDCompletesWhileStopDrains(t *testing.T) {
 	stub := &gatewayStub{pushes: make(chan *v1.PushRequest, 1)}
 	binding := testBinding("player-a", "conn-a")
 	binding.GateEndpoint = "grpc://" + startGatewayStub(t, stub)
-	store := newMemoryLocator()
-	store.setGate(binding)
-	server := newDispatchTestServer(t, Locator(store), PushTimeout(time.Second))
+	server := newDispatchTestServer(t, GateDirectory(fixedGateDirectory{binding: binding}), PushTimeout(time.Second))
 	t.Cleanup(func() { require.NoError(t, server.Stop(context.Background())) })
 	checkAcceptedPushDuringStop(t, server, binding, stub.pushes, func(ctx context.Context) error {
 		return server.PushToUID(ctx, binding.UID, 2, wrapperspb.String("push"))
 	})
 }
 
-func checkAcceptedPushDuringStop(t *testing.T, server *Server, binding locate.GateBinding, pushes <-chan *v1.PushRequest, push func(context.Context) error) {
-	t.Helper()
-	entered := make(chan struct{})
-	release := make(chan struct{})
-	releaseHandler := sync.OnceFunc(func() { close(release) })
-	t.Cleanup(releaseHandler)
-	server.RegisterRawHandler(1, func(ctx context.Context, _ []byte) ([]byte, error) {
-		close(entered)
-		<-release
-		return nil, push(ctx)
-	})
-	forwardDone := make(chan error, 1)
-	go func() {
-		_, forwardErr := server.forward(context.Background(), binding, 1, nil)
-		forwardDone <- forwardErr
-	}()
-	waitNodeSignal(t, entered)
-	stopDone := make(chan error, 1)
-	go func() { stopDone <- server.Stop(context.Background()) }()
-	require.Eventually(t, server.requests.isClosed, time.Second, time.Millisecond)
-	releaseHandler()
-
-	require.NoError(t, receiveNodeValue(t, forwardDone))
-	require.NotNil(t, receiveNodeValue(t, pushes))
-	require.NoError(t, receiveNodeValue(t, stopDone))
-}
-
 func TestBusinessDrainCanPushToUID(t *testing.T) {
 	stub := &gatewayStub{pushes: make(chan *v1.PushRequest, 1)}
 	binding := testBinding("player-a", "conn-a")
 	binding.GateEndpoint = "grpc://" + startGatewayStub(t, stub)
-	store := newMemoryLocator()
-	store.setGate(binding)
 	var server *Server
-	server = newDispatchTestServer(t, Locator(store), Drain(func(ctx context.Context) error {
+	server = newDispatchTestServer(t, GateDirectory(fixedGateDirectory{binding: binding}), Drain(func(ctx context.Context) error {
 		return server.PushToUID(ctx, binding.UID, 2, wrapperspb.String("drain"))
 	}))
 
 	require.NoError(t, server.Stop(context.Background()))
 	require.NotNil(t, receiveNodeValue(t, stub.pushes))
-	require.Equal(t, codes.Unavailable, status.Code(server.PushToUID(context.Background(), binding.UID, 2, wrapperspb.String("closed"))))
+	err := server.PushToUID(context.Background(), binding.UID, 2, wrapperspb.String("closed"))
+	require.Equal(t, codes.Unavailable, status.Code(err))
+	require.Equal(t, "node is stopping or stopped", status.Convert(err).Message())
 }
 
 func TestStopWaitsForDeliveriesBeforeReleasingEpoch(t *testing.T) {
@@ -222,10 +129,9 @@ func TestStopWaitsForDeliveriesBeforeReleasingEpoch(t *testing.T) {
 			}}
 			binding := testBinding("player-a", "conn-a")
 			binding.GateEndpoint = "grpc://" + startGatewayStub(t, stub)
-			store := newMemoryLocator()
-			store.setGate(binding)
+			store := newMemoryNodeStore()
 			require.NoError(t, store.RegisterNodeEpoch(context.Background(), "game", "node-a", "epoch-a", DefaultNodeEpochTTL))
-			server := newDispatchTestServer(t, Locator(store))
+			server := newTestServer(t, Stateful(store), GateDirectory(fixedGateDirectory{binding: binding}))
 			publishTestIdentity(server, nodeIdentity{serviceName: "game", nodeID: "node-a", epoch: "epoch-a"})
 			t.Cleanup(func() { require.NoError(t, server.Stop(context.Background())) })
 			t.Cleanup(releasePush)
@@ -237,7 +143,7 @@ func TestStopWaitsForDeliveriesBeforeReleasingEpoch(t *testing.T) {
 				}
 				pushed <- (requestSession{server: server, binding: binding}).Push(context.Background(), 2, wrapperspb.String("push"))
 			}()
-			waitNodeSignal(t, entered)
+			receiveNodeValue(t, entered)
 			stopped := make(chan error, 1)
 			go func() { stopped <- server.Stop(context.Background()) }()
 			require.Eventually(t, server.deliveries.isClosed, time.Second, time.Millisecond)
@@ -267,16 +173,15 @@ func TestDeliveryDrainTimeoutKeepsEpochUntilTTL(t *testing.T) {
 	}}
 	binding := testBinding("player-a", "conn-a")
 	binding.GateEndpoint = "grpc://" + startGatewayStub(t, stub)
-	store := newMemoryLocator()
-	store.setGate(binding)
+	store := newMemoryNodeStore()
 	require.NoError(t, store.RegisterNodeEpoch(context.Background(), "game", "node-a", "epoch-a", DefaultNodeEpochTTL))
-	server := newDispatchTestServer(t, Locator(store))
+	server := newTestServer(t, Stateful(store), GateDirectory(fixedGateDirectory{binding: binding}), ShutdownTimeout(20*time.Millisecond))
 	publishTestIdentity(server, nodeIdentity{serviceName: "game", nodeID: "node-a", epoch: "epoch-a"})
 	// Stop 可能已记录预期的排空超时，清理不重复断言它的返回值。
 	t.Cleanup(func() { _ = server.Stop(context.Background()) })
 	pushed := make(chan error, 1)
 	go func() { pushed <- server.PushToUID(context.Background(), binding.UID, 2, wrapperspb.String("push")) }()
-	waitNodeSignal(t, entered)
+	receiveNodeValue(t, entered)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
 	require.ErrorIs(t, server.Stop(ctx), context.DeadlineExceeded)
@@ -287,29 +192,8 @@ func TestDeliveryDrainTimeoutKeepsEpochUntilTTL(t *testing.T) {
 	require.Equal(t, "epoch-a", epoch)
 }
 
-func TestPushToUIDLocatesGateAndPushes(t *testing.T) {
-	stub := &gatewayStub{pushes: make(chan *v1.PushRequest, 1)}
-	gateAddress := startGatewayStub(t, stub)
-
-	binding := testBinding("player-a", "conn-a")
-	binding.GateEndpoint = "grpc://" + gateAddress
-	locator := newMemoryLocator()
-	locator.setGate(binding)
-
-	server := newTestServer(t, Locator(locator), PushTimeout(time.Second))
-	publishTestIdentity(server, nodeIdentity{serviceName: "game", nodeID: "node-a"})
-	t.Cleanup(func() { require.NoError(t, server.Stop(context.Background())) })
-
-	require.NoError(t, server.PushToUID(context.Background(), "player-a", 2, wrapperspb.String("push")))
-	push := <-stub.pushes
-	require.Equal(t, binding.BindingToken, push.GetRoute().GetBindingToken())
-	require.Equal(t, int32(2), push.GetCommand())
-}
-
 func TestPushToUIDTimeoutIncludesGateLookup(t *testing.T) {
-	locator := &blockingGateLocator{Locator: newMemoryLocator()}
-	server := newTestServer(t, Locator(locator), PushTimeout(20*time.Millisecond))
-	publishTestIdentity(server, nodeIdentity{serviceName: "game", nodeID: "node-a"})
+	server := newDispatchTestServer(t, GateDirectory(&blockingGateLocator{}), PushTimeout(20*time.Millisecond))
 	t.Cleanup(func() { require.NoError(t, server.Stop(context.Background())) })
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
@@ -323,11 +207,9 @@ func TestPushToUIDTimeoutIncludesGateLookup(t *testing.T) {
 func TestClientMiddlewareObservesPushWithoutChangingResult(t *testing.T) {
 	for _, pushSource := range []string{"session", "uid"} {
 		t.Run(pushSource, func(t *testing.T) {
-			stub := &gatewayStub{pushes: make(chan *v1.PushRequest, 2)}
+			stub := &gatewayStub{pushes: make(chan *v1.PushRequest, 1)}
 			binding := testBinding("player-a", "conn-a")
 			binding.GateEndpoint = "grpc://" + startGatewayStub(t, stub)
-			store := newMemoryLocator()
-			store.setGate(binding)
 			var middlewareCalls []string
 			var observedDeadline time.Time
 			var observedErr error
@@ -347,7 +229,7 @@ func TestClientMiddlewareObservesPushWithoutChangingResult(t *testing.T) {
 					}
 				}
 			}
-			server := newDispatchTestServer(t, Locator(store), ClientMiddleware(observe("outer")), ClientMiddleware(observe("inner")))
+			server := newDispatchTestServer(t, GateDirectory(fixedGateDirectory{binding: binding}), ClientMiddleware(observe("outer")), ClientMiddleware(observe("inner")))
 			t.Cleanup(func() { require.NoError(t, server.Stop(context.Background())) })
 			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 			defer cancel()
@@ -368,63 +250,60 @@ func TestClientMiddlewareObservesPushWithoutChangingResult(t *testing.T) {
 			deadline, _ := ctx.Deadline()
 			require.Equal(t, deadline, observedDeadline)
 			require.Equal(t, []string{"outer before", "inner before", "inner after", "outer after"}, middlewareCalls)
-			require.Equal(t, binding.BindingToken, (<-stub.pushes).GetRoute().GetBindingToken())
+			pushed := receiveNodeValue(t, stub.pushes)
+			want, err := proto.Marshal(wrapperspb.String("push"))
+			require.NoError(t, err)
+			require.Equal(t, want, pushed.Body)
+			require.Equal(t, int32(2), pushed.Command)
+			require.Equal(t, binding.BindingToken, pushed.GetRoute().GetBindingToken())
 		})
 	}
 }
 
 func TestClientMiddlewarePreservesErrorIdentity(t *testing.T) {
-	want := status.Error(codes.ResourceExhausted, "middleware failure")
-	server := newDispatchTestServer(t, ClientMiddleware(func(middleware.Handler) middleware.Handler {
-		return func(context.Context, any) (any, error) { return nil, want }
-	}))
-	t.Cleanup(func() { require.NoError(t, server.Stop(context.Background())) })
-	server.RegisterRawHandler(1, func(ctx context.Context, _ []byte) ([]byte, error) {
-		sess, ok := FromContext(ctx)
-		require.True(t, ok)
-		return nil, sess.Push(ctx, 2, wrapperspb.String("push"))
-	})
-	binding := testBinding("player-a", "conn-a")
-	binding.GateEndpoint = "grpc://127.0.0.1:1"
-	_, err := server.forward(context.Background(), binding, 1, nil)
-	require.ErrorIs(t, err, want)
-}
-
-func TestPushToUIDRejectsAfterStop(t *testing.T) {
-	server := newTestServer(t, Locator(newMemoryLocator()))
-	publishTestIdentity(server, nodeIdentity{serviceName: "game", nodeID: "node-a"})
-	require.NoError(t, server.Stop(context.Background()))
-
-	err := server.PushToUID(context.Background(), "player-a", 1, wrapperspb.String("push"))
-	require.Equal(t, codes.Unavailable, status.Code(err))
-	require.Equal(t, "node is stopping or stopped", status.Convert(err).Message())
+	for _, test := range []struct {
+		name string
+		err  error
+	}{
+		{name: "middleware", err: status.Error(codes.ResourceExhausted, "middleware failure")},
+		{name: "binding changed", err: status.Error(codes.Aborted, "binding changed")},
+		{name: "canceled", err: context.Canceled},
+		{name: "deadline", err: context.DeadlineExceeded},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server := newDispatchTestServer(t, ClientMiddleware(func(middleware.Handler) middleware.Handler {
+				return func(context.Context, any) (any, error) { return nil, test.err }
+			}))
+			t.Cleanup(func() { require.NoError(t, server.Stop(context.Background())) })
+			server.RegisterRawHandler(1, func(ctx context.Context, _ []byte) ([]byte, error) {
+				sess, ok := FromContext(ctx)
+				require.True(t, ok)
+				return nil, sess.Push(ctx, 2, wrapperspb.String("push"))
+			})
+			binding := testBinding("player-a", "conn-a")
+			binding.GateEndpoint = "grpc://127.0.0.1:1"
+			_, err := server.forward(context.Background(), binding, 1, nil)
+			require.True(t, err == test.err, "Push changed error identity: got %v, want %v", err, test.err)
+		})
+	}
 }
 
 func TestSessionPushMapsGatewayInvariantErrors(t *testing.T) {
+	invalidEndpoint := testBinding("player-a", "conn-a")
+	invalidEndpoint.GateEndpoint = "not-an-endpoint"
+	transportMismatch := testBinding("player-a", "conn-a")
+	transportMismatch.GateEndpoint = "grpcs://127.0.0.1:9000"
 	for _, test := range []struct {
 		name     string
-		binding  func() locate.GateBinding
+		binding  locate.GateBinding
 		close    bool
 		wantCode codes.Code
 		wantMsg  string
 	}{
-		{name: "invalid route", binding: func() locate.GateBinding {
-			binding := testBinding("player-a", "")
-			return binding
-		}, wantCode: codes.Internal, wantMsg: "invalid gateway route"},
-		{name: "invalid endpoint", binding: func() locate.GateBinding {
-			binding := testBinding("player-a", "conn-a")
-			binding.GateEndpoint = "not-an-endpoint"
-			return binding
-		}, wantCode: codes.Internal, wantMsg: "invalid gateway route"},
-		{name: "transport mismatch", binding: func() locate.GateBinding {
-			binding := testBinding("player-a", "conn-a")
-			binding.GateEndpoint = "grpcs://127.0.0.1:9000"
-			return binding
-		}, wantCode: codes.Internal, wantMsg: "invalid gateway route"},
-		{name: "closed client", binding: func() locate.GateBinding {
-			return testBinding("player-a", "conn-a")
-		}, close: true, wantCode: codes.Unavailable, wantMsg: "gateway is unavailable"},
+		{name: "invalid route", binding: testBinding("player-a", ""), wantCode: codes.Internal, wantMsg: "invalid gateway route"},
+		{name: "invalid endpoint", binding: invalidEndpoint, wantCode: codes.Internal, wantMsg: "invalid gateway route"},
+		{name: "transport mismatch", binding: transportMismatch, wantCode: codes.Internal, wantMsg: "invalid gateway route"},
+		{name: "closed client", binding: testBinding("player-a", "conn-a"), close: true, wantCode: codes.Unavailable, wantMsg: "gateway is unavailable"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			server := newDispatchTestServer(t)
@@ -432,7 +311,7 @@ func TestSessionPushMapsGatewayInvariantErrors(t *testing.T) {
 			if test.close {
 				require.NoError(t, server.gateways.Close())
 			}
-			sess := requestSession{binding: test.binding(), server: server}
+			sess := requestSession{binding: test.binding, server: server}
 
 			err := sess.Push(context.Background(), 1, wrapperspb.String("push"))
 			require.Equal(t, test.wantCode, status.Code(err))
@@ -441,15 +320,8 @@ func TestSessionPushMapsGatewayInvariantErrors(t *testing.T) {
 	}
 }
 
-func TestMapGatePushErrorPreservesContextAndStatus(t *testing.T) {
-	rpcErr := status.Error(codes.Aborted, "binding changed")
-	for _, err := range []error{context.Canceled, context.DeadlineExceeded, rpcErr} {
-		require.Equal(t, err, mapGatePushError(err))
-	}
-}
-
 func TestPushRejectsInvalidMessage(t *testing.T) {
-	server := newDispatchTestServer(t, Locator(newMemoryLocator()))
+	server := newDispatchTestServer(t, GateDirectory(fixedGateDirectory{}))
 	t.Cleanup(func() { require.NoError(t, server.Stop(context.Background())) })
 	sess := requestSession{binding: testBinding("player-a", "conn-a"), server: server}
 	var typedNil *wrapperspb.StringValue
@@ -470,9 +342,100 @@ func TestPushRejectsInvalidMessage(t *testing.T) {
 	}
 }
 
-// setGate 配置 Push 场景的既有 lease，不模拟 Gateway 的绑定写入。
-func (l *memoryLocator) setGate(binding locate.GateBinding) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.gateways[binding.ServiceName+"\x00"+binding.UID] = locate.GateLease{Binding: binding, TTL: time.Minute}
+func TestStatefulSessionPushDoesNotRequireGateDirectory(t *testing.T) {
+	stub := &gatewayStub{pushes: make(chan *v1.PushRequest, 1)}
+	binding := testBinding("player-a", "original-connection")
+	binding.GateEndpoint = "grpc://" + startGatewayStub(t, stub)
+	registrar := newLifecycleRegistrar()
+	server := newTestServer(t, Address("127.0.0.1:0"), Registration(registrar), Stateful(newMemoryNodeStore()))
+	server.RegisterRawHandler(1, func(ctx context.Context, _ []byte) ([]byte, error) {
+		session, ok := FromContext(ctx)
+		require.True(t, ok)
+		return nil, session.Push(ctx, 2, wrapperspb.String("original connection"))
+	})
+	startTestNode(testNodeContext(), t, server)
+	client, _ := nodeClients(t, registrar.instance())
+	_, err := client.Forward(context.Background(), &v1.ForwardRequest{Route: clusterroute.FromBinding(binding), Command: 1})
+	require.NoError(t, err)
+	require.Equal(t, binding.ConnID, receiveNodeValue(t, stub.pushes).Route.ConnId)
+	err = server.PushToUID(context.Background(), binding.UID, 2, wrapperspb.String("current connection"))
+	require.Equal(t, codes.FailedPrecondition, status.Code(err))
+	require.Equal(t, "gate locator is not configured", status.Convert(err).Message())
+}
+
+func checkAcceptedPushDuringStop(t *testing.T, server *Server, binding locate.GateBinding, pushes <-chan *v1.PushRequest, push func(context.Context) error) {
+	t.Helper()
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	releaseHandler := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(releaseHandler)
+	server.RegisterRawHandler(1, func(ctx context.Context, _ []byte) ([]byte, error) {
+		close(entered)
+		<-release
+		return nil, push(ctx)
+	})
+	forwardDone := make(chan error, 1)
+	go func() {
+		_, forwardErr := server.forward(context.Background(), binding, 1, nil)
+		forwardDone <- forwardErr
+	}()
+	receiveNodeValue(t, entered)
+	stopDone := make(chan error, 1)
+	go func() { stopDone <- server.Stop(context.Background()) }()
+	require.Eventually(t, server.requests.isClosed, time.Second, time.Millisecond)
+	releaseHandler()
+
+	require.NoError(t, receiveNodeValue(t, forwardDone))
+	require.NotNil(t, receiveNodeValue(t, pushes))
+	require.NoError(t, receiveNodeValue(t, stopDone))
+	require.NoError(t, server.Stop(context.Background()))
+	_, err := server.forward(context.Background(), binding, 1, nil)
+	requireNodeDraining(t, err)
+}
+
+type gatewayStub struct {
+	v1.UnimplementedGatewayServer
+	pushes chan *v1.PushRequest
+	push   func(context.Context, *v1.PushRequest) (*emptypb.Empty, error)
+}
+
+func (s *gatewayStub) Push(ctx context.Context, in *v1.PushRequest) (*emptypb.Empty, error) {
+	if s.push != nil {
+		return s.push(ctx, in)
+	}
+	s.pushes <- in
+	return &emptypb.Empty{}, nil
+}
+
+func startGatewayStub(t *testing.T, stub *gatewayStub) string {
+	t.Helper()
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	gate := kgrpc.NewServer(kgrpc.Listener(lis))
+	v1.RegisterGatewayServer(gate, stub)
+	done := make(chan error, 1)
+	go func() { done <- gate.Start(context.Background()) }()
+	t.Cleanup(func() {
+		require.NoError(t, gate.Stop(context.Background()))
+		require.NoError(t, receiveNodeValue(t, done))
+	})
+	return lis.Addr().String()
+}
+
+type fixedGateDirectory struct {
+	binding locate.GateBinding
+}
+
+func (d fixedGateDirectory) LocateGate(_ context.Context, serviceName, uid string) (locate.GateLease, error) {
+	if d.binding.ServiceName != serviceName || d.binding.UID != uid {
+		return locate.GateLease{}, locate.ErrGateNotFound
+	}
+	return locate.GateLease{Binding: d.binding, TTL: time.Minute}, nil
+}
+
+type blockingGateLocator struct{}
+
+func (*blockingGateLocator) LocateGate(ctx context.Context, _, _ string) (locate.GateLease, error) {
+	<-ctx.Done()
+	return locate.GateLease{}, ctx.Err()
 }

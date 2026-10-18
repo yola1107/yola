@@ -173,31 +173,6 @@ func TestWithLevelRejectsInvalidValue(t *testing.T) {
 	require.ErrorContains(t, err, `invalid level "invalid"`)
 }
 
-func captureStdout(t *testing.T) func() string {
-	t.Helper()
-	reader, writer, err := os.Pipe()
-	require.NoError(t, err)
-	original := os.Stdout
-	os.Stdout = writer
-	restored := false
-	t.Cleanup(func() {
-		if !restored {
-			os.Stdout = original
-			_ = writer.Close()
-		}
-		_ = reader.Close()
-	})
-	return func() string {
-		t.Helper()
-		os.Stdout = original
-		restored = true
-		require.NoError(t, writer.Close())
-		output, readErr := io.ReadAll(reader)
-		require.NoError(t, readErr)
-		return string(output)
-	}
-}
-
 func TestLoggerRejectsInvalidConfiguration(t *testing.T) {
 	for name, test := range map[string]struct {
 		cfg *zapslog.Log
@@ -230,5 +205,30 @@ func TestLoggerRejectsInvalidConfiguration(t *testing.T) {
 			_, _, err := zapslog.NewLogger(test.cfg)
 			require.ErrorContains(t, err, test.err)
 		})
+	}
+}
+
+func captureStdout(t *testing.T) func() string {
+	t.Helper()
+	reader, writer, err := os.Pipe()
+	require.NoError(t, err)
+	original := os.Stdout
+	os.Stdout = writer
+	restored := false
+	t.Cleanup(func() {
+		if !restored {
+			os.Stdout = original
+			_ = writer.Close()
+		}
+		_ = reader.Close()
+	})
+	return func() string {
+		t.Helper()
+		os.Stdout = original
+		restored = true
+		require.NoError(t, writer.Close())
+		output, readErr := io.ReadAll(reader)
+		require.NoError(t, readErr)
+		return string(output)
 	}
 }

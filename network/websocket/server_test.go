@@ -20,12 +20,6 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-func serverChannel(server *Server, connID string) *Channel {
-	server.lifecycleMu.Lock()
-	defer server.lifecycleMu.Unlock()
-	return server.channels[connID]
-}
-
 func TestServersUseIndependentMux(_ *testing.T) {
 	NewServer(Path("/ws"))
 	NewServer(Path("/ws"))
@@ -41,7 +35,8 @@ func TestEndpointUsesServerConfiguration(t *testing.T) {
 		{name: "listener", scheme: "ws", path: "/"},
 		{name: "path", scheme: "ws", path: "/ws", options: []ServerOption{Path("/ws")}},
 		{name: "TLS", scheme: "wss", path: "/", options: []ServerOption{TLSConfig(&tls.Config{
-			MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{{}},
+			MinVersion:   tls.VersionTLS12,
+			Certificates: []tls.Certificate{{}},
 		})}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -322,63 +317,15 @@ func TestServerSetHandlerAllowsDeferredInjection(t *testing.T) {
 	if err := s.SetHandler(websocketTestHandler{}); err == nil || err.Error() != "websocket: connection handler is already set" {
 		t.Fatalf("second SetHandler() error = %v, want already set", err)
 	}
-	done := make(chan error, 1)
-	go func() { done <- s.Start(context.Background()) }()
-	endpoint, err := s.Endpoint()
-	if err != nil {
-		t.Fatal(err)
-	}
-	conn := dialWebSocketTest(t, "ws://"+endpoint.Host+"/")
+	endpoint := serveWebSocketTestServer(t, s)
+	conn := dialWebSocketTest(t, endpoint)
 	_ = conn.Close()
 	if err := s.Stop(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
 	if err := s.SetHandler(websocketTestHandler{}); err == nil {
 		t.Fatal("SetHandler succeeded after Start")
 	}
-}
-
-type lifecycleHandler struct {
-	opened chan network.Connection
-	closed chan network.Connection
-}
-
-func (h *lifecycleHandler) Open(_ context.Context, conn network.Connection) error {
-	h.opened <- conn
-	return nil
-}
-
-func (*lifecycleHandler) Handle(_ context.Context, _ network.Connection, message *v1.Proto) (*v1.Proto, error) {
-	return message, nil
-}
-func (h *lifecycleHandler) Close(_ context.Context, conn network.Connection) { h.closed <- conn }
-
-type countingListener struct {
-	net.Listener
-	closes atomic.Int32
-}
-
-func (l *countingListener) Close() error {
-	l.closes.Add(1)
-	return l.Listener.Close()
-}
-
-type serveGateListener struct {
-	*countingListener
-	armed   atomic.Bool
-	entered chan struct{}
-	release <-chan struct{}
-}
-
-func (l *serveGateListener) Addr() net.Addr {
-	if l.armed.CompareAndSwap(true, false) {
-		close(l.entered)
-		<-l.release
-	}
-	return l.Listener.Addr()
 }
 
 func TestServerStopClosesListenerBeforeServeTakesOwnership(t *testing.T) {
@@ -416,34 +363,13 @@ func TestServerStopClosesListenerBeforeServeTakesOwnership(t *testing.T) {
 	}
 }
 
-type blockingCloseHandler struct {
-	opened  chan struct{}
-	closing chan struct{}
-	release chan struct{}
-}
-
-func (h *blockingCloseHandler) Open(context.Context, network.Connection) error {
-	close(h.opened)
-	return nil
-}
-
-func (*blockingCloseHandler) Handle(_ context.Context, _ network.Connection, message *v1.Proto) (*v1.Proto, error) {
-	return message, nil
-}
-
-func (h *blockingCloseHandler) Close(context.Context, network.Connection) {
-	close(h.closing)
-	<-h.release
-}
-
 func TestServerStopCanRetryAfterTimeout(t *testing.T) {
 	h := &blockingCloseHandler{
 		opened:  make(chan struct{}),
 		closing: make(chan struct{}),
 		release: make(chan struct{}),
 	}
-	var releaseOnce sync.Once
-	release := func() { releaseOnce.Do(func() { close(h.release) }) }
+	release := sync.OnceFunc(func() { close(h.release) })
 	t.Cleanup(release)
 
 	s := newWebSocketServer(t, h, Address("127.0.0.1:0"))
@@ -453,8 +379,7 @@ func TestServerStopCanRetryAfterTimeout(t *testing.T) {
 	}
 	serverDone := make(chan error, 1)
 	go func() { serverDone <- s.Start(context.Background()) }()
-	conn := dialWebSocketTest(t, endpoint.String())
-	t.Cleanup(func() { _ = conn.Close() })
+	dialWebSocketTest(t, endpoint.String())
 	waitWebSocketValue(t, h.opened)
 
 	for attempt := 1; attempt <= 3; attempt++ {
@@ -483,13 +408,8 @@ func TestServerStopCanRetryAfterTimeout(t *testing.T) {
 func TestServerStopClosesActiveChannel(t *testing.T) {
 	h := &lifecycleHandler{opened: make(chan network.Connection, 1), closed: make(chan network.Connection, 1)}
 	s := newWebSocketServer(t, h, Address("127.0.0.1:0"))
-	endpoint, err := s.Endpoint()
-	if err != nil {
-		t.Fatal(err)
-	}
-	done := make(chan error, 1)
-	go func() { done <- s.Start(context.Background()) }()
-	conn := dialWebSocketTest(t, endpoint.String())
+	endpoint := serveWebSocketTestServer(t, s)
+	conn := dialWebSocketTest(t, endpoint)
 	ch := waitWebSocketValue(t, h.opened)
 	stored := serverChannel(s, ch.ConnID())
 	if stored == nil {
@@ -498,9 +418,6 @@ func TestServerStopClosesActiveChannel(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	if err := s.Stop(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if err := waitWebSocketValue(t, done); err != nil {
 		t.Fatal(err)
 	}
 	if closed := waitWebSocketValue(t, h.closed); closed != ch {
@@ -514,7 +431,6 @@ func TestServerStopClosesActiveChannel(t *testing.T) {
 	if _, _, err := conn.ReadMessage(); err == nil {
 		t.Fatal("client connection remained open after Stop")
 	}
-	_ = conn.Close()
 }
 
 func TestServerEnforcesConnectionLimits(t *testing.T) {
@@ -544,8 +460,74 @@ func TestServerEnforcesConnectionLimits(t *testing.T) {
 			for serverConnectionCount(s) != 0 && time.Now().Before(deadline) {
 				time.Sleep(time.Millisecond)
 			}
-			third := dialWebSocketTest(t, endpoint)
-			_ = third.Close()
+			dialWebSocketTest(t, endpoint)
 		})
 	}
+}
+
+func serverChannel(server *Server, connID string) *Channel {
+	server.lifecycleMu.Lock()
+	defer server.lifecycleMu.Unlock()
+	return server.channels[connID]
+}
+
+type lifecycleHandler struct {
+	opened chan network.Connection
+	closed chan network.Connection
+}
+
+func (h *lifecycleHandler) Open(_ context.Context, conn network.Connection) error {
+	h.opened <- conn
+	return nil
+}
+
+func (*lifecycleHandler) Handle(_ context.Context, _ network.Connection, message *v1.Proto) (*v1.Proto, error) {
+	return message, nil
+}
+
+func (h *lifecycleHandler) Close(_ context.Context, conn network.Connection) { h.closed <- conn }
+
+type countingListener struct {
+	net.Listener
+	closes atomic.Int32
+}
+
+func (l *countingListener) Close() error {
+	l.closes.Add(1)
+	return l.Listener.Close()
+}
+
+type serveGateListener struct {
+	*countingListener
+	armed   atomic.Bool
+	entered chan struct{}
+	release <-chan struct{}
+}
+
+func (l *serveGateListener) Addr() net.Addr {
+	if l.armed.CompareAndSwap(true, false) {
+		close(l.entered)
+		<-l.release
+	}
+	return l.Listener.Addr()
+}
+
+type blockingCloseHandler struct {
+	opened  chan struct{}
+	closing chan struct{}
+	release chan struct{}
+}
+
+func (h *blockingCloseHandler) Open(context.Context, network.Connection) error {
+	close(h.opened)
+	return nil
+}
+
+func (*blockingCloseHandler) Handle(_ context.Context, _ network.Connection, message *v1.Proto) (*v1.Proto, error) {
+	return message, nil
+}
+
+func (h *blockingCloseHandler) Close(context.Context, network.Connection) {
+	close(h.closing)
+	<-h.release
 }

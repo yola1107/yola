@@ -40,23 +40,6 @@ func init() {
 	flag.StringVar(&wsPort, "ws-port", "3102", "WebSocket listen port")
 }
 
-type authenticator struct{}
-
-func (authenticator) Authenticate(_ context.Context, serviceName string, token []byte, _ string) (string, error) {
-	if serviceName != "whot" && serviceName != "ludo" {
-		return "", gateway.ErrInvalidCredentials
-	}
-	prefix := []byte(message.AuthTokenPrefix)
-	if len(token) <= len(prefix) || subtle.ConstantTimeCompare(token[:len(prefix)], prefix) != 1 {
-		return "", gateway.ErrInvalidCredentials
-	}
-	uid := string(token[len(prefix):])
-	if !locate.ValidUID(uid) {
-		return "", gateway.ErrInvalidCredentials
-	}
-	return uid, nil
-}
-
 func main() {
 	flag.Parse()
 
@@ -144,11 +127,26 @@ func main() {
 		kratos.Name(name),
 		kratos.Logger(logger),
 		kratos.StopTimeout(stopTimeout),
-		kratos.BeforeStart(gate.BeforeStart),
 		kratos.Server(gate),
-		kratos.Registrar(registry),
 	)
 	if err := app.Run(); err != nil {
 		slog.Error("run Gateway", "error", err)
 	}
+}
+
+type authenticator struct{}
+
+func (authenticator) Authenticate(_ context.Context, serviceName string, token []byte, _ string) (string, error) {
+	if serviceName != "whot" && serviceName != "ludo" {
+		return "", gateway.ErrInvalidCredentials
+	}
+	prefix := []byte(message.AuthTokenPrefix)
+	if len(token) <= len(prefix) || subtle.ConstantTimeCompare(token[:len(prefix)], prefix) != 1 {
+		return "", gateway.ErrInvalidCredentials
+	}
+	uid := string(token[len(prefix):])
+	if !locate.ValidUID(uid) {
+		return "", gateway.ErrInvalidCredentials
+	}
+	return uid, nil
 }

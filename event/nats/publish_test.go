@@ -20,7 +20,8 @@ func TestPublishDeadlineDuringNativeWrite(t *testing.T) {
 	published := make(chan error, 1)
 	go func() {
 		published <- bus.Publish(ctx, event.Event{
-			Topic: "yola.event.blocked-publish", Payload: make([]byte, 64<<10),
+			Topic:   "yola.event.blocked-publish",
+			Payload: make([]byte, 64<<10),
 		})
 	}()
 	waitSignal(t, writer.entered, "publish did not reach the write barrier")
@@ -45,7 +46,8 @@ func TestCanceledPublishWaitingForWorkerIsNeverSent(t *testing.T) {
 	first := make(chan error, 1)
 	go func() {
 		first <- bus.Publish(context.Background(), event.Event{
-			Topic: topic, Payload: make([]byte, 64<<10),
+			Topic:   topic,
+			Payload: make([]byte, 64<<10),
 		})
 	}()
 	waitSignal(t, writer.entered, "first publish did not block")
@@ -82,7 +84,8 @@ func TestCloseReleasesPublishCallersAndJoinsWorker(t *testing.T) {
 	published := make(chan error, 1)
 	go func() {
 		published <- bus.Publish(context.Background(), event.Event{
-			Topic: "yola.event.close-publish", Payload: make([]byte, 64<<10),
+			Topic:   "yola.event.close-publish",
+			Payload: make([]byte, 64<<10),
 		})
 	}()
 	waitSignal(t, writer.entered, "publish did not reach the write barrier")

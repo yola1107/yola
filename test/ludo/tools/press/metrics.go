@@ -74,8 +74,12 @@ func (m *stageMetric) report() stageReport {
 	succeeded := m.succeeded.Load()
 	p50, p95, p99 := m.latencies.percentiles()
 	report := stageReport{
-		Attempts: attempts, Succeeded: succeeded, Failed: attempts - succeeded,
-		P50: p50, P95: p95, P99: p99,
+		Attempts:  attempts,
+		Succeeded: succeeded,
+		Failed:    attempts - succeeded,
+		P50:       p50,
+		P95:       p95,
+		P99:       p99,
 	}
 	if attempts > 0 {
 		report.SuccessRate = float64(succeeded) / float64(attempts)
@@ -104,8 +108,11 @@ func (m *broadcastMetric) record(sentAt time.Time, valid bool) {
 func (m *broadcastMetric) report() broadcastReport {
 	p50, p95, p99 := m.latencies.percentiles()
 	return broadcastReport{
-		Received: m.received.Load(), Invalid: m.invalid.Load(),
-		P50: p50, P95: p95, P99: p99,
+		Received: m.received.Load(),
+		Invalid:  m.invalid.Load(),
+		P50:      p50,
+		P95:      p95,
+		P99:      p99,
 	}
 }
 
