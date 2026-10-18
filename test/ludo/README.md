@@ -1,6 +1,6 @@
 # Ludo Kratos Service
 
-Ludo 是运行在 Yola Node transport 上的 Stateful Kratos 游戏服务。当前依赖方向为：
+Ludo 是通过框架 Node transport 接入的 Stateful Kratos 游戏服务。当前依赖方向为：
 
 ```text
 cmd -> server -> service -> biz <- data
@@ -11,7 +11,7 @@ cmd -> server -> service -> biz <- data
                      mailbox(tableID)
 ```
 
-`api/v1` 定义 `GameServer` 和 command 注册映射；`server` 在一个构造函数内创建 `node.Server`、注入 service，并把它作为唯一 Kratos transport；内部 gRPC 不进入应用装配。`service` 统一安装 command、Push 和 Disconnect adapter，把 `node.Session` 收窄为业务需要的能力；`biz` 不依赖 `yola/node`，只编排玩家生命周期。`table.Manager` 持有 Table 集合和 mailbox；单桌规则只由对应 mailbox 写入。
+`api/v1` 定义 `GameServer` 和 command 注册映射；`server` 在一个构造函数内创建 `node.Server`、注入 service，并把它作为唯一 Kratos transport；内部 gRPC 不进入应用装配。`service` 统一安装 command、Push 和 Disconnect adapter，把 `node.Session` 收窄为业务需要的能力；`biz` 不依赖框架 Node 包，只编排玩家生命周期。`table.Manager` 持有 Table 集合和 mailbox；单桌规则只由对应 mailbox 写入。
 
 ## 启动与配置
 
@@ -40,7 +40,7 @@ Logout -> Table mailbox 移出 -> Save -> Unbind -> 删除 Player
 
 `LoginReq.tableID` 用于首次入座：`<= 0` 保留自动选桌，优先人数较少的可入座桌；正数只进入当前 Node 内的指定桌，不存在返回 `NoTableSpecified / NO_TABLE_SPECIFIED`，已满返回 `TableNoSpace / TABLE_NO_SPACE`。入座仍在目标桌 mailbox 内检查空位和写入座位；队列满、超时或入座执行失败沿用现有错误处理，不自动改投其他桌。已有在桌玩家登录仍重连原桌，传入其他桌号不会切桌；`type` 和 `chairID` 未增加新语义。桌号是 Node 内的编号，不负责首次登录时跨 Node 选服。
 
-首次入座和重连的 mailbox 等待上限为 5s，与失败清理的独立 2s 预算分开。截止时尚未开始的任务会被取消，后续不会迟到入座；已经开始的任务仍等待完成，保持桌内状态和响应结果一致。该上限不包含创建玩家、BindNode，也不是已经开始执行的 Seat 的硬截止。当前 YAML 的 Node handler 为 5s，压测夹具为 15s；具体装配与复现条件见 [测试模块](../README.md#本地启动)，各层关系和待设计的收敛方案见 [超时职责](../../docs/architecture.md#63-请求预算与超时职责)。
+首次入座和重连的 mailbox 等待上限为 5s，与失败清理的独立 2s 预算分开。截止时尚未开始的任务会被取消，后续不会迟到入座；已经开始的任务仍等待完成，保持桌内状态和响应结果一致。该上限不包含创建玩家、BindNode，也不是已经开始执行的 Seat 的硬截止。当前 YAML 的 Node handler 为 5s，压测夹具为 15s；具体装配与复现条件见 [测试模块](../README.md#本地启动)，各层预算边界见[超时职责](../../docs/project/architecture.md#63-请求预算与超时职责)。
 
 ## 当前 `press` 入口
 
@@ -96,7 +96,7 @@ loadTest:
 | `uid_start` / `uid_end` | 本轮只增不减且不回绕的 UID 区间；耗尽后停止补充用户 |
 | Action 并发 | Push callback 内等待全局 slot 并同步请求；slot 饱和时会阻塞该用户后续 callback |
 
-每轮压测必须选择未使用过的 `startID + uidCount` 区间；Redis 清理只能在专用测试实例按明确前缀执行。preflight 校验的是配置声明而非远端实时容量，因此结果仍需结合服务端指标解释。热路径成本、最近 benchmark 和容量口径见 [性能基线](../../docs/performance.md)。
+每轮压测必须选择未使用过的 `startID + uidCount` 区间；Redis 清理只能在专用测试实例按明确前缀执行。preflight 校验的是配置声明而非远端实时容量，因此结果仍需结合服务端指标解释。热路径成本、基准命令和容量口径见[性能验证](../../docs/project/performance.md)。
 
 ### 单 Gateway 阶梯容量
 
@@ -161,8 +161,8 @@ go test -race ./ludo/tools/press ./ludo/internal/biz/... ./ludo/internal/service
 
 race 范围按实际受影响包选择，已由仓库 `make check` 覆盖的同配置测试无需重复。
 
-Docker build context 必须是 `yola` 仓库根目录：
+Docker build context 必须是仓库根目录：
 
 ```bash
-docker build -f test/ludo/Dockerfile -t yola-ludo .
+docker build -f test/ludo/Dockerfile -t ludo-server .
 ```

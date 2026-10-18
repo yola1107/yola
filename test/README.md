@@ -1,10 +1,10 @@
-# Yola 游戏测试模块
+# 游戏测试模块
 
-`test` 是独立 Go module，只单向依赖仓库根部的 `yola`：
+`test/` 是独立 Go module，只单向依赖仓库根 module：
 
 ```text
-yola/test --replace--> yola
-yola                  -X-> yola/test
+test module --replace--> 根 module
+根 module   --不依赖-->   test module
 ```
 
 ## 配置来源
@@ -17,7 +17,7 @@ yola                  -X-> yola/test
 
 当前没有全局 `YOLA_TEST_REDIS_*` 或 `YOLA_TEST_ETCD_*` 覆盖逻辑。Gateway 使用 `-redis-*` 和 `-etcd-*` 参数；游戏 Node 使用配置文件的 `data.redis` 和 `data.registry`。本地凭据应放在仓库外的配置副本或启动参数中，不得提交。
 
-`test/gateway/main.go` 通过 `Transport` 拥有 WebSocket transport；当前测试入口不启动 TCP transport。
+`test/gateway/main.go` 通过 `Transport` 拥有 WebSocket transport；当前测试入口不启动 TCP transport。Gateway 和游戏 Node 的环境 registry prefix 必须一致，统一由 `NewNodeRegistry` 派生内部目录。Node 的 Registrar 在 server 构造时注入，App 只装配 transport；Wire cleanup 先停 Node，再关闭其依赖。
 
 Redis 客户端创建时会立即执行 `PING`（`test/internal/xredis/redis.go`）。地址必须使用完整的 `host:port` 形式，非法地址和连接参数会在创建客户端前返回错误，不会回退到本机默认值。密码留空只表示客户端不发送密码；如果 Redis 开启了认证，Gateway 必须传 `-redis-password`，Ludo/Whot 必须设置 `data.redis.password`，否则启动会返回 `ping Redis: NOAUTH Authentication required`。该错误是依赖配置不匹配，不是允许忽略的空密码状态。
 
@@ -45,11 +45,11 @@ go build -o ./bin/whot-server.exe ./whot/cmd/whot-server
 ./bin/whot-server.exe -conf ./whot/configs
 ```
 
-上述 Gateway 请求预算为 5s，Ludo YAML 的 Node handler 也是 5s；Whot 保持自身配置。复现本轮 Ludo 突发入座对照时，须在仓库外的配置副本中把 `server.grpc.timeout` 设为 15s，并将 Gateway 改用 `-rpc-timeout 15s`。入座等待仍为 5s；[超时职责](../docs/architecture.md#63-请求预算与超时职责) 说明了这些预算的边界，不能把压测夹具结果直接当作默认配置容量。
+上述 Gateway 请求预算为 5s，Ludo YAML 的 Node handler 也是 5s；Whot 保持自身配置。复现 Ludo 突发入座对照时，须在仓库外的配置副本中把 `server.grpc.timeout` 设为 15s，并将 Gateway 改用 `-rpc-timeout 15s`。入座等待仍为 5s；[超时职责](../docs/project/architecture.md#63-请求预算与超时职责) 说明了这些预算的边界，不能把压测夹具结果直接当作默认配置容量。
 
 Gateway 的 `-ws-max-connections` 默认 10,000，`-ws-max-connections-per-ip` 默认 **100**（与框架 `DefaultMaxConnPerIP` 一致）。单机压测通常需显式提高 per-IP；总量超过 10,000 时必须同时调整两项，并按每个 Gateway 的实际分流目标设置。硬上限未对齐时，连接拒绝不能作为服务容量结论。
 
-真实广播容量探针默认连接 `nats://127.0.0.1:4222`；`-nats-url` 可覆盖地址。每个 Gateway 实例订阅 `yola.gateway.press.broadcast.v1`，并在 Kratos `AfterStart` 后每秒发布一个 256B 时间戳 Payload；本地 EventBus 和广播接纳队列容量均固定为 256。Gateway 每 15s 输出广播 accepted/completed/drop、队列深度、Go heap、GC 和 goroutine。多个 Gateway 会分别发布并接收彼此的事件，使单连接到达率按 Gateway 数量倍增；I41 的单机基线只启动一个 Gateway。该 Topic、command 与 Payload 只属于测试协议，不是生产业务契约。
+真实广播容量探针默认连接 `nats://127.0.0.1:4222`；`-nats-url` 可覆盖地址。每个 Gateway 实例订阅 `yola.gateway.press.broadcast.v1`，并在 Kratos `AfterStart` 后每秒发布一个 256B 时间戳 Payload；本地 EventBus 和广播接纳队列容量均固定为 256。Gateway 每 15s 输出广播 accepted/completed/drop、队列深度、Go heap、GC 和 goroutine。多个 Gateway 会分别发布并接收彼此的事件，使单连接到达率按 Gateway 数量倍增；测量单机基线时只启动一个 Gateway。该 Topic、command 与 Payload 只属于测试协议，不是生产业务契约。
 
 ```bash
 go build -o ./bin/gateway ./gateway
@@ -67,9 +67,9 @@ go build -o ./bin/gateway ./gateway
 
 ## Table Push 分段基准
 
-Ludo/Whot 的 `BenchmarkTablePush` 共用 [pushbench](./internal/pushbench/benchmark.go)，通过真实 Redis、Node、Gateway 和桌广播函数测量 mailbox 等待、fanout、`PushToUID`、`LocateGate` 与 Gateway gRPC。基准使用独立 OTel MeterProvider 和 Kratos metrics client middleware，未配置 `YOLA_REDIS_INTEGRATION` 时跳过。
+Ludo/Whot 的 `BenchmarkTablePush` 共用 [pushbench](./internal/pushbench/benchmark.go)，通过真实 Redis、独立 Sender、Gateway 和桌广播函数测量 mailbox 等待、fanout、`PushToUID`、`LocateGate` 与 Gateway gRPC。基准使用独立 OTel MeterProvider 和 Kratos metrics client middleware，未配置 `YOLA_REDIS_INTEGRATION` 时跳过。
 
-从 `test` 目录运行，Redis 必须是可丢弃专用实例；每个子基准使用随机 service 隔离 binding/epoch 和可丢弃 UID：
+从 `test` 目录运行，Redis 必须是可丢弃专用实例；每个子基准使用随机 service 隔离 Gate binding 和可丢弃 UID：
 
 ```powershell
 $env:YOLA_REDIS_INTEGRATION = '<dedicated-redis>:6379'
@@ -78,7 +78,9 @@ go test ./ludo/internal/biz/table -run '^$' -bench '^BenchmarkTablePush$' -bench
 go test ./whot/internal/biz/table -run '^$' -bench '^BenchmarkTablePush$' -benchtime=3s -count=3 -timeout=180s
 ```
 
-每桌四人、Payload 为 256B bytes 的 protobuf 消息，8/64 桌分别对照无注入延迟和每条 Push 注入 5ms Gateway 处理延迟。worker 跟随 Ludo/Whot 的 `min(tableNum, 16)` 默认规则，8/64 桌分别为 8/16；闭环并发固定为 `8 × GOMAXPROCS`，上述命令下为 32。接收器只计数、不使用客户端 socket；每轮要求成功投递数等于广播数的四倍。输出各段调用数、均值及直方图分位数所在桶的上界（`p99_le_us`），任何 Push 或 mailbox 调用失败都会使基准失败。成本模型与容量验收方法见 [性能验证](../docs/performance.md)。
+每桌四人、Payload 为 256B bytes 的 protobuf 消息，8/64 桌分别对照无注入延迟和每条 Push 注入 5ms Gateway 处理延迟。worker 跟随 Ludo/Whot 的 `min(tableNum, 16)` 默认规则，8/64 桌分别为 8/16；闭环并发固定为 `8 × GOMAXPROCS`，上述命令下为 32。接收器只计数、不使用客户端 socket；每轮要求成功投递数等于广播数的四倍。输出各段调用数、均值及直方图分位数所在桶的上界（`p99_le_us`），任何 Push 或 mailbox 调用失败都会使基准失败。成本模型与容量验收方法见 [性能验证](../docs/project/performance.md)。
+
+纯推送基准现使用 Sender，不包含 Node epoch 检查；历史 Node 推送数据应标注版本后比较。完整游戏验证继续通过 Node.PushToUID。
 
 ## 固定速率与真实游戏验证
 
@@ -95,7 +97,7 @@ go test -p=1 ./ludo/internal/biz/table ./whot/internal/biz/table -run '^TestTabl
 
 每名接收者必须按序收到全部消息，队列拒绝、缺失、重复、串桌或乱序均使测试失败。`TestTablePushSocketOrdering` 额外覆盖读循环每帧延迟 10ms，以及旧连接关闭后的同 UID 重连，校验 binding token 已更换且序号连续；它不覆盖断线期间的消息重放、并发接管或发送队列溢出。
 
-`TestGameDelivery` 和 `TestConfiguredGameDelivery` 装配真实游戏 Usecase、Redis 玩家仓库、Node、Gateway 和独立 etcd namespace，使用原压测玩家驱动 Login、Scene 和游戏操作。Node/Gateway 均通过原生 Kratos App.Run 启停；Node 使用现有就绪 Registrar，Gateway 只使用同一 Registry 的 Discovery，不重复注册。夹具等待 AfterStart 和 gRPC Ready，失败时由测试 owner 取消、停止并等待 Run 结束，不新增生产 App 层。Ludo 保持同步操作，Whot 保持异步请求与响应 mailbox；测试连接接入观测 codec，不修改业务协议。场景包括两桌烟测、一名真人与两名服务器机器人，以及 100、500、1,000 桌各四名真人。
+`TestGameDelivery` 和 `TestConfiguredGameDelivery` 装配真实游戏 Usecase、Redis 玩家仓库、Node、Gateway 和独立 etcd namespace，使用原压测玩家驱动 Login、Scene 和游戏操作。Node/Gateway 均通过原生 Kratos App.Run 启停；Node 自管内部登记，Gateway 使用同一环境派生的 Node Discovery。夹具通过 Node health SERVING 与 Gateway 连接准入确认就绪，失败时由测试 owner 取消、停止并等待 Run 结束，不新增生产 App 层。Ludo 保持同步操作，Whot 保持异步请求与响应 mailbox；测试连接接入观测 codec，不修改业务协议。场景包括两桌烟测、一名真人与两名服务器机器人，以及 100、500、1,000 桌各四名真人。
 
 Ludo 测试按 `tableID = (UID - uidStart) / 4 + 1` 指定入座，每四个连续 UID 对应一桌，1,000 桌对应 4,000 名真人；验证 Login 返回桌号与分配一致，单独输出启动耗时和 Connect/Login/Scene/Ready 指标。每 10ms 新增 400 人，4,000 人计划约 100ms 发起完，实际发起与完成受调度和依赖处理速度影响。启动池容量按本轮玩家总数设置，避免有限 UID 在压测端因池满而漏发；等待全部启动成功或失败后统一统计，拒绝、掉线或响应错误仍使测试失败。普通 press 入口与 Whot 保留自动选桌。
 
@@ -109,7 +111,7 @@ Ludo 测试按 `tableID = (UID - uidStart) / 4 + 1` 指定入座，每四个连�
 | Whot `TestGameDelivery` | 3s / 3s | 3s | 保留历史预算对照 |
 | 两款游戏 `TestConfiguredGameDelivery` | 3s / 3s | 从各自 `configs/config.yaml` 读取，当前 Ludo 5s、Whot 3s | 当前请求预算场景；3s 对应测试 Gateway 当前 CLI 默认值 |
 
-Configured 只对齐请求预算，room、玩家、到达率仍由合成夹具提供，不等于完整 YAML 部署或容量验收。Ludo 入座/重连仍为 5s、失败清理为 2s，客户端请求默认 30s；日志值是比较依据。直接运行预编译测试二进制时，工作目录须为对应的 `tools/press`，以便读取 `../../configs/config.yaml`。独立服务装配见 [本地启动](#本地启动)，各层 owner 见 [超时预算](../docs/architecture.md#63-请求预算与超时职责)。
+Configured 只对齐请求预算，room、玩家、到达率仍由合成夹具提供，不等于完整 YAML 部署或容量验收。Ludo 入座/重连仍为 5s、失败清理为 2s，客户端请求默认 30s；日志值是比较依据。直接运行预编译测试二进制时，工作目录须为对应的 `tools/press`，以便读取 `../../configs/config.yaml`。独立服务装配见 [本地启动](#本地启动)，各层 owner 见 [超时预算](../docs/project/architecture.md#63-请求预算与超时职责)。
 
 `GameProbe.Stop` 保留独立 15s 的 Node 排空检查，让 Gateway 和客户端继续接收至消息流断言完成；App 注销和 Run 退出在测试 cleanup 中完成。早失败路径不保证先排空 Node 再关闭 Gateway。原生 App.Run 也引入原夹具未包含的应用初始化成本，不能直接以跨版本启动/RSS 差值宣称性能收益。
 
@@ -133,7 +135,7 @@ go test ./internal/pushbench -run '^TestGameRequestTimeoutsAcrossWebSocketAndGRP
 
 `client_wire_request` 从客户端出站帧编码计至响应解码，包含出站队列、Forward、业务执行和返回；它不包含业务 payload 首次序列化，也不代表 `Client.Request` 返回值观测。编码前失败和超时后迟到的响应仍需结合压测客户端日志判断。`handler` 是 Node command middleware 内部耗时，不能直接当作 mailbox 等待；真实游戏的 mailbox wait/reject 仍未独立采集。所有延迟分位数都是直方图桶上界。
 
-固定速率基准使用随机 service；真实游戏使用随机可丢弃 UID 和 etcd namespace，并写入玩家数据，因此 Redis 必须独占且可丢弃。认证 token 只是测试 UID。服务、压测客户端和观测器同进程，CPU/RSS 包含三者及观测开销；正式计时期间不要并行编译、跑其他检查或压测。结果与限制见 [性能基线](../docs/performance.md)。
+固定速率基准使用随机 service；真实游戏使用随机可丢弃 UID 和 etcd namespace，并写入玩家数据，因此 Redis 必须独占且可丢弃。认证 token 只是测试 UID。服务、压测客户端和观测器同进程，CPU/RSS 包含三者及观测开销；正式计时期间不要并行编译、跑其他检查或压测。测量方法与限制见[性能验证](../docs/project/performance.md)。
 
 ## 日志
 
@@ -146,4 +148,4 @@ go test ./internal/pushbench -run '^TestGameRequestTimeoutsAcrossWebSocketAndGRP
 
 Gateway 的测试认证只接受正 `int64` 的规范十进制 token，并直接作为 UID；它不是生产凭据。生产环境必须替换为可校验、可过期且防重放的认证，并补齐限流、ACL 和 secret 管理。
 
-客户端和压测工具必须使用 `yola/api/protocol/v1` envelope 及 Protobuf body。Gateway 提供 best-effort Node `Disconnect`，但旧连接通知仍可能晚于重连；业务必须在 actor/mailbox 内比较 `Session.BindingToken()`，并结合显式 Logout、租约或业务超时维护在线状态，见 [断线与重连边界](../docs/architecture.md#43-pushkick-与-disconnect)。
+客户端和压测工具必须使用 `yola/api/protocol/v1` envelope 及 Protobuf body。Gateway 提供 best-effort Node `Disconnect`，但旧连接通知仍可能晚于重连；业务必须在 actor/mailbox 内比较 `Session.BindingToken()`，并结合显式 Logout、租约或业务超时维护在线状态，见 [断线与重连边界](../docs/project/architecture.md#23-pushkick-与-disconnect)。
