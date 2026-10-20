@@ -16,64 +16,20 @@ Gateway 和 Node 可以分别部署多个实例。框架提供以下能力：
 
 Redis 保存连接定位与 Node 绑定，etcd 提供 Node 注册与发现；需要在线事件和跨 Gateway 广播时可接入 Core NATS。游戏规则、玩家和房间状态、事务及持久化由业务应用管理。
 
-## 目录树
+## 文档导航
 
-```text
-.
-├── api/                     # 客户端协议与集群 RPC
-├── gateway/                 # 客户端接入与请求路由
-├── node/                    # 业务命令与 Session
-├── push/                    # 按 UID 推送
-├── network/                 # TCP / WebSocket 传输与客户端
-├── event/                   # 事件接口与 NATS 实现
-├── locate/                  # 绑定定位与 Redis 实现
-├── registry/                # etcd 注册与发现
-├── instance/                # 实例元数据
-├── internal/                # 框架内部组件
-├── examples/                # 最小应用与客户端示例，属于根 module
-├── test/                    # 游戏、集成测试与压测，独立 module
-│   ├── gateway/             # 测试 Gateway
-│   ├── ludo/                # Ludo 服务、客户端与压测
-│   ├── whot/                # Whot 服务、客户端与压测
-│   ├── internal/            # 测试模块共享组件
-│   ├── README.md            # 测试模块运行说明
-│   ├── buf.yaml
-│   ├── buf.gen.config.yaml
-│   ├── buf.lock
-│   ├── go.mod
-│   └── go.sum
-├── docs/
-│   ├── README.md            # 文档导航、开发验证与维护边界
-│   ├── project/             # 项目职责、接入与验证
-│   │   ├── integration.md
-│   │   ├── architecture.md
-│   │   ├── eventbus.md
-│   │   └── performance.md
-│   ├── harness/             # 编码规范与操作流程
-│   │   ├── rules/
-│   │   │   ├── go-style.md
-│   │   │   └── uber-go/     # 第三方规范原文与许可证
-│   │   │       ├── style.md
-│   │   │       └── LICENSE
-│   │   └── workflows/
-│   │       └── commit.md
-│   ├── agents/              # 领域文档与本地任务约定
-│   │   ├── domain.md
-│   │   └── issue-tracker.md
-│   └── adr/                 # 架构决策
-│       └── 0001-self-contained-transports.md
-├── .scratch/                # 本地规格、任务与完成证据
-├── AGENTS.md                # AI 开发入口与执行边界
-├── GLOSSARY.md              # 领域术语
-├── Makefile                 # 生成、构建与验证命令
-├── .golangci.yml            # Go 格式化与 lint 配置
-├── .gitattributes           # Git 文件属性
-├── .gitignore               # Git 忽略规则
-├── buf.yaml                 # Protobuf 检查配置
-├── buf.gen.yaml             # Protobuf 生成配置
-├── go.mod                   # 框架 module
-└── go.sum
-```
+| 任务 | 文档 |
+| --- | --- |
+| 理解组件职责、路由与生命周期 | [架构契约](project/architecture.md) |
+| 业务接入与应用示例 | [接入指南](project/integration.md)、[示例说明](../examples/README.md) |
+| 事件、订阅与在线广播 | [EventBus](project/eventbus.md) |
+| 性能测试与容量评估 | [性能验证](project/performance.md) |
+| 术语和架构决策 | [领域术语](../GLOSSARY.md)、[架构决策](adr/0001-self-contained-transports.md) |
+| 编写、修改或审查 Go 代码 | [Go 编码规范](harness/rules/go-style.md) |
+| 领域建模与本地任务约定 | [领域文档](agents/domain.md)、[任务约定](agents/issue-tracker.md) |
+| 构建、检查与测试 | [开发与验证](#开发与验证) |
+| 提交代码与调整提交流程 | [提交流程](harness/workflows/commit.md) |
+| AI 开发流程与授权边界 | [AI 开发指南](../AGENTS.md) |
 
 ## 快速开始
 
@@ -113,7 +69,8 @@ Redis 保存连接定位与 Node 绑定，etcd 提供 Node 注册与发现；需
 | `make build` | 构建根 module 的全部包，不包含 `test/` |
 | `make generate` | 运行根 module 的生成器并整理依赖，会更新相关文件 |
 | `make check` | 检查根协议与依赖，对两个 module 运行静态分析和测试，检查 Git 空白 |
-| `make lint` | 对两个 module 运行 golangci-lint |
+| `make lint` | 对两个 module 运行 golangci-lint，不修改代码 |
+| `make lint-fix` | 对两个 module 运行可自动修复的 lint 规则及格式化工具，会修改代码 |
 | `make race` | 对两个 module 运行竞态检测测试 |
 | `make breaking BUF_BREAKING_AGAINST='.git#ref=<tag-or-commit>'` | 检查根 API 相对指定版本的兼容性；替换为实际 tag 或 commit |
 | `make all` | 依次执行 `api`、`generate` 和 `check`，会更新相关文件 |
@@ -121,7 +78,7 @@ Redis 保存连接定位与 Node 绑定，etcd 提供 Node 注册与发现；需
 | `make -C test/ludo help` | 查看 Ludo 应用的生成、构建与测试命令 |
 | `make -C test/whot help` | 查看 Whot 应用的生成、构建与测试命令 |
 
-`make check` 不改写受版本控制的文件，也不包含 `make lint`、`make race` 或 `make breaking`；按改动影响选择附加检查。
+`make lint-fix` 只修复支持自动修复的问题，运行后检查 `git diff` 并执行 `make lint` 确认剩余问题。`make check` 不改写受版本控制的文件，也不包含 `make lint`、`make race` 或 `make breaking`；按改动影响选择附加检查。
 
 ### 测试入口
 
@@ -153,34 +110,11 @@ go test -race -count=1 -timeout=180s -v \
 
 `test/` module 的依赖、参数和运行命令见[测试模块](../test/README.md)及 [Ludo 压测](../test/ludo/README.md#当前-press-入口)。
 
-### 源码导航
-
-理解请求如何进入业务、消息如何回到客户端时，可按以下链路阅读：
-
-| 链路 | 源码入口 |
-| --- | --- |
-| 认证与请求 | [Gateway 入站与认证](../gateway/inbound.go) → [协议转发](../gateway/forward.go) → [Node 路由](../gateway/backend.go) → [Node RPC 与分发](../node/dispatch.go) |
-| 绑定、续租与推送 | [Session 绑定与上下文](../node/session.go)、[请求连接与 UID 推送](../node/push.go) |
-| 业务注册、启动与停止 | [command 注册](../node/register.go)、[Gateway 生命周期](../gateway/lifecycle.go)、[Node 生命周期与 Registrar](../node/lifecycle.go) |
-| socket 接入与请求处理 | [TCP 连接](../network/tcp/server_connection.go)、[WebSocket 连接](../network/websocket/server_connection.go) |
-
-## 文档导航
-
-| 要做什么 | 阅读入口 |
-| --- | --- |
-| 理解组件职责、路由与生命周期 | [架构契约](project/architecture.md) |
-| 发布事件、订阅与在线广播 | [EventBus 接入](project/eventbus.md) |
-| 复测性能、评估容量 | [性能验证](project/performance.md) |
-| 查询术语和架构取舍 | [领域术语](../GLOSSARY.md)、[架构决策](adr/0001-self-contained-transports.md) |
-| 编写或审查 Go 代码 | [Go 编码规范](harness/rules/go-style.md) |
-| 整理并提交改动 | [提交流程](harness/workflows/commit.md) |
-| 使用 AI 处理仓库任务 | [AI 开发指南](../AGENTS.md) |
-
 ## 维护边界
 
-本文维护项目用途、完整目录树、运行入口和开发命令。装配方法与行为契约放在 `docs/project/`；AI 执行步骤和授权边界放在 `AGENTS.md`，并按任务链接到具体规范。
+本文维护项目用途、唯一文档导航、运行入口和开发命令。装配方法与行为契约放在 `docs/project/`；AI 执行步骤和授权边界放在 `AGENTS.md`。
 
-- 保留一棵完整目录树，随目录变化更新。标题按阅读任务组织，同一主题的步骤、前提和注意事项放在一起，避免重复解释目录或规则。
+- 仅在本文维护文档导航，不重复维护完整目录树或源码导航。标题按阅读任务组织，同一主题的步骤、前提和注意事项放在一起。
 - 操作说明写清依赖、配置、命令和预期结果；完整代码由可运行示例维护。详细实现链接源码，必要的运行配置直接说明。
 - 移动文档或修改标题时，同步所有路径与锚点。第三方规范原文及许可证按 [Go 规范维护约定](harness/rules/go-style.md#来源与维护)更新。
 - 部署验收条件随功能文档维护，完成证据放在 `.scratch/<feature>/`；术语和架构决策分别维护在 `GLOSSARY.md` 与 `docs/adr/`，历史记录由 Git 追溯。

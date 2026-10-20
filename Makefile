@@ -1,6 +1,6 @@
 export BUF_BREAKING_AGAINST
 
-.PHONY: init api build generate lint check breaking race clean all help
+.PHONY: init api build generate lint lint-fix check breaking race clean all help
 
 # install development tools
 init:
@@ -25,6 +25,11 @@ generate:
 lint:
 	golangci-lint run ./...
 	cd test && golangci-lint run --config ../.golangci.yml ./...
+
+# apply supported lint fixes and formatters in both Go modules; modifies source files
+lint-fix:
+	golangci-lint run --fix ./...
+	cd test && golangci-lint run --fix --config ../.golangci.yml ./...
 
 # run repository checks without rewriting tracked files
 check:
