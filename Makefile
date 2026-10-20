@@ -25,12 +25,9 @@ generate:
 
 # verify the installed linter matches the repository-pinned version
 lint-version:
-	@actual=$(golangci-lint version --short 2>/dev/null) || { \
-		echo "golangci-lint is missing or unusable; run make init" >&2; exit 1; \
-	}; \
-	if [ "v${actual#v}" != "$(GOLANGCI_LINT_VERSION)" ]; then \
-		echo "golangci-lint version mismatch: expected $(GOLANGCI_LINT_VERSION), got $actual; run make init" >&2; exit 1; \
-	fi
+	@golangci-lint version --short | grep -Fx -e $(GOLANGCI_LINT_VERSION) -e $(patsubst v%,%,$(GOLANGCI_LINT_VERSION)) >/dev/null || { \
+		echo "golangci-lint version mismatch or missing: expected $(GOLANGCI_LINT_VERSION); run make init" >&2; exit 1; \
+	}
 
 # run optional local lint checks without gating check or CI
 lint: lint-version
