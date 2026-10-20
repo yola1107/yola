@@ -59,18 +59,18 @@ Redis 保存连接定位与 Node 绑定，etcd 提供 Node 注册与发现；需
 
 ### 常用命令
 
-以下命令均从仓库根目录执行，定义见 [Makefile](../Makefile)。首次开发先用 `make init` 安装检查工具。
+以下命令均从仓库根目录执行，定义见 [Makefile](../Makefile)。首次开发先用 `make init` 安装检查工具。`golangci-lint` 的版本在根目录 `Makefile` 中固定，`make lint` 和 `make lint-fix` 会检查本机版本是否一致；格式规则包括 `gci` 和 `gofumpt`。
 
 | 命令 | 功能与范围 |
 | --- | --- |
 | `make` / `make help` | 查看根 Makefile 的全部命令与用途 |
-| `make init` | 安装 Buf、staticcheck 和 golangci-lint |
+| `make init` | 安装 Buf、staticcheck 和仓库固定版本的 golangci-lint |
 | `make api` | 生成根 module 的 API Protobuf 代码 |
 | `make build` | 构建根 module 的全部包，不包含 `test/` |
 | `make generate` | 运行根 module 的生成器并整理依赖，会更新相关文件 |
 | `make check` | 检查根协议与依赖，对两个 module 运行静态分析和测试，检查 Git 空白 |
-| `make lint` | 对两个 module 运行 golangci-lint，不修改代码 |
-| `make lint-fix` | 对两个 module 运行可自动修复的 lint 规则及格式化工具，会修改代码 |
+| `make lint` | 校验工具版本，对两个 module 运行 golangci-lint，不修改代码 |
+| `make lint-fix` | 校验工具版本，对两个 module 运行可自动修复的 lint 规则及 `gci`、`gofumpt` 格式化，会修改代码 |
 | `make race` | 对两个 module 运行竞态检测测试 |
 | `make breaking BUF_BREAKING_AGAINST='.git#ref=<tag-or-commit>'` | 检查根 API 相对指定版本的兼容性；替换为实际 tag 或 commit |
 | `make all` | 依次执行 `api`、`generate` 和 `check`，会更新相关文件 |

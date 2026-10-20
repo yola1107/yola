@@ -61,7 +61,7 @@ issues:
 formatters:
   enable:
     - gci
-    - gofmt
+    - gofumpt
   settings:
     gci:
       sections:
@@ -69,7 +69,5 @@ formatters:
         - prefix(yola)
         - default
       custom-order: true
-    gofmt:
-      simplify: true
   exclusions:
     generated: lax

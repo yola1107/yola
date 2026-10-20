@@ -1,12 +1,14 @@
 export BUF_BREAKING_AGAINST
 
-.PHONY: init api build generate lint lint-fix check breaking race clean all help
+GOLANGCI_LINT_VERSION := v2.15.0
+
+.PHONY: init api build generate lint lint-fix lint-version check breaking race clean all help
 
 # install development tools
 init:
 	go install github.com/bufbuild/buf/cmd/buf@latest
 	go install honnef.co/go/tools/cmd/staticcheck@latest
-	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
+	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
 
 # generate root API protobuf
 api:
@@ -21,13 +23,22 @@ generate:
 	go generate ./...
 	go mod tidy
 
+# verify the installed linter matches the repository-pinned version
+lint-version:
+	@actual=$(golangci-lint version --short 2>/dev/null) || { \
+		echo "golangci-lint is missing or unusable; run make init" >&2; exit 1; \
+	}; \
+	if [ "v${actual#v}" != "$(GOLANGCI_LINT_VERSION)" ]; then \
+		echo "golangci-lint version mismatch: expected $(GOLANGCI_LINT_VERSION), got $actual; run make init" >&2; exit 1; \
+	fi
+
 # run optional local lint checks without gating check or CI
-lint:
+lint: lint-version
 	golangci-lint run ./...
 	cd test && golangci-lint run --config ../.golangci.yml ./...
 
 # apply supported lint fixes and formatters in both Go modules; modifies source files
-lint-fix:
+lint-fix: lint-version
 	golangci-lint run --fix ./...
 	cd test && golangci-lint run --fix --config ../.golangci.yml ./...
 
