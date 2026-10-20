@@ -2,7 +2,7 @@ export BUF_BREAKING_AGAINST
 
 GOLANGCI_LINT_VERSION := v2.15.0
 
-.PHONY: init api build generate lint lint-fix lint-version check breaking race clean all help
+.PHONY: init api build generate fmt lint lint-fix lint-version check breaking race clean all help
 
 # install development tools
 init:
@@ -29,13 +29,18 @@ lint-version:
 		echo "golangci-lint version mismatch or missing: expected $(GOLANGCI_LINT_VERSION); run make init" >&2; exit 1; \
 	}
 
+# format both Go modules using the configured formatters; modifies source files
+fmt: lint-version
+	golangci-lint fmt ./...
+	cd test && golangci-lint fmt --config ../.golangci.yml ./...
+
 # run optional local lint checks without gating check or CI
 lint: lint-version
 	golangci-lint run ./...
 	cd test && golangci-lint run --config ../.golangci.yml ./...
 
-# apply supported lint fixes and formatters in both Go modules; modifies source files
-lint-fix: lint-version
+# format both Go modules, then apply supported lint fixes; modifies source files
+lint-fix: fmt
 	golangci-lint run --fix ./...
 	cd test && golangci-lint run --fix --config ../.golangci.yml ./...
 
