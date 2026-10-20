@@ -56,7 +56,7 @@ WebSocket 有界读帧用例随实现归 codec_test。测试与 benchmark 入口
 - `node/lifecycle.go:23`、`:72`：启动与停止入口相邻；`node/dispatch.go:81` 收纳 Forward 的 command 元数据。`node/options.go:49`、`node/epoch.go:95` 完成两处内联。
 - `network/websocket/codec.go:55`：有界读帧及其错误归 codec；Channel 继续持有连接、buffer 和关闭状态。`event/nats/bus.go:188` 就地汇总本 Bus 的订阅退出结果。
 - `push/sender.go:44`、`internal/gateclient/client.go:57`：构造、推送与关闭入口连续，准入、连接缓存和错误辅助随后展开。
-- 当前阅读顺序见[声明与函数布局](../../../docs/harness/rules/uber-go/style.md#function-grouping-and-ordering)，测试 helper 规则见[测试补充规则](../../../docs/harness/rules/go-style.md#测试)。
+- 当前阅读顺序见[声明与函数布局](../../../docs/harness/rules/uber-go/style.md#function-grouping-and-ordering)，测试 helper 规则见[设计与测试约定](../../../AGENTS.md#设计与测试约定)。
 
 | 范围 | 测试文件 | Test/Benchmark |
 | --- | --- | --- |

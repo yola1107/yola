@@ -25,10 +25,10 @@ Redis 保存连接定位与 Node 绑定，etcd 提供 Node 注册与发现；需
 | 事件、订阅与在线广播 | [EventBus](project/eventbus.md) |
 | 性能测试与容量评估 | [性能验证](project/performance.md) |
 | 术语和架构决策 | [领域术语](../GLOSSARY.md)、[架构决策](adr/0001-self-contained-transports.md) |
-| 编写、修改或审查 Go 代码 | [Go 编码规范](harness/rules/go-style.md) |
+| 编写、修改或审查 Go 代码 | [Go 编码规范与验收](../AGENTS.md#go-代码规范与验收) |
 | 领域建模与本地任务约定 | [领域文档](agents/domain.md)、[任务约定](agents/issue-tracker.md) |
 | 构建、检查与测试 | [开发与验证](#开发与验证) |
-| 提交代码与调整提交流程 | [提交流程](harness/workflows/commit.md) |
+| 提交代码与调整提交流程 | [提交约定](../AGENTS.md#提交约定) |
 | AI 开发流程与授权边界 | [AI 开发指南](../AGENTS.md) |
 
 ## 快速开始
@@ -90,7 +90,7 @@ go test ./gateway
 (cd test && go test ./...)
 ```
 
-测试编写遵循 [Go 测试规范](harness/rules/go-style.md#测试)：TTL、Redis 原子修改和 etcd 租约由 adapter 测试验证，示例测试验证装配参数。
+测试编写遵循[设计与测试约定](../AGENTS.md#设计与测试约定)：TTL、Redis 原子修改和 etcd 租约由 adapter 测试验证，示例测试验证装配参数。
 
 #### Redis 与 etcd 集成测试
 
@@ -117,6 +117,6 @@ go test -race -count=1 -timeout=180s -v \
 
 - 仅在本文维护文档导航，不重复维护完整目录树或源码导航。标题按阅读任务组织，同一主题的步骤、前提和注意事项放在一起。
 - 操作说明写清依赖、配置、命令和预期结果；完整代码由可运行示例维护。详细实现链接源码，必要的运行配置直接说明。
-- 移动文档或修改标题时，同步所有路径与锚点。第三方规范原文及许可证按 [Go 规范维护约定](harness/rules/go-style.md#来源与维护)更新。
+- 移动文档或修改标题时，同步路径与锚点。Uber [原文](harness/rules/uber-go/style.md)和[许可证](harness/rules/uber-go/LICENSE)来自 [uber-go/guide@1d60a91](https://github.com/uber-go/guide/blob/1d60a91aa5e87d443002e23c21903c49489dbde5/style.md)，收录于 `2026-10-18`；保持原样，升级时从同一提交替换并更新来源。项目补充规则须明确范围，覆盖 Uber 条款时链接原文。
 - 部署验收条件随功能文档维护，完成证据放在 `.scratch/<feature>/`；术语和架构决策分别维护在 `GLOSSARY.md` 与 `docs/adr/`，历史记录由 Git 追溯。
 - 项目说明使用“本项目”或“框架”等通用称呼；代码和命令中的 API、路径、环境变量与实际实现一致。
