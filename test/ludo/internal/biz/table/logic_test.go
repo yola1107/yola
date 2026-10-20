@@ -105,44 +105,16 @@ func TestRoundRunsDiceMoveResultAndStartsNextRound(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	assertStage := func(want StageID) {
-		t.Helper()
-		if err := tables.call(context.Background(), 1, func(gameTable *Table) error {
-			if state := gameTable.stage.State(); state != want {
-				return fmt.Errorf("stage = %s, want %s", state, want)
-			}
-			return nil
-		}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	fireStage := func() {
-		t.Helper()
-		var timerID int64
-		if err := tables.call(context.Background(), 1, func(gameTable *Table) error {
-			timerID = gameTable.stage.TimerID()
-			return nil
-		}); err != nil {
-			t.Fatal(err)
-		}
-		if !fireTableTimer(t, tables, timerID) {
-			t.Fatalf("stage timer %d is missing", timerID)
-		}
-		if err := tables.call(context.Background(), 1, func(*Table) error { return nil }); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	assertStage(StReady)
-	fireStage()
-	assertStage(StSendCard)
+	assertTableStage(t, tables, StReady)
+	fireTableStage(t, tables)
+	assertTableStage(t, tables, StSendCard)
 	for _, p := range players {
 		if money := p.GetBaseData().Money; money != 400 {
 			t.Fatalf("player %d money = %.0f, want 400", p.GetPlayerID(), money)
 		}
 	}
-	fireStage()
-	assertStage(StDice)
+	fireTableStage(t, tables)
+	assertTableStage(t, tables, StDice)
 	var fastTimerID int64
 	if err := tables.call(context.Background(), 1, func(gameTable *Table) error {
 		active := gameTable.activePlayer()
@@ -183,14 +155,14 @@ func TestRoundRunsDiceMoveResultAndStartsNextRound(t *testing.T) {
 	if err := tables.call(context.Background(), 1, func(*Table) error { return nil }); err != nil {
 		t.Fatal(err)
 	}
-	assertStage(StResult)
+	assertTableStage(t, tables, StResult)
 	for _, p := range players {
 		if money := p.GetAllMoney(); money != 500 {
 			t.Fatalf("timeout refund for player %d = %.0f, want 500", p.GetPlayerID(), money)
 		}
 	}
-	fireStage()
-	assertStage(StWait)
+	fireTableStage(t, tables)
+	assertTableStage(t, tables, StWait)
 	if err := tables.call(context.Background(), 1, func(gameTable *Table) error {
 		for _, p := range players {
 			if !gameTable.Ready(p, true) {
@@ -201,9 +173,9 @@ func TestRoundRunsDiceMoveResultAndStartsNextRound(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	assertStage(StReady)
-	fireStage()
-	assertStage(StSendCard)
+	assertTableStage(t, tables, StReady)
+	fireTableStage(t, tables)
+	assertTableStage(t, tables, StSendCard)
 }
 
 func TestSettleGamePaysWinnerAndBuildsResult(t *testing.T) {
@@ -401,6 +373,35 @@ func TestRobotTimerIgnoresStaleStageToken(t *testing.T) {
 		}
 		return nil
 	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func assertTableStage(t *testing.T, tables *Manager, want StageID) {
+	t.Helper()
+	if err := tables.call(context.Background(), 1, func(gameTable *Table) error {
+		if state := gameTable.stage.State(); state != want {
+			return fmt.Errorf("stage = %s, want %s", state, want)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func fireTableStage(t *testing.T, tables *Manager) {
+	t.Helper()
+	var timerID int64
+	if err := tables.call(context.Background(), 1, func(gameTable *Table) error {
+		timerID = gameTable.stage.TimerID()
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !fireTableTimer(t, tables, timerID) {
+		t.Fatalf("stage timer %d is missing", timerID)
+	}
+	if err := tables.call(context.Background(), 1, func(*Table) error { return nil }); err != nil {
 		t.Fatal(err)
 	}
 }

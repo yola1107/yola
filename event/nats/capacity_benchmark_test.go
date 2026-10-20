@@ -112,20 +112,7 @@ func BenchmarkSubscriptionCapacity(b *testing.B) {
 			if !test.closeQueued {
 				unblock()
 				require.Eventually(b, func() bool {
-					for _, sub := range subs {
-						stats := sub.SubscriptionStats()
-						if stats.QueueDepth != 0 || stats.HandlerActive {
-							return false
-						}
-						if test.payload > 64<<10 {
-							if stats.PayloadDropped != uint64(test.capacity) || stats.HandlerCalls != 1 {
-								return false
-							}
-						} else if stats.HandlerCalls != uint64(test.capacity+1) {
-							return false
-						}
-					}
-					return true
+					return subscriptionBacklogDrained(subs, test.payload, test.capacity)
 				}, 10*time.Second, time.Millisecond)
 				b.ReportMetric(float64(time.Since(began).Microseconds()), "drain-us")
 			}
@@ -226,6 +213,23 @@ func fillSubscriptionBacklog(b *testing.B, subs []event.SubscriptionStatsProvide
 		require.Equal(b, capacity, stats.QueueDepth)
 		require.Equal(b, uint64(overflow), stats.QueueDropped)
 	}
+}
+
+func subscriptionBacklogDrained(subs []event.SubscriptionStatsProvider, payload, capacity int) bool {
+	for _, sub := range subs {
+		stats := sub.SubscriptionStats()
+		if stats.QueueDepth != 0 || stats.HandlerActive {
+			return false
+		}
+		if payload > 64<<10 {
+			if stats.PayloadDropped != uint64(capacity) || stats.HandlerCalls != 1 {
+				return false
+			}
+		} else if stats.HandlerCalls != uint64(capacity+1) {
+			return false
+		}
+	}
+	return true
 }
 
 func reportCapacityMemory(b *testing.B, phase string) uint64 {

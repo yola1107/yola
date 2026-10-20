@@ -27,9 +27,9 @@ linters:
     - whitespace
   settings:
     gocognit:
-      min-complexity: 40
+      min-complexity: 35
     gocyclo:
-      min-complexity: 30
+      min-complexity: 20
     govet:
       enable:
         - shadow
@@ -44,7 +44,8 @@ linters:
       require-explanation: true
       require-specific: true
     whitespace:
-      multi-func: true
+      # gofumpt 会移除函数体开头的空行。
+      multi-func: false
   exclusions:
     generated: lax
     warn-unused: true
@@ -69,5 +70,8 @@ formatters:
         - prefix(yola)
         - default
       custom-order: true
+    gofumpt:
+      # 两个 module 共用 yola 前缀，避免项目导入被识别为标准库。
+      module-path: yola
   exclusions:
     generated: lax

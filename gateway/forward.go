@@ -93,7 +93,6 @@ func logForwardError(
 	ctx context.Context, level slog.Level, message string,
 	binding locate.GateBinding, code codes.Code, err error,
 ) {
-
 	slog.Log(ctx, level, message,
 		"uid", binding.UID,
 		"conn_id", binding.ConnID,

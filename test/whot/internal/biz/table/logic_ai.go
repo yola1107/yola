@@ -324,15 +324,8 @@ func evaluateCardScoreV2(card int32, currSuit v1.SUIT, currNum int32, hand []int
 		}
 	}
 
-	// 检查是否有连锁可能
-	for _, handCard := range hand {
-		if handCard == card {
-			continue
-		}
-		if Suit(handCard) == int32(cardSuit) || Number(handCard) == cardNumber {
-			score += 5
-			break
-		}
+	if canChainCard(card, hand) {
+		score += 5
 	}
 
 	// 手牌少时强化牌型价值
@@ -342,6 +335,20 @@ func evaluateCardScoreV2(card int32, currSuit v1.SUIT, currNum int32, hand []int
 	}
 
 	return score
+}
+
+func canChainCard(card int32, hand []int32) bool {
+	cardSuit := Suit(card)
+	cardNumber := Number(card)
+	for _, handCard := range hand {
+		if handCard == card {
+			continue
+		}
+		if Suit(handCard) == cardSuit || Number(handCard) == cardNumber {
+			return true
+		}
+	}
+	return false
 }
 
 func (t *Table) GetMinOpponentHandSize(p *player.Player) int {

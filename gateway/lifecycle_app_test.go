@@ -26,6 +26,7 @@ func TestApplicationOwnerCleansUpKratosFailures(t *testing.T) {
 	for _, kind := range []string{"gateway", "node"} {
 		for _, stage := range []string{"endpoint", "before start", "register", "after start", "normal stop", "deregister"} {
 			t.Run(kind+"/"+stage, func(t *testing.T) {
+				stopsNormally := stage == "normal stop" || stage == "deregister"
 				store := testLocator(t)
 				var server transport.Server
 				listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -90,7 +91,7 @@ func TestApplicationOwnerCleansUpKratosFailures(t *testing.T) {
 				app := kratos.New(appOptions...)
 				runDone := make(chan error, 1)
 				go func() { runDone <- app.Run() }()
-				if stage == "normal stop" || stage == "deregister" {
+				if stopsNormally {
 					waitApplicationSignal(t, ready)
 					require.ErrorIs(t, app.Stop(), registrar.deregisterErr)
 					if stage == "deregister" {
@@ -100,7 +101,7 @@ func TestApplicationOwnerCleansUpKratosFailures(t *testing.T) {
 				}
 				select {
 				case runErr := <-runDone:
-					if stage == "normal stop" || stage == "deregister" {
+					if stopsNormally {
 						require.NoError(t, runErr)
 					} else {
 						require.ErrorIs(t, runErr, injectedErr)
@@ -124,7 +125,7 @@ func TestApplicationOwnerCleansUpKratosFailures(t *testing.T) {
 					_, err = store.LocateNodeEpoch(context.Background(), kind, "instance-a")
 					require.ErrorIs(t, err, locate.ErrNodeEpochNotFound)
 				}
-				if stage == "normal stop" || stage == "deregister" {
+				if stopsNormally {
 					require.Equal(t, int32(1), registrar.deregistered.Load())
 				} else {
 					require.Zero(t, registrar.deregistered.Load(), "failure cleanup must not deregister another instance")

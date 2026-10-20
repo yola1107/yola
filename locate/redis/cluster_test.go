@@ -30,6 +30,41 @@ const (
 	_clusterTransitionEpochTTL     = 3 * time.Minute
 )
 
+func TestClusterTransitionViewReadsSlotOwnership(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		role       string
+		owner      string
+		intervals  []string
+		wantOwner  string
+		transition bool
+		wantErr    string
+	}{
+		{name: "single slot", role: "master", intervals: []string{"42"}, wantOwner: "node-a"},
+		{name: "range", role: "master", intervals: []string{"40-44"}, wantOwner: "node-a"},
+		{name: "outside range", role: "master", intervals: []string{"43-44"}},
+		{name: "migration", role: "master", intervals: []string{"42", "[42->-node-b]"}, wantOwner: "node-a", transition: true},
+		{name: "import", role: "master", intervals: []string{"[42-<-node-b]"}, transition: true},
+		{name: "another transition", role: "master", intervals: []string{"[43->-node-b]"}, wantErr: "another slot"},
+		{name: "replica owns slot", role: "slave", intervals: []string{"42"}, wantErr: "ownership is ambiguous"},
+		{name: "duplicate owner", role: "master", owner: "node-b", intervals: []string{"42"}, wantErr: "ownership is ambiguous"},
+		{name: "invalid start", role: "master", intervals: []string{"bad-44"}, wantErr: "invalid syntax"},
+		{name: "invalid end", role: "master", intervals: []string{"40-bad"}, wantErr: "invalid syntax"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			view := clusterTransitionView{owner: test.owner}
+			err := view.readSlots("node-a", test.role, test.intervals, 42)
+			if test.wantErr != "" {
+				require.ErrorContains(t, err, test.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, test.wantOwner, view.owner)
+			require.Equal(t, test.transition, view.transition)
+		})
+	}
+}
+
 func TestNodeBindingClusterMigration(t *testing.T) {
 	client, shards := clusterTransitionClients(t)
 	service, slot, sourceIndex := emptyClusterTransitionSlot(t, client, shards)
@@ -273,7 +308,6 @@ func clusterTransitionFailoverTimeout(ctx context.Context, shards []clusterTrans
 func failoverClusterTransition(
 	ctx context.Context, shards []clusterTransitionShard, slot int, source clusterTransitionShard, marker string,
 ) error {
-
 	view, err := waitClusterTransitionView(ctx, shards, slot, source.primaryID, false)
 	if err != nil {
 		return err
@@ -432,48 +466,15 @@ func migrateClusterTransitionKey(ctx context.Context, source, target *redis.Clie
 
 // restoreClusterTransitionSlot 先确认 slot 中只有本测试 key，再删除并恢复原 owner。
 func restoreClusterTransitionSlot(ctx context.Context, shards []clusterTransitionShard, sourceIndex, slot int, keys []string) error {
-	present := make([][]string, len(shards))
-	for index, shard := range shards {
-		found, err := shard.primary.ClusterGetKeysInSlot(ctx, slot, len(keys)+1).Result()
-		if err != nil {
-			return err
-		}
-		for _, key := range found {
-			if !slices.Contains(keys, key) {
-				return fmt.Errorf("slot %d contains an unowned key; no cleanup or topology reset performed", slot)
-			}
-		}
-		present[index] = found
-	}
-	var cleanupErr error
-	for index, shard := range shards {
-		if len(present[index]) == 0 {
-			continue
-		}
-		conn := shard.primary.Conn()
-		err := conn.Do(ctx, "ASKING").Err()
-		if err == nil {
-			err = conn.Del(ctx, present[index]...).Err()
-		}
-		cleanupErr = errors.Join(cleanupErr, err, conn.Close())
-	}
-	if cleanupErr != nil {
-		return cleanupErr
-	}
-	for _, shard := range shards {
-		count, err := shard.primary.ClusterCountKeysInSlot(ctx, slot).Result()
-		if err != nil {
-			return err
-		}
-		if count != 0 {
-			return fmt.Errorf("slot %d changed during cleanup; topology not reset", slot)
-		}
+	if err := clearClusterTransitionSlot(ctx, shards, slot, keys); err != nil {
+		return err
 	}
 	source := shards[sourceIndex]
 	view, err := waitClusterTransitionView(ctx, shards, slot, "", true)
 	if err != nil {
 		return err
 	}
+	var cleanupErr error
 	if view.transition {
 		for _, shard := range shards {
 			cleanupErr = errors.Join(cleanupErr, shard.primary.Do(ctx, "CLUSTER", "SETSLOT", slot, "STABLE").Err())
@@ -516,6 +517,47 @@ func restoreClusterTransitionSlot(ctx context.Context, shards []clusterTransitio
 	}
 	_, err = waitClusterTransitionView(ctx, shards, slot, source.primaryID, false)
 	return err
+}
+
+func clearClusterTransitionSlot(ctx context.Context, shards []clusterTransitionShard, slot int, keys []string) error {
+	present := make([][]string, len(shards))
+	for index, shard := range shards {
+		found, err := shard.primary.ClusterGetKeysInSlot(ctx, slot, len(keys)+1).Result()
+		if err != nil {
+			return err
+		}
+		for _, key := range found {
+			if !slices.Contains(keys, key) {
+				return fmt.Errorf("slot %d contains an unowned key; no cleanup or topology reset performed", slot)
+			}
+		}
+		present[index] = found
+	}
+	var cleanupErr error
+	for index, shard := range shards {
+		if len(present[index]) == 0 {
+			continue
+		}
+		conn := shard.primary.Conn()
+		err := conn.Do(ctx, "ASKING").Err()
+		if err == nil {
+			err = conn.Del(ctx, present[index]...).Err()
+		}
+		cleanupErr = errors.Join(cleanupErr, err, conn.Close())
+	}
+	if cleanupErr != nil {
+		return cleanupErr
+	}
+	for _, shard := range shards {
+		count, err := shard.primary.ClusterCountKeysInSlot(ctx, slot).Result()
+		if err != nil {
+			return err
+		}
+		if count != 0 {
+			return fmt.Errorf("slot %d changed during cleanup; topology not reset", slot)
+		}
+	}
+	return nil
 }
 
 // acknowledgeClusterTransitionMarker 在同一复制代次内用 SET/WAIT 确认写入，再复核复制链路。
@@ -573,18 +615,8 @@ func checkClusterTransitionReplication(ctx context.Context, primary, replica *re
 	if err != nil {
 		return "", err
 	}
-	if before["role"] != "master" || before["connected_slaves"] != "1" || before["master_replid"] == "" {
-		return "", errors.New("expected primary and its sole replica are not ready")
-	}
-	peer := make(map[string]string)
-	for _, field := range strings.Split(before["slave0"], ",") {
-		key, value, found := strings.Cut(field, "=")
-		if found {
-			peer[key] = value
-		}
-	}
-	if peer["state"] != "online" || net.JoinHostPort(peer["ip"], peer["port"]) != replica.Options().Addr {
-		return "", errors.New("primary has not confirmed the expected replica as online")
+	if err = checkClusterTransitionPrimary(before, replica); err != nil {
+		return "", err
 	}
 	catchupOffset, err := strconv.ParseInt(before["master_repl_offset"], 10, 64)
 	if err != nil {
@@ -619,6 +651,23 @@ func checkClusterTransitionReplication(ctx context.Context, primary, replica *re
 	return before["master_replid"], nil
 }
 
+func checkClusterTransitionPrimary(info map[string]string, replica *redis.Client) error {
+	if info["role"] != "master" || info["connected_slaves"] != "1" || info["master_replid"] == "" {
+		return errors.New("expected primary and its sole replica are not ready")
+	}
+	peer := make(map[string]string)
+	for _, field := range strings.Split(info["slave0"], ",") {
+		key, value, found := strings.Cut(field, "=")
+		if found {
+			peer[key] = value
+		}
+	}
+	if peer["state"] != "online" || net.JoinHostPort(peer["ip"], peer["port"]) != replica.Options().Addr {
+		return errors.New("primary has not confirmed the expected replica as online")
+	}
+	return nil
+}
+
 func clusterTransitionReplicationInfo(ctx context.Context, client *redis.Client) (map[string]string, error) {
 	raw, err := client.Info(ctx, "replication").Result()
 	if err != nil {
@@ -650,7 +699,6 @@ type clusterTransitionView struct {
 func waitClusterTransitionView(
 	ctx context.Context, shards []clusterTransitionShard, slot int, ownerID string, allowTransition bool,
 ) (clusterTransitionView, error) {
-
 	observers := make([]*redis.Client, 0, _clusterTransitionNodeCount)
 	for _, shard := range shards {
 		observers = append(observers, shard.primary, shard.replica)
@@ -721,32 +769,8 @@ func readClusterTransitionView(ctx context.Context, observer *redis.Client, slot
 			return clusterTransitionView{}, epochErr
 		}
 		view.nodes[fields[0]] = clusterTransitionIdentity{role: role, primaryID: fields[3], epoch: epoch}
-		for _, interval := range fields[8:] {
-			if strings.HasPrefix(interval, "[") {
-				if !strings.HasPrefix(interval, fmt.Sprintf("[%d-", slot)) {
-					return clusterTransitionView{}, errors.New("another slot has an active transition")
-				}
-				view.transition = true
-				continue
-			}
-			first, last, ranged := strings.Cut(interval, "-")
-			start, startErr := strconv.Atoi(first)
-			if startErr != nil {
-				return clusterTransitionView{}, startErr
-			}
-			end := start
-			if ranged {
-				end, err = strconv.Atoi(last)
-				if err != nil {
-					return clusterTransitionView{}, err
-				}
-			}
-			if slot >= start && slot <= end {
-				if role != "master" || view.owner != "" {
-					return clusterTransitionView{}, errors.New("slot ownership is ambiguous")
-				}
-				view.owner = fields[0]
-			}
+		if err := view.readSlots(fields[0], role, fields[8:], slot); err != nil {
+			return clusterTransitionView{}, err
 		}
 	}
 	if len(view.nodes) != _clusterTransitionNodeCount || primaryCount != _clusterTransitionPrimaryCount || view.owner == "" {
@@ -758,4 +782,36 @@ func readClusterTransitionView(ctx context.Context, observer *redis.Client, slot
 		}
 	}
 	return view, nil
+}
+
+func (v *clusterTransitionView) readSlots(nodeID, role string, intervals []string, slot int) error {
+	for _, interval := range intervals {
+		if strings.HasPrefix(interval, "[") {
+			if !strings.HasPrefix(interval, fmt.Sprintf("[%d-", slot)) {
+				return errors.New("another slot has an active transition")
+			}
+			v.transition = true
+			continue
+		}
+		first, last, ranged := strings.Cut(interval, "-")
+		start, startErr := strconv.Atoi(first)
+		if startErr != nil {
+			return startErr
+		}
+		end := start
+		if ranged {
+			parsedEnd, err := strconv.Atoi(last)
+			if err != nil {
+				return err
+			}
+			end = parsedEnd
+		}
+		if slot >= start && slot <= end {
+			if role != "master" || v.owner != "" {
+				return errors.New("slot ownership is ambiguous")
+			}
+			v.owner = nodeID
+		}
+	}
+	return nil
 }

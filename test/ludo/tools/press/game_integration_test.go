@@ -139,11 +139,14 @@ func runGameDelivery(t *testing.T, tableCount int, robots bool, duration time.Du
 		MaxMoney:          20000,
 	})
 	t.Cleanup(runner.Stop)
-	var actions atomic.Bool
-	actions.Store(true)
+	observer := &gameDeliveryObserver{
+		probe:        probe,
+		robots:       robots,
+		robotIDBegin: room.Robot.IdBegin,
+		started:      make([]atomic.Bool, playerCount),
+	}
+	observer.actions.Store(true)
 	tableIDs := make([]atomic.Int32, playerCount)
-	started := make([]atomic.Bool, playerCount)
-	var results, robotMoves atomic.Uint64
 	runner.connectUser = func(user *User) error {
 		index := int(user.id - uidStart)
 		user.targetTableID = int32(index/4 + 1)
@@ -154,30 +157,7 @@ func runGameDelivery(t *testing.T, tableCount int, robots bool, duration time.Du
 			int32(v1.GameCommand_CmdMovePush):     user.OnMovePush,
 			int32(v1.GameCommand_CmdResultPush):   user.OnResultPush,
 		}
-		for command, name := range v1.GameCommand_name {
-			if !strings.HasSuffix(name, "Push") {
-				continue
-			}
-			handler := handlers[command]
-			handlers[command] = func(body []byte) {
-				probe.RecordPush(user.id, command, body)
-				if command == int32(v1.GameCommand_CmdSendCardPush) {
-					started[index].Store(true)
-				}
-				if command == int32(v1.GameCommand_CmdResultPush) {
-					results.Add(1)
-				}
-				if robots && command == int32(v1.GameCommand_CmdMovePush) {
-					var move v1.MoveRsp
-					if assert.NoError(t, proto.Unmarshal(body, &move)) && move.GetMove().GetPlayerId() >= room.Robot.IdBegin {
-						robotMoves.Add(1)
-					}
-				}
-				if actions.Load() && handler != nil {
-					handler(body)
-				}
-			}
-		}
+		observer.observePushes(t, user, index, handlers)
 		codec := probe.Codec(func(command int32, body []byte) error {
 			tableID, err := inspectGameResponse(command, body, user.id)
 			if err == nil && v1.GameCommand(command) == v1.GameCommand_CmdLogin && tableID != user.targetTableID {
@@ -231,9 +211,9 @@ func runGameDelivery(t *testing.T, tableCount int, robots bool, duration time.Du
 		require.Equal(t, playerCount/tableCount, count)
 	}
 	if duration > 0 {
-		measureGamePlay(t, probe, started, duration)
+		measureGamePlay(t, probe, observer.started, duration)
 	}
-	actions.Store(false)
+	observer.actions.Store(false)
 	// 等待已进入玩家事件区的同步操作退出，保持接收端存活直至服务排空。
 	for _, user := range runner.userSnapshot() {
 		user.eventMu.Lock()
@@ -258,10 +238,10 @@ func runGameDelivery(t *testing.T, tableCount int, robots bool, duration time.Du
 	require.Zero(t, runner.closedPlayers.Load())
 	require.Zero(t, runner.startupRejected.Load())
 	if robots {
-		require.Positive(t, robotMoves.Load())
+		require.Positive(t, observer.robotMoves.Load())
 	}
 	t.Logf("GAME setup: game=ludo tables=%d players=%d robots=%t workers=%d duration=%s result_pushes=%d robot_move_pushes=%d verified_scenes=%d commands=%v",
-		tableCount, playerCount, robots, min(tableCount, 16), duration, results.Load(), robotMoves.Load(), len(verified), runner.commandCounts())
+		tableCount, playerCount, robots, min(tableCount, 16), duration, observer.results.Load(), observer.robotMoves.Load(), len(verified), runner.commandCounts())
 }
 
 func measureGamePlay(t *testing.T, probe *pushbench.GameProbe, started []atomic.Bool, duration time.Duration) {
@@ -342,5 +322,43 @@ func assertScenePlayers(t *testing.T, players []*v1.PlayerInfo, tableID int32, u
 	}
 	if robots {
 		require.Contains(t, uids, uidStart)
+	}
+}
+
+type gameDeliveryObserver struct {
+	probe        *pushbench.GameProbe
+	robots       bool
+	robotIDBegin int64
+	started      []atomic.Bool
+	actions      atomic.Bool
+	results      atomic.Uint64
+	robotMoves   atomic.Uint64
+}
+
+func (o *gameDeliveryObserver) observePushes(t *testing.T, user *User, index int, handlers map[int32]websocket.PushHandler) {
+	t.Helper()
+	for command, name := range v1.GameCommand_name {
+		if !strings.HasSuffix(name, "Push") {
+			continue
+		}
+		handler := handlers[command]
+		handlers[command] = func(body []byte) {
+			o.probe.RecordPush(user.id, command, body)
+			if command == int32(v1.GameCommand_CmdSendCardPush) {
+				o.started[index].Store(true)
+			}
+			if command == int32(v1.GameCommand_CmdResultPush) {
+				o.results.Add(1)
+			}
+			if o.robots && command == int32(v1.GameCommand_CmdMovePush) {
+				var move v1.MoveRsp
+				if assert.NoError(t, proto.Unmarshal(body, &move)) && move.GetMove().GetPlayerId() >= o.robotIDBegin {
+					o.robotMoves.Add(1)
+				}
+			}
+			if o.actions.Load() && handler != nil {
+				handler(body)
+			}
+		}
 	}
 }

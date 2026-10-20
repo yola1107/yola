@@ -265,7 +265,6 @@ func startRequestLifecycle(
 	registration *testNodeRegistration,
 	rpcTimeout time.Duration,
 ) requestLifecycleFixture {
-
 	t.Helper()
 	appCtx, cancelApp := context.WithCancel(context.Background())
 	app := kratos.New(

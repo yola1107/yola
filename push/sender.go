@@ -69,7 +69,6 @@ func (s *Sender) PushToUID(
 	command int32,
 	msg proto.Message,
 ) error {
-
 	if !locate.ValidServiceName(targetServiceName) || !locate.ValidUID(uid) {
 		return status.Error(codes.InvalidArgument, "invalid push target")
 	}

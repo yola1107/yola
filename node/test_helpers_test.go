@@ -67,7 +67,10 @@ func startTestNode(ctx context.Context, t *testing.T, server *Server) {
 	t.Cleanup(func() {
 		_ = server.Stop(context.Background())
 		select {
-		case <-done:
+		case err := <-done:
+			if err != nil {
+				t.Logf("Node Start returned after Stop: %v", err)
+			}
 		case <-time.After(time.Second):
 			t.Error("Node Start did not return after Stop")
 		}

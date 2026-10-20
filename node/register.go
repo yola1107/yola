@@ -21,7 +21,6 @@ type requestPointer[Request any] interface {
 func Register[Command ~int32, Request any, RequestPtr requestPointer[Request], Reply proto.Message](
 	server *Server, command Command, handler func(context.Context, RequestPtr) (Reply, error),
 ) {
-
 	if server == nil {
 		panic("node: nil server")
 	}
@@ -59,7 +58,6 @@ func (s *Server) OnDisconnect(handler DisconnectHandler) {
 func unary[Request any, RequestPtr requestPointer[Request], Reply proto.Message](
 	middlewares []middleware.Middleware, handler func(context.Context, RequestPtr) (Reply, error),
 ) Handler {
-
 	if handler == nil {
 		panic("node: nil unary handler")
 	}

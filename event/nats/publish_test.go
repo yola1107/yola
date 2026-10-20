@@ -93,8 +93,8 @@ func TestCloseReleasesPublishCallersAndJoinsWorker(t *testing.T) {
 	go func() { closed <- bus.Close() }()
 	require.ErrorIs(t, waitPublishResult(t, published), event.ErrClosed)
 	select {
-	case <-closed:
-		t.Fatal("Close returned before the native write finished")
+	case err := <-closed:
+		t.Fatalf("Close returned before the native write finished: %v", err)
 	case <-bus.publishDone:
 		t.Fatal("publish worker exited before the native write finished")
 	default:

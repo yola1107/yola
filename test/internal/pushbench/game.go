@@ -82,7 +82,6 @@ func StartGame(
 	playerCount int,
 	timeouts RequestTimeouts,
 ) *GameProbe {
-
 	t.Helper()
 	require.Positive(t, timeouts.Transport)
 	require.Positive(t, timeouts.Forward)

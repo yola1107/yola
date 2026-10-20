@@ -138,17 +138,9 @@ func (s *Server) start(ctx, serveCtx context.Context) (<-chan error, error) {
 	if err = s.startupError(ctx); err != nil {
 		return nil, err
 	}
-	serveResult := make(chan error, 1)
-	go func() { serveResult <- s.grpcServer.Start(serveCtx) }()
-	select {
-	case <-s.grpcListener.Accepting():
-	case serveErr := <-serveResult:
-		if serveErr == nil {
-			serveErr = errors.New("node: gRPC server stopped during startup")
-		}
-		return nil, serveErr
-	case <-ctx.Done():
-		return nil, ctx.Err()
+	serveResult, err := s.startGRPC(ctx, serveCtx)
+	if err != nil {
+		return nil, err
 	}
 	if err = s.startupError(ctx); err != nil {
 		return nil, err
@@ -179,6 +171,22 @@ func (s *Server) start(ctx, serveCtx context.Context) (<-chan error, error) {
 	s.requests.open()
 	s.healthServer.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
 	return serveResult, nil
+}
+
+func (s *Server) startGRPC(ctx, serveCtx context.Context) (<-chan error, error) {
+	serveResult := make(chan error, 1)
+	go func() { serveResult <- s.grpcServer.Start(serveCtx) }()
+	select {
+	case <-s.grpcListener.Accepting():
+		return serveResult, nil
+	case serveErr := <-serveResult:
+		if serveErr == nil {
+			serveErr = errors.New("node: gRPC server stopped during startup")
+		}
+		return nil, serveErr
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 func (s *Server) registrationDone() <-chan struct{} {

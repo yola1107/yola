@@ -149,7 +149,6 @@ func TestDelayedRegistrationCannotOverwriteReplacement(t *testing.T) {
 	oldClient := integrationClient(t, grpc.WithUnaryInterceptor(func(
 		ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption,
 	) error {
-
 		if method == "/etcdserverpb.KV/Txn" {
 			close(entered)
 			<-release
@@ -192,7 +191,6 @@ func TestRegistrationCanceledAfterCommitRollsBackOwnLease(t *testing.T) {
 	client := integrationClient(t, grpc.WithUnaryInterceptor(func(
 		callCtx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption,
 	) error {
-
 		err := invoker(callCtx, method, req, reply, cc, opts...)
 		if method == "/etcdserverpb.KV/Txn" && err == nil {
 			cancel()

@@ -16,6 +16,7 @@ type startRepo struct{}
 func (*startRepo) CreateRobot(*player.Raw) (*player.Player, error) {
 	return nil, nil
 }
+
 func (*startRepo) EnterRobots(context.Context, []*player.Player) ([]int64, error) { return nil, nil }
 
 func TestResetKeepsMoneyWithinRobotRangeWhenRoomMaximumIsUnlimited(t *testing.T) {

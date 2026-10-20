@@ -118,23 +118,8 @@ func validatePress(file *configFile) (Press, error) {
 	if _, err := pressure.Token(money); err != nil {
 		return Press{}, fmt.Errorf("validate config: loadTest.press: %w", err)
 	}
-	if press.LogoutRate < 0 || press.LogoutRate > 1 || press.OfflineRate < 0 || press.OfflineRate > 1 {
-		return Press{}, fmt.Errorf("validate config: loadTest.press rates must be within [0,1]")
-	}
-	switch press.Scenario {
-	case scenarioConnect, scenarioPlay:
-		if press.LogoutRate != 0 || press.OfflineRate != 0 {
-			return Press{}, fmt.Errorf("validate config: %s scenario cannot enable churn rates", press.Scenario)
-		}
-	case scenarioReconnectChurn:
-		if press.LogoutRate == 0 && press.OfflineRate == 0 {
-			return Press{}, fmt.Errorf("validate config: reconnect-churn scenario requires a churn rate")
-		}
-		if press.UIDCount <= int64(press.Num) {
-			return Press{}, fmt.Errorf("validate config: reconnect-churn scenario requires replacement UIDs")
-		}
-	default:
-		return Press{}, fmt.Errorf("validate config: loadTest.press scenario %q is invalid", press.Scenario)
+	if err := validatePressScenario(press); err != nil {
+		return Press{}, err
 	}
 	if press.Open {
 		if err := validateCapacity(press); err != nil {
@@ -142,6 +127,28 @@ func validatePress(file *configFile) (Press, error) {
 		}
 	}
 	return press, nil
+}
+
+func validatePressScenario(press Press) error {
+	if press.LogoutRate < 0 || press.LogoutRate > 1 || press.OfflineRate < 0 || press.OfflineRate > 1 {
+		return fmt.Errorf("validate config: loadTest.press rates must be within [0,1]")
+	}
+	switch press.Scenario {
+	case scenarioConnect, scenarioPlay:
+		if press.LogoutRate != 0 || press.OfflineRate != 0 {
+			return fmt.Errorf("validate config: %s scenario cannot enable churn rates", press.Scenario)
+		}
+	case scenarioReconnectChurn:
+		if press.LogoutRate == 0 && press.OfflineRate == 0 {
+			return fmt.Errorf("validate config: reconnect-churn scenario requires a churn rate")
+		}
+		if press.UIDCount <= int64(press.Num) {
+			return fmt.Errorf("validate config: reconnect-churn scenario requires replacement UIDs")
+		}
+	default:
+		return fmt.Errorf("validate config: loadTest.press scenario %q is invalid", press.Scenario)
+	}
+	return nil
 }
 
 func withPressDefaults(press Press) Press {

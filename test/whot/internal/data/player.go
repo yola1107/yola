@@ -62,19 +62,9 @@ func (r *playerRepo) LoadPlayer(ctx context.Context, uid int64) (*player.BaseDat
 }
 
 func decodeBaseData(expectedUID int64, values []any) (*player.BaseData, error) {
-	fields := make(map[string]string, len(playerFields))
-	for index, field := range playerFields {
-		if index >= len(values) || values[index] == nil {
-			return nil, fmt.Errorf("decode Redis field %q: value is missing", field)
-		}
-		switch value := values[index].(type) {
-		case string:
-			fields[field] = value
-		case []byte:
-			fields[field] = string(value)
-		default:
-			return nil, fmt.Errorf("decode Redis field %q: unexpected value type", field)
-		}
+	fields, err := decodePlayerFields(values)
+	if err != nil {
+		return nil, err
 	}
 
 	uid, err := parseInt64Field(fields, xredis.PlayerUIDField)
@@ -155,6 +145,25 @@ func decodeBaseData(expectedUID int64, values []any) (*player.BaseData, error) {
 		TotalConsume:    totalConsume,
 		AllTotalBoard:   allTotalBoard,
 	}, nil
+}
+
+func decodePlayerFields(values []any) (map[string]string, error) {
+	fields := make(map[string]string, len(playerFields))
+	for index, field := range playerFields {
+		if index >= len(values) || values[index] == nil {
+			return nil, fmt.Errorf("decode Redis field %q: value is missing", field)
+		}
+		switch value := values[index].(type) {
+		case string:
+			fields[field] = value
+		case []byte:
+			fields[field] = string(value)
+		default:
+			return nil, fmt.Errorf("decode Redis field %q: unexpected value type", field)
+		}
+	}
+
+	return fields, nil
 }
 
 func parseInt32Field(fields map[string]string, field string) (int32, error) {

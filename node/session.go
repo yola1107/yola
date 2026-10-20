@@ -68,7 +68,6 @@ func (s requestSession) writeBinding(
 	ctx context.Context,
 	write func(locate.NodeLocator, context.Context, string, string, string, string) error,
 ) error {
-
 	if s.server.locator == nil {
 		return status.Error(codes.FailedPrecondition, "node locator is not configured")
 	}

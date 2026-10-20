@@ -11,6 +11,36 @@ import (
 	"yola/test/whot/internal/conf"
 )
 
+func TestCardScoreIncludesOnlyOneChainBonus(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		hand []int32
+		want int
+	}{
+		{name: "no chain", hand: []int32{105, 207, 310, 411}, want: -1},
+		{name: "identical card", hand: []int32{105, 105, 310, 411}, want: 6},
+		{name: "same suit", hand: []int32{105, 110, 310, 411}, want: 7},
+		{name: "same number", hand: []int32{105, 205, 310, 411}, want: 8},
+		{name: "multiple chains", hand: []int32{105, 110, 205, 411}, want: 11},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got := evaluateCardScoreV2(105, v1.SUIT(Suit(305)), Number(305), test.hand, 3)
+			if got != test.want {
+				t.Fatalf("card score = %d, want %d", got, test.want)
+			}
+		})
+	}
+}
+
+func TestChooseBestCardPreservesCandidateOrderOnTie(t *testing.T) {
+	hand := []int32{105, 205, 310, 411}
+	for _, candidates := range [][]int32{{105, 205}, {205, 105}} {
+		if got := chooseBestCard(candidates, hand, 305, 3); got != candidates[0] {
+			t.Fatalf("best card = %d, want first candidate %d", got, candidates[0])
+		}
+	}
+}
+
 func TestRoundRunsReadyPlayResultAndReturnsToWait(t *testing.T) {
 	room := &conf.Room{
 		Table:    &conf.Room_Table{TableNum: 1, ChairNum: 2},

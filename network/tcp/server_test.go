@@ -31,8 +31,7 @@ func TestServerStopRespectsContextWhileAcceptIsBlocked(t *testing.T) {
 		}
 	case <-time.After(200 * time.Millisecond):
 		lis.forceClose()
-		<-started
-		t.Fatal("Stop did not respect its context")
+		t.Fatalf("Stop did not respect its context; Start returned %v", <-started)
 	}
 	lis.forceClose()
 	if err := <-started; err != nil {

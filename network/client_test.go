@@ -162,7 +162,6 @@ func newCallbackClient(
 	t *testing.T, transportName string, capacity int,
 	push func([]byte), kick func(int32), disconnect func(),
 ) (callbackClient, network.Connection, <-chan struct{}) {
-
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)

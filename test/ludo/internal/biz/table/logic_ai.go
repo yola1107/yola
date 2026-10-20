@@ -146,23 +146,7 @@ func (r *RobotLogic) onActivePlayer(p *player.Player, msg proto.Message) {
 	}
 
 	if stage == StDice {
-		chair := p.GetChairID()
-		uid := p.GetPlayerID()
-		stageGeneration := r.table.stage.Generation()
-
-		delay := time.Duration(xgo.RandInt(1000, 2200)) * time.Millisecond
-		r.table.manager.after(r.table.ID, delay, func(gameTable *Table) {
-			current := gameTable.playerAt(chair)
-			if current == nil || current.GetPlayerID() != uid || !current.IsGaming() || current.IsFinish() {
-				return
-			}
-			if gameTable.activeChair != chair || gameTable.stage.State() != StDice || gameTable.stage.Generation() != stageGeneration {
-				return
-			}
-			if rsp := gameTable.RollDice(current, false); rsp != nil {
-				gameTable.BroadcastDicePush(nil, rsp)
-			}
-		})
+		r.scheduleRollDice(p)
 		return
 	}
 
@@ -201,6 +185,26 @@ func (r *RobotLogic) onActivePlayer(p *player.Player, msg proto.Message) {
 		}, false)
 		if rsp != nil {
 			gameTable.BroadcastMovePush(nil, rsp)
+		}
+	})
+}
+
+func (r *RobotLogic) scheduleRollDice(p *player.Player) {
+	chair := p.GetChairID()
+	uid := p.GetPlayerID()
+	stageGeneration := r.table.stage.Generation()
+
+	delay := time.Duration(xgo.RandInt(1000, 2200)) * time.Millisecond
+	r.table.manager.after(r.table.ID, delay, func(gameTable *Table) {
+		current := gameTable.playerAt(chair)
+		if current == nil || current.GetPlayerID() != uid || !current.IsGaming() || current.IsFinish() {
+			return
+		}
+		if gameTable.activeChair != chair || gameTable.stage.State() != StDice || gameTable.stage.Generation() != stageGeneration {
+			return
+		}
+		if rsp := gameTable.RollDice(current, false); rsp != nil {
+			gameTable.BroadcastDicePush(nil, rsp)
 		}
 	})
 }

@@ -118,12 +118,16 @@ func runGameDelivery(t *testing.T, tableCount int, robots bool, duration time.Du
 	runner := NewRunner(t.Context(), &LoadTest{Press: Press{URL: probe.Endpoint, Interval: 100, Num: int32(playerCount)}})
 	require.NoError(t, runner.Start())
 	t.Cleanup(runner.Stop)
-	var actions atomic.Bool
-	actions.Store(true)
+	observer := &gameDeliveryObserver{
+		probe:        probe,
+		robots:       robots,
+		robotIDBegin: room.Robot.IdBegin,
+		started:      make([]atomic.Bool, playerCount),
+		runner:       runner,
+	}
+	observer.actions.Store(true)
 	tableIDs := make([]atomic.Int32, playerCount)
-	started := make([]atomic.Bool, playerCount)
 	users := make([]*User, playerCount)
-	var results, robotActions atomic.Uint64
 	for index := range playerCount {
 		user := &User{id: uidStart + int64(index), repo: runner}
 		users[index] = user
@@ -133,31 +137,7 @@ func runGameDelivery(t *testing.T, tableCount int, robots bool, duration time.Du
 			int32(v1.GameCommand_CmdResultPush):       user.OnResultPush,
 			int32(v1.GameCommand_CmdPlayerActionPush): func(body []byte) { assert.NoError(t, user.OnActionRsp(body)) },
 		}
-		for command, name := range v1.GameCommand_name {
-			if !strings.HasSuffix(name, "Push") {
-				continue
-			}
-			handler := handlers[command]
-			handlers[command] = func(body []byte) {
-				probe.RecordPush(user.id, command, body)
-				runner.RecordCommand(v1.GameCommand(command))
-				if command == int32(v1.GameCommand_CmdSendCardPush) {
-					started[index].Store(true)
-				}
-				if command == int32(v1.GameCommand_CmdResultPush) {
-					results.Add(1)
-				}
-				if robots && command == int32(v1.GameCommand_CmdPlayerActionPush) {
-					var action v1.PlayerActionRsp
-					if assert.NoError(t, proto.Unmarshal(body, &action)) && action.UserId >= room.Robot.IdBegin {
-						robotActions.Add(1)
-					}
-				}
-				if actions.Load() && handler != nil {
-					handler(body)
-				}
-			}
-		}
+		observer.observePushes(t, user, index, handlers)
 		codec := probe.Codec(func(command int32, body []byte) error {
 			tableID, err := inspectGameResponse(command, body, user.id)
 			if tableID > 0 {
@@ -185,7 +165,7 @@ func runGameDelivery(t *testing.T, tableCount int, robots bool, duration time.Du
 			return true
 		}
 		for index := range playerCount {
-			if !started[index].Load() {
+			if !observer.started[index].Load() {
 				return false
 			}
 		}
@@ -210,7 +190,7 @@ func runGameDelivery(t *testing.T, tableCount int, robots bool, duration time.Du
 	case <-t.Context().Done():
 		t.Fatal(t.Context().Err())
 	}
-	actions.Store(false)
+	observer.actions.Store(false)
 	probe.ReportMeasurements(t)
 	verified := make(map[int32]bool, tableCount)
 	for _, user := range users {
@@ -233,10 +213,10 @@ func runGameDelivery(t *testing.T, tableCount int, robots bool, duration time.Du
 		require.False(t, user.logout.Load(), "player %d disconnected", user.id)
 	}
 	if robots {
-		require.Positive(t, robotActions.Load())
+		require.Positive(t, observer.robotActions.Load())
 	}
 	t.Logf("GAME setup: game=whot tables=%d players=%d robots=%t workers=%d duration=%s result_pushes=%d robot_action_pushes=%d verified_scenes=%d commands=%v",
-		tableCount, playerCount, robots, min(tableCount, 16), duration, results.Load(), robotActions.Load(), len(verified), runner.CommandCounts())
+		tableCount, playerCount, robots, min(tableCount, 16), duration, observer.results.Load(), observer.robotActions.Load(), len(verified), runner.CommandCounts())
 }
 
 func inspectGameResponse(command int32, body []byte, uid int64) (int32, error) {
@@ -287,5 +267,45 @@ func assertScenePlayers(t *testing.T, players []*v1.PlayerInfo, tableID int32, u
 	}
 	if robots {
 		require.Contains(t, uids, uidStart)
+	}
+}
+
+type gameDeliveryObserver struct {
+	probe        *pushbench.GameProbe
+	robots       bool
+	robotIDBegin int64
+	started      []atomic.Bool
+	actions      atomic.Bool
+	results      atomic.Uint64
+	robotActions atomic.Uint64
+	runner       *Runner
+}
+
+func (o *gameDeliveryObserver) observePushes(t *testing.T, user *User, index int, handlers map[int32]websocket.PushHandler) {
+	t.Helper()
+	for command, name := range v1.GameCommand_name {
+		if !strings.HasSuffix(name, "Push") {
+			continue
+		}
+		handler := handlers[command]
+		handlers[command] = func(body []byte) {
+			o.probe.RecordPush(user.id, command, body)
+			o.runner.RecordCommand(v1.GameCommand(command))
+			if command == int32(v1.GameCommand_CmdSendCardPush) {
+				o.started[index].Store(true)
+			}
+			if command == int32(v1.GameCommand_CmdResultPush) {
+				o.results.Add(1)
+			}
+			if o.robots && command == int32(v1.GameCommand_CmdPlayerActionPush) {
+				var action v1.PlayerActionRsp
+				if assert.NoError(t, proto.Unmarshal(body, &action)) && action.UserId >= o.robotIDBegin {
+					o.robotActions.Add(1)
+				}
+			}
+			if o.actions.Load() && handler != nil {
+				handler(body)
+			}
+		}
 	}
 }

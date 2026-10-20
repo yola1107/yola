@@ -19,7 +19,6 @@ func NewNodeServer(
 	serverConfig *conf.Server,
 	dataConfig *conf.Data,
 ) (*node.Server, error) {
-
 	if game == nil {
 		return nil, errors.New("whot service is required")
 	}
