@@ -34,7 +34,7 @@ jobs:
           cd "$RUNNER_TEMP/lint-bin"
           curl --fail --silent --show-error --location --retry 3 "$base/$archive" -o "$archive"
           curl --fail --silent --show-error --location --retry 3 "$base/golangci-lint-${number}-checksums.txt" -o checksums.txt
-          grep -F "$archive" checksums.txt > selected-checksum.txt
+          awk -v file="$archive" '$2 == file || $2 == "*" file' checksums.txt > selected-checksum.txt
           test "$(wc -l < selected-checksum.txt)" -eq 1
           sha256sum --check selected-checksum.txt
           tar -xzf "$archive"
@@ -96,6 +96,10 @@ jobs:
               pos = issue['Pos']
               return issue['FromLinter'], issue['Text'], pos['Filename'], pos['Line'], pos.get('Column', 0)
 
+          def compact(issue):
+              return {'linter': issue['FromLinter'], 'text': issue['Text'],
+                      'pos': issue['Pos'], 'source': issue.get('SourceLines', [])}
+
           for module in ['root', 'test']:
               if (module, 'baseline') not in results or (module, 'candidate') not in results:
                   continue
@@ -104,14 +108,14 @@ jobs:
               added = [issue for issue in candidate if key(issue) not in baseline]
               print('NEW_COUNTS', module, json.dumps(dict(collections.Counter(i['FromLinter'] for i in added))), flush=True)
               for issue in added:
-                  print('NEW_ISSUE', module, json.dumps(issue, ensure_ascii=False), flush=True)
+                  print('NEW_ISSUE', module, json.dumps(compact(issue), ensure_ascii=False), flush=True)
               samples = collections.defaultdict(list)
               for issue in candidate:
                   if len(samples[issue['FromLinter']]) < 3:
                       samples[issue['FromLinter']].append(issue)
               for linter, group in sorted(samples.items()):
                   for issue in group:
-                      print('SAMPLE', module, json.dumps(issue, ensure_ascii=False), flush=True)
+                      print('SAMPLE', module, json.dumps(compact(issue), ensure_ascii=False), flush=True)
           subprocess.run(['git', 'diff', '--exit-code'], check=True)
           subprocess.run(['git', 'diff', '--check'], check=True)
           print('AUDIT_COMPLETE', 'execution-error' if failed else 'reports-collected; lint findings are not a clean pass', flush=True)
