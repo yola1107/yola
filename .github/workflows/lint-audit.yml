@@ -1,0 +1,119 @@
+name: Isolated lint audit
+
+on:
+  push:
+    branches: [chore/lint-audit-20261022]
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GOFLAGS: -mod=readonly
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Install repository-pinned golangci-lint
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(awk '/^GOLANGCI_LINT_VERSION :=/ {print $3}' Makefile)
+          number=${version#v}
+          archive="golangci-lint-${number}-linux-amd64.tar.gz"
+          base="https://github.com/golangci/golangci-lint/releases/download/${version}"
+          mkdir -p "$RUNNER_TEMP/lint-bin"
+          cd "$RUNNER_TEMP/lint-bin"
+          curl --fail --silent --show-error --location --retry 3 "$base/$archive" -o "$archive"
+          curl --fail --silent --show-error --location --retry 3 "$base/golangci-lint-${number}-checksums.txt" -o checksums.txt
+          grep -F "$archive" checksums.txt > selected-checksum.txt
+          test "$(wc -l < selected-checksum.txt)" -eq 1
+          sha256sum --check selected-checksum.txt
+          tar -xzf "$archive"
+          echo "$PWD/golangci-lint-${number}-linux-amd64" >> "$GITHUB_PATH"
+      - name: Verify configuration and compare both modules
+        shell: bash
+        run: |
+          set -euo pipefail
+          go version
+          golangci-lint version
+          make lint-version
+          golangci-lint config verify --config .golangci.yml
+          git show 77e6ad0672ff6ccc1a1e7e5a6d4d6961725e6ffd:.golangci.yml > .golangci.baseline.yml
+          python3 - <<'PY'
+          import collections
+          import json
+          import os
+          import pathlib
+          import subprocess
+          import sys
+
+          root = pathlib.Path.cwd()
+          reports = pathlib.Path(os.environ['RUNNER_TEMP']) / 'lint-reports'
+          reports.mkdir(exist_ok=True)
+          results = {}
+          failed = False
+          for module, directory in [('root', root), ('test', root / 'test')]:
+              for mode, config in [('baseline', '.golangci.baseline.yml'), ('candidate', '.golangci.yml')]:
+                  output = reports / f'{module}-{mode}.json'
+                  text = reports / f'{module}-{mode}.txt'
+                  command = ['golangci-lint', 'run', '--config', str(root / config),
+                             '--timeout=8m', '--max-issues-per-linter=0', '--max-same-issues=0',
+                             '--uniq-by-line=false', '--output.json.path', str(output),
+                             '--output.text.path', str(text), './...']
+                  print('COMMAND', module, mode, ' '.join(command), flush=True)
+                  completed = subprocess.run(command, cwd=directory, text=True, capture_output=True)
+                  print('EXIT', module, mode, completed.returncode, flush=True)
+                  if completed.stderr:
+                      print(completed.stderr, flush=True)
+                  if completed.stdout:
+                      print(completed.stdout, flush=True)
+                  if completed.returncode not in (0, 1) or not output.exists():
+                      failed = True
+                      print('EXECUTION_FAILURE', module, mode, flush=True)
+                      continue
+                  payload = json.loads(output.read_text())
+                  issues = payload.get('Issues') or []
+                  for issue in issues:
+                      name = pathlib.Path(issue['Pos']['Filename'])
+                      if not name.is_absolute():
+                          name = root / name if (root / name).exists() else directory / name
+                      issue['Pos']['Filename'] = os.path.relpath(name, root)
+                  results[(module, mode)] = issues
+                  counts = collections.Counter(issue['FromLinter'] for issue in issues)
+                  print('COUNTS', module, mode, json.dumps(dict(sorted(counts.items()))), flush=True)
+                  print('TOTAL', module, mode, len(issues), flush=True)
+
+          def key(issue):
+              pos = issue['Pos']
+              return issue['FromLinter'], issue['Text'], pos['Filename'], pos['Line'], pos.get('Column', 0)
+
+          for module in ['root', 'test']:
+              if (module, 'baseline') not in results or (module, 'candidate') not in results:
+                  continue
+              baseline = {key(issue) for issue in results[(module, 'baseline')]}
+              candidate = results[(module, 'candidate')]
+              added = [issue for issue in candidate if key(issue) not in baseline]
+              print('NEW_COUNTS', module, json.dumps(dict(collections.Counter(i['FromLinter'] for i in added))), flush=True)
+              for issue in added:
+                  print('NEW_ISSUE', module, json.dumps(issue, ensure_ascii=False), flush=True)
+              samples = collections.defaultdict(list)
+              for issue in candidate:
+                  if len(samples[issue['FromLinter']]) < 3:
+                      samples[issue['FromLinter']].append(issue)
+              for linter, group in sorted(samples.items()):
+                  for issue in group:
+                      print('SAMPLE', module, json.dumps(issue, ensure_ascii=False), flush=True)
+          subprocess.run(['git', 'diff', '--exit-code'], check=True)
+          subprocess.run(['git', 'diff', '--check'], check=True)
+          print('AUDIT_COMPLETE', 'execution-error' if failed else 'reports-collected; lint findings are not a clean pass', flush=True)
+          sys.exit(1 if failed else 0)
+          PY
