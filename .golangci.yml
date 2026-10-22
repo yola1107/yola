@@ -3,14 +3,17 @@ run:
   modules-download-mode: readonly
 linters:
   default: none
-  # Uber Go Style Guide 的行长为软限制，不使用 lll 硬性报错。
+  # 沿用 Uber 的软行长限制；不按行数、参数数量或名称长度机械拆分代码。
   enable:
     - bodyclose
     - dogsled
     - durationcheck
     - errcheck
+    - errname # 哨兵错误使用 Err 前缀，错误类型使用 Error 后缀。
+    - errorlint # 检查不兼容错误包装的类型断言和类型 switch。
     - gocognit
     - goconst
+    - gocritic # 仅启用默认稳定规则，不启用全部或实验性规则。
     - gocyclo
     - govet
     - ineffassign
@@ -19,6 +22,7 @@ linters:
     - mnd
     - nilnesserr
     - nolintlint
+    - predeclared # 避免遮蔽 len、error 等预声明标识符。
     - revive
     - staticcheck
     - unconvert
@@ -26,6 +30,11 @@ linters:
     - wastedassign
     - whitespace
   settings:
+    errorlint:
+      # 包装哪些错误、是否保持错误身份由接口契约决定，不统一要求 %w 或 errors.Is。
+      errorf: false
+      comparison: false
+      asserts: true
     gocognit:
       min-complexity: 35
     gocyclo:
@@ -43,6 +52,17 @@ linters:
     nolintlint:
       require-explanation: true
       require-specific: true
+    revive:
+      # 自定义规则时保留默认命名、接收者和导出名称检查。
+      # 不启用 confusing-naming：允许公开入口委托同名私有实现。
+      enable-default-rules: true
+      rules:
+        - name: early-return
+          arguments:
+            - preserve-scope
+        - name: superfluous-else
+          arguments:
+            - preserve-scope
     whitespace:
       # gofumpt 会移除函数体开头的空行。
       multi-func: false
@@ -58,6 +78,8 @@ linters:
           - goconst
         path: (.+)_test\.go
 issues:
+  # 不截断同一检查器的告警数量。
+  max-issues-per-linter: 0
   max-same-issues: 0
 formatters:
   enable:
