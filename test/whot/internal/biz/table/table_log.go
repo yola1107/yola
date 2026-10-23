@@ -10,7 +10,7 @@ import (
 
 	"yola/test/internal/filelog"
 	"yola/test/internal/xgo"
-	"yola/test/whot/api/v1"
+	v1 "yola/test/whot/api/v1"
 	"yola/test/whot/internal/biz/player"
 	"yola/test/whot/internal/conf"
 )
@@ -71,7 +71,7 @@ func (l *Log) userReEnter(p *player.Player, seatCount int32) {
 	l.writePlayer(p, "[重进房间] 玩家:%+v 桌子人数(%+v) ", seatCount)
 }
 
-func (l *Log) userExit(p *player.Player, seatCount int32, chairID int32, switchTable bool) {
+func (l *Log) userExit(p *player.Player, seatCount, chairID int32, switchTable bool) {
 	l.writePlayer(p, "[离开房间] 玩家:%+v 桌子人数(%+v) lastChair(%d) 是否换桌(%+v) ", seatCount, chairID, switchTable)
 }
 

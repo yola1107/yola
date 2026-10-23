@@ -9,7 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"yola/api/cluster/v1"
+	v1 "yola/api/cluster/v1"
 	"yola/internal/clusterroute"
 	"yola/internal/tlsconfig"
 	"yola/locate"
@@ -260,7 +260,7 @@ func (s *backendState) load() backendSnapshot {
 	return *snapshot
 }
 
-func (s *backendState) mode() (sticky bool, initialized bool) {
+func (s *backendState) mode() (sticky, initialized bool) {
 	snapshot := s.snapshot.Load()
 	if snapshot == nil {
 		return false, false

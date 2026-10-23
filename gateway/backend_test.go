@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"yola/api/cluster/v1"
+	v1 "yola/api/cluster/v1"
 	"yola/instance"
 	"yola/internal/clusterroute"
 

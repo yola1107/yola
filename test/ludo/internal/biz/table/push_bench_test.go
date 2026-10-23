@@ -4,7 +4,7 @@ import (
 	"testing"
 
 	"yola/test/internal/pushbench"
-	"yola/test/ludo/api/v1"
+	v1 "yola/test/ludo/api/v1"
 	"yola/test/ludo/internal/biz/player"
 
 	"google.golang.org/protobuf/proto"

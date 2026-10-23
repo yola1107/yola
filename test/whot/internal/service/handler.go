@@ -6,7 +6,7 @@ import (
 
 	"yola/node"
 	"yola/test/internal/mailbox"
-	"yola/test/whot/api/v1"
+	v1 "yola/test/whot/api/v1"
 	"yola/test/whot/internal/biz"
 
 	kerrors "github.com/go-kratos/kratos/v3/errors"

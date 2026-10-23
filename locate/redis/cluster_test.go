@@ -408,7 +408,7 @@ func clusterTransitionClients(t *testing.T) (*redis.ClusterClient, []clusterTran
 		require.NotNil(t, entry.replica)
 		nodes, nodesErr := entry.primary.ClusterNodes(t.Context()).Result()
 		require.NoError(t, nodesErr)
-		for _, line := range strings.Split(nodes, "\n") {
+		for line := range strings.SplitSeq(nodes, "\n") {
 			fields := strings.Fields(line)
 			if len(fields) > 8 {
 				for _, slotState := range fields[8:] {
@@ -656,7 +656,7 @@ func checkClusterTransitionPrimary(info map[string]string, replica *redis.Client
 		return errors.New("expected primary and its sole replica are not ready")
 	}
 	peer := make(map[string]string)
-	for _, field := range strings.Split(info["slave0"], ",") {
+	for field := range strings.SplitSeq(info["slave0"], ",") {
 		key, value, found := strings.Cut(field, "=")
 		if found {
 			peer[key] = value
@@ -674,7 +674,7 @@ func clusterTransitionReplicationInfo(ctx context.Context, client *redis.Client)
 		return nil, err
 	}
 	info := make(map[string]string)
-	for _, line := range strings.Split(raw, "\n") {
+	for line := range strings.SplitSeq(raw, "\n") {
 		key, value, found := strings.Cut(strings.TrimSpace(line), ":")
 		if found {
 			info[key] = value
@@ -748,7 +748,7 @@ func readClusterTransitionView(ctx context.Context, observer *redis.Client, slot
 	}
 	view := clusterTransitionView{nodes: make(map[string]clusterTransitionIdentity, _clusterTransitionNodeCount)}
 	primaryCount := 0
-	for _, line := range strings.Split(strings.TrimSpace(raw), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(raw), "\n") {
 		fields := strings.Fields(line)
 		if len(fields) < 8 || fields[7] != "connected" {
 			return clusterTransitionView{}, errors.New("cluster node record is incomplete or disconnected")

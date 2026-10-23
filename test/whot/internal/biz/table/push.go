@@ -8,7 +8,7 @@ import (
 	"sort"
 
 	"yola/test/internal/mailbox"
-	"yola/test/whot/api/v1"
+	v1 "yola/test/whot/api/v1"
 	"yola/test/whot/internal/biz/player"
 
 	"google.golang.org/grpc/codes"
@@ -102,7 +102,7 @@ func (t *Table) broadcastUserInfo(p *player.Player) {
 	}
 }
 
-func (t *Table) sendUserInfoToAnother(src *player.Player, dst *player.Player) {
+func (t *Table) sendUserInfoToAnother(src, dst *player.Player) {
 	t.SendPacketToClient(dst, v1.GameCommand_CmdUserInfoPush, &v1.UserInfoPush{
 		UserID:    src.GetPlayerID(),
 		ChairID:   src.GetChairID(),

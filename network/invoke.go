@@ -5,7 +5,7 @@ import (
 	"errors"
 	"time"
 
-	"yola/api/protocol/v1"
+	v1 "yola/api/protocol/v1"
 
 	"github.com/go-kratos/kratos/v3/middleware"
 )

@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"yola/test/internal/mailbox"
-	"yola/test/whot/api/v1"
+	v1 "yola/test/whot/api/v1"
 	"yola/test/whot/pkg/codes"
 
 	"google.golang.org/protobuf/proto"

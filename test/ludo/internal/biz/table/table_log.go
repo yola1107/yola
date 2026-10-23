@@ -11,7 +11,7 @@ import (
 
 	"yola/test/internal/filelog"
 	"yola/test/internal/xgo"
-	"yola/test/ludo/api/v1"
+	v1 "yola/test/ludo/api/v1"
 	"yola/test/ludo/internal/biz/player"
 	"yola/test/ludo/internal/conf"
 	"yola/test/ludo/internal/model"
@@ -82,7 +82,7 @@ func (l *Log) userReEnter(p *player.Player, seatCount int32) {
 	l.writePlayer(p, "[重进房间] 玩家:%+v 桌子人数(%+v) ", seatCount)
 }
 
-func (l *Log) userExit(p *player.Player, seatCount int32, lastChair int32, isSwitchTable bool) {
+func (l *Log) userExit(p *player.Player, seatCount, lastChair int32, isSwitchTable bool) {
 	l.writePlayer(p, "[离开房间] 玩家:%+v 桌子人数(%+v) lastChair(%d) 是否换桌(%+v) ", seatCount, lastChair, isSwitchTable)
 }
 
@@ -109,7 +109,7 @@ func (l *Log) stage(stage string, active int32) {
 	l.write("[状态转移] %s. active=%+v", stage, active)
 }
 
-func (l *Log) Dice(p *player.Player, dice int32, movable bool, timeout bool) {
+func (l *Log) Dice(p *player.Player, dice int32, movable, timeout bool) {
 	l.writePlayer(p, "[玩家掷骰] 玩家:%+v. dice=%d, movable=%v, timeout=%+v", dice, movable, timeout)
 }
 

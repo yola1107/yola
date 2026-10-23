@@ -2,7 +2,6 @@ package nats
 
 import (
 	"context"
-	"io"
 	"log/slog"
 	"net"
 	"sync"
@@ -224,7 +223,7 @@ func captureTransportErrors(t *testing.T) <-chan transportError {
 	previous := slog.Default()
 	reports := make(chan transportError, 16)
 	slog.SetDefault(slog.New(transportErrorHandler{
-		Handler: slog.NewTextHandler(io.Discard, nil),
+		Handler: slog.DiscardHandler,
 		reports: reports,
 	}))
 	t.Cleanup(func() { slog.SetDefault(previous) })

@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"yola/api/cluster/v1"
+	v1 "yola/api/cluster/v1"
 	"yola/internal/gateclient"
 	"yola/internal/listener"
 	"yola/locate"

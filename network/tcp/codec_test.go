@@ -8,7 +8,7 @@ import (
 	"io"
 	"testing"
 
-	"yola/api/protocol/v1"
+	v1 "yola/api/protocol/v1"
 	"yola/network"
 
 	"google.golang.org/protobuf/proto"

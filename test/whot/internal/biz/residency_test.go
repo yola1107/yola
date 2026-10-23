@@ -9,7 +9,7 @@ import (
 	"testing/synctest"
 	"time"
 
-	"yola/test/whot/api/v1"
+	v1 "yola/test/whot/api/v1"
 	"yola/test/whot/internal/biz/table"
 	"yola/test/whot/pkg/codes"
 

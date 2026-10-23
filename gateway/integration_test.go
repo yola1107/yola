@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"yola/api/protocol/v1"
+	v1 "yola/api/protocol/v1"
 	"yola/locate"
 	locateredis "yola/locate/redis"
 	"yola/network/tcp"
@@ -25,7 +25,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
-	"go.etcd.io/etcd/client/v3"
+	clientv3 "go.etcd.io/etcd/client/v3"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/balancer/roundrobin"
 	"google.golang.org/grpc/codes"

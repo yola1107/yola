@@ -4,7 +4,7 @@ import (
 	"context"
 
 	"yola/node"
-	"yola/test/whot/api/v1"
+	v1 "yola/test/whot/api/v1"
 	"yola/test/whot/internal/biz"
 
 	"github.com/google/wire"

@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"yola/test/internal/broadcastprobe"
-	"yola/test/ludo/api/v1"
+	v1 "yola/test/ludo/api/v1"
 
 	"google.golang.org/protobuf/proto"
 )
@@ -70,7 +70,7 @@ func TestRunnerSeparatesConnectAndPlayScenarios(t *testing.T) {
 		defer runner.Stop()
 		user := trackStartingUser(t, runner, 42)
 		runner.connectUser = func(*User) error { return nil }
-		user.requestFn = func(command v1.GameCommand, _ proto.Message, response proto.Message) error {
+		user.requestFn = func(command v1.GameCommand, _, response proto.Message) error {
 			switch command {
 			case v1.GameCommand_CmdLogin:
 				response.(*v1.LoginRsp).ChairID = 2
@@ -203,7 +203,7 @@ func TestSendMoveUsesResponsePieceState(t *testing.T) {
 	user := &User{runner: runner, id: 42}
 	user.updatePieces(0, []*v1.Piece{{Id: 3, Pos: 105, Color: 0, Status: 2}})
 	requests := 0
-	user.requestFn = func(_ v1.GameCommand, _ proto.Message, response proto.Message) error {
+	user.requestFn = func(_ v1.GameCommand, _, response proto.Message) error {
 		requests++
 		response.(*v1.MoveRsp).Pieces = []*v1.Piece{{Id: 3, Pos: 106, Color: 0, Status: 3}}
 		return nil
@@ -267,7 +267,7 @@ func TestUserSkipsReadyWhenAlreadyPrepared(t *testing.T) {
 	runner := NewRunner(Press{})
 	defer runner.Stop()
 	user := &User{runner: runner, id: 42}
-	user.requestFn = func(command v1.GameCommand, _ proto.Message, response proto.Message) error {
+	user.requestFn = func(command v1.GameCommand, _, response proto.Message) error {
 		if command == v1.GameCommand_CmdScene {
 			response.(*v1.SceneRsp).Players = []*v1.PlayerInfo{{UserId: 42, Status: playerStatusReady}}
 		}

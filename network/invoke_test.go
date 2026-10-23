@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"yola/api/protocol/v1"
+	v1 "yola/api/protocol/v1"
 
 	"github.com/go-kratos/kratos/v3/middleware"
 )
@@ -57,7 +57,7 @@ func TestInvokerAppliesHandlerTimeout(t *testing.T) {
 	})
 	invoke := NewInvoker(handler, nil, time.Millisecond)
 	_, err := invoke(context.Background(), &v1.Proto{})
-	if err != context.DeadlineExceeded {
+	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("Invoke() error = %v, want deadline exceeded", err)
 	}
 }

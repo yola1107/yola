@@ -11,7 +11,7 @@ import (
 
 	"github.com/go-kratos/kratos/contrib/registry/etcd/v3"
 	"github.com/go-kratos/kratos/v3/registry"
-	"go.etcd.io/etcd/client/v3"
+	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.etcd.io/etcd/client/v3/concurrency"
 )
 
@@ -34,7 +34,7 @@ func WithEndpoints(endpoints ...string) Option {
 	return func(config *config) {
 		config.endpoints = config.endpoints[:0]
 		for _, values := range endpoints {
-			for _, endpoint := range strings.Split(values, ",") {
+			for endpoint := range strings.SplitSeq(values, ",") {
 				endpoint = strings.TrimSpace(endpoint)
 				if endpoint == "" {
 					continue

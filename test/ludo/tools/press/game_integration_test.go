@@ -13,7 +13,7 @@ import (
 
 	"yola/network/websocket"
 	"yola/test/internal/pushbench"
-	"yola/test/ludo/api/v1"
+	v1 "yola/test/ludo/api/v1"
 	"yola/test/ludo/internal/biz"
 	"yola/test/ludo/internal/conf"
 	"yola/test/ludo/internal/data"

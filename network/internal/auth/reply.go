@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 
-	"yola/api/protocol/v1"
+	v1 "yola/api/protocol/v1"
 )
 
 // ReadReply 暂存认证回复前的 Push；read 负责解码和取消，rejected 保留 transport 的错误身份。

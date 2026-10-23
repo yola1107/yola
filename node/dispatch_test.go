@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"yola/api/cluster/v1"
+	v1 "yola/api/cluster/v1"
 	"yola/internal/clusterroute"
 
 	"github.com/go-kratos/kratos/v3/middleware"
@@ -119,13 +119,11 @@ func TestForwardAllowsSameUIDConcurrently(t *testing.T) {
 
 	var wg sync.WaitGroup
 	for _, body := range []string{"first", "second"} {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			_, _ = server.forward(
 				context.Background(), testBinding("player-a", "conn-a"), 1, []byte(body),
 			)
-		}()
+		})
 	}
 	seen := make([]string, 0, 2)
 	for range 2 {

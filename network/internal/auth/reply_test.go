@@ -5,7 +5,7 @@ import (
 	"io"
 	"testing"
 
-	"yola/api/protocol/v1"
+	v1 "yola/api/protocol/v1"
 
 	"github.com/stretchr/testify/require"
 )
@@ -65,7 +65,7 @@ func TestReadReply(t *testing.T) {
 			}
 			require.Equal(t, test.want, pending)
 			require.Equal(t, test.reads, reads)
-			if test.wantErr == io.EOF {
+			if errors.Is(test.wantErr, io.EOF) {
 				require.Same(t, io.EOF, err)
 			}
 		})

@@ -10,7 +10,7 @@ import (
 	"testing/synctest"
 	"time"
 
-	"yola/api/protocol/v1"
+	v1 "yola/api/protocol/v1"
 	"yola/locate"
 	"yola/network"
 
@@ -272,8 +272,7 @@ func BenchmarkBroadcast(b *testing.B) {
 }
 
 func BenchmarkBroadcastAdmission(b *testing.B) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := b.Context()
 	running := &broadcastRun{ctx: ctx, pushes: make(chan *v1.Proto, 1)}
 	server := &Server{broadcaster: &broadcaster{active: running}}
 	payload := make([]byte, 256)

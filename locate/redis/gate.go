@@ -35,8 +35,6 @@ if current then
   local ttl = redis.call("PTTL", KEYS[1])
   if ttl <= 0 then return {-2} end
   if not valid_binding(current) then return {-3} end
-end
-
 redis.call("PSETEX", KEYS[1], ARGV[1], ARGV[2])
 local ttl = redis.call("PTTL", KEYS[1])
 if current then return {1, ARGV[2], ttl, current} end

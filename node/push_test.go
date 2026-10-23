@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"yola/api/cluster/v1"
+	v1 "yola/api/cluster/v1"
 	"yola/internal/clusterroute"
 	"yola/locate"
 
@@ -283,7 +283,7 @@ func TestClientMiddlewarePreservesErrorIdentity(t *testing.T) {
 			binding := testBinding("player-a", "conn-a")
 			binding.GateEndpoint = "grpc://127.0.0.1:1"
 			_, err := server.forward(context.Background(), binding, 1, nil)
-			require.True(t, err == test.err, "Push changed error identity: got %v, want %v", err, test.err)
+			require.Equal(t, err, test.err, "Push changed error identity: got %v, want %v", err, test.err)
 		})
 	}
 }

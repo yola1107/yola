@@ -3,7 +3,7 @@ package node
 import (
 	"context"
 
-	"yola/api/cluster/v1"
+	v1 "yola/api/cluster/v1"
 	"yola/internal/clusterroute"
 	"yola/locate"
 

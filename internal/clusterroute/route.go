@@ -2,7 +2,7 @@
 package clusterroute
 
 import (
-	"yola/api/cluster/v1"
+	v1 "yola/api/cluster/v1"
 	"yola/locate"
 )
 

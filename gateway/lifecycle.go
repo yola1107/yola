@@ -10,7 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"yola/api/protocol/v1"
+	v1 "yola/api/protocol/v1"
 	"yola/internal/contextwait"
 	"yola/locate"
 

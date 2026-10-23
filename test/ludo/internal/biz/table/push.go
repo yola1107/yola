@@ -7,7 +7,7 @@ import (
 	"strconv"
 
 	"yola/test/internal/xgo"
-	"yola/test/ludo/api/v1"
+	v1 "yola/test/ludo/api/v1"
 	"yola/test/ludo/internal/biz/player"
 	"yola/test/ludo/internal/model"
 
@@ -112,7 +112,7 @@ func (t *Table) broadcastUserInfo(p *player.Player) error {
 	return targetErr
 }
 
-func (t *Table) sendUserInfo(src *player.Player, dst *player.Player) error {
+func (t *Table) sendUserInfo(src, dst *player.Player) error {
 	return t.sendPacket(dst, v1.GameCommand_CmdUserInfoPush, &v1.UserInfoPush{
 		UserID:    src.GetPlayerID(),
 		ChairID:   src.GetChairID(),

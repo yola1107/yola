@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 
-	"yola/api/protocol/v1"
+	v1 "yola/api/protocol/v1"
 	"yola/network"
 
 	"github.com/go-kratos/kratos/v3/encoding"
@@ -47,7 +47,7 @@ func readFrame(rr *bufio.Reader, codec encoding.Codec, p *v1.Proto) error {
 		return err
 	}
 	if unmarshalErr := codec.Unmarshal(body, p); unmarshalErr != nil {
-		return fmt.Errorf("%w: %v", errInvalidFrame, unmarshalErr)
+		return fmt.Errorf("%w: %w", errInvalidFrame, unmarshalErr)
 	}
 	p.ProtoReflect().SetUnknown(nil)
 	_, err = rr.Discard(int(length))

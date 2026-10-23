@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"yola/api/protocol/v1"
+	v1 "yola/api/protocol/v1"
 	"yola/network"
 
 	"github.com/stretchr/testify/require"

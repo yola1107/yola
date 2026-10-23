@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"yola/api/cluster/v1"
+	v1 "yola/api/cluster/v1"
 	"yola/locate"
 
 	"github.com/go-kratos/kratos/v3"

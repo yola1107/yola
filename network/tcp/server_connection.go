@@ -11,7 +11,7 @@ import (
 	"runtime/debug"
 	"time"
 
-	"yola/api/protocol/v1"
+	v1 "yola/api/protocol/v1"
 	"yola/network"
 	"yola/network/internal/inbound"
 
@@ -131,11 +131,9 @@ func (s *Server) serveTCP(baseCtx context.Context, conn net.Conn, connID string)
 	}
 	cancelOpen()
 	invoke := network.NewInvoker(s.handler, clientConn, s.config.timeout, s.config.middlewares...)
-	s.connWG.Add(1)
-	go func() {
-		defer s.connWG.Done()
+	s.connWG.Go(func() {
 		s.dispatchTCP(conn, wr, ch)
-	}()
+	})
 	err := s.readTCPMessages(connectionCtx, clientConn, invoke, rr, handshakeDeadline)
 	cancel()
 	if err != nil && !errors.Is(err, context.Canceled) && !isConnectionClosedError(err) {

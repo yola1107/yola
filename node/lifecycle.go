@@ -201,7 +201,7 @@ func (s *Server) startCleanup(base context.Context, timeout time.Duration) {
 	s.cleanupOnce.Do(func() {
 		s.lifecycleMu.Lock()
 		if s.lifecycleCtx != nil {
-			base = s.lifecycleCtx
+			base := s.lifecycleCtx
 		}
 		s.lifecycleMu.Unlock()
 		go func() {

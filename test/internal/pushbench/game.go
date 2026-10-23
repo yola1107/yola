@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"yola/api/cluster/v1"
+	v1 "yola/api/cluster/v1"
 	protocolv1 "yola/api/protocol/v1"
 	"yola/gateway"
 	locateredis "yola/locate/redis"

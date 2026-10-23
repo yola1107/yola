@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"yola/api/cluster/v1"
+	v1 "yola/api/cluster/v1"
 	protocolv1 "yola/api/protocol/v1"
 	"yola/instance"
 	"yola/internal/clusterroute"
@@ -282,7 +282,7 @@ func startTestNode(t *testing.T) string {
 	return endpoint
 }
 
-func startTestNodeServer(t *testing.T, id string, serviceName string, opts ...node.Option) (string, func()) {
+func startTestNodeServer(t *testing.T, id, serviceName string, opts ...node.Option) (string, func()) {
 	t.Helper()
 	return startConfiguredTestNode(t, id, serviceName, func(server *node.Server) {
 		var service testGameService

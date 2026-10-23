@@ -10,7 +10,7 @@ import (
 
 	"yola/test/internal/mailbox"
 	"yola/test/internal/xgo"
-	"yola/test/whot/api/v1"
+	v1 "yola/test/whot/api/v1"
 )
 
 type Runner struct {

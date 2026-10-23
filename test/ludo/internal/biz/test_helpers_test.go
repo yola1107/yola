@@ -5,7 +5,7 @@ import (
 	"sync"
 	"testing"
 
-	"yola/test/ludo/api/v1"
+	v1 "yola/test/ludo/api/v1"
 	"yola/test/ludo/internal/biz/player"
 	"yola/test/ludo/internal/biz/table"
 	"yola/test/ludo/internal/conf"

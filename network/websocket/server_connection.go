@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"yola/api/protocol/v1"
+	v1 "yola/api/protocol/v1"
 	"yola/network"
 	"yola/network/internal/inbound"
 

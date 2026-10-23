@@ -77,13 +77,11 @@ func TestConcurrentBindGateLeavesOneCurrentBinding(t *testing.T) {
 	results := make(chan result, len(candidates))
 	var wg sync.WaitGroup
 	for _, candidate := range candidates {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			<-start
 			lease, previous, err := locator.BindGate(context.Background(), candidate, _testTTL)
 			results <- result{lease: lease, previous: previous, err: err}
-		}()
+		})
 	}
 	close(start)
 	wg.Wait()
@@ -128,7 +126,7 @@ func TestBindGateDoesNotOverwriteInvalidCurrentBinding(t *testing.T) {
 	require.ErrorIs(t, err, locate.ErrInvalidGateBinding)
 	stored, err := server.Get(key)
 	require.NoError(t, err)
-	require.Equal(t, invalid, stored)
+	require.JSONEq(t, invalid, stored)
 }
 
 func TestLeaseExpiryAndServiceScope(t *testing.T) {

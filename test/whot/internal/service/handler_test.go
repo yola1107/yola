@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"yola/node"
-	"yola/test/whot/api/v1"
+	v1 "yola/test/whot/api/v1"
 
 	"github.com/go-kratos/kratos/v3/errors"
 	"github.com/stretchr/testify/require"

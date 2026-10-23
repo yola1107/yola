@@ -2,7 +2,7 @@ package table
 
 import (
 	"yola/test/internal/xgo"
-	"yola/test/whot/api/v1"
+	v1 "yola/test/whot/api/v1"
 )
 
 const (
@@ -27,7 +27,7 @@ var oneDeck = []int32{
 }
 
 // NewDeclareWhot 修改 Whot 牌花色
-func NewDeclareWhot(suit int32, card int32) int32 {
+func NewDeclareWhot(suit, card int32) int32 {
 	return suit*SuitMask + Number(card)
 }
 

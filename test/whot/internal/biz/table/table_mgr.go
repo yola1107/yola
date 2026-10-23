@@ -50,7 +50,7 @@ func NewManager(room *conf.Room, repo Repo) *Manager {
 	return newManager(room, repo, defaultTableMailboxWorkers, defaultTableQueueSize, defaultTableMailboxBatch)
 }
 
-func newManager(room *conf.Room, repo Repo, workers int, queueSize int, batchSize int) *Manager {
+func newManager(room *conf.Room, repo Repo, workers, queueSize, batchSize int) *Manager {
 	if repo == nil {
 		panic("table: repo is required")
 	}

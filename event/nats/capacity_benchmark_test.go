@@ -177,7 +177,7 @@ func TestCapacityPublisherProcess(t *testing.T) {
 		require.NoError(t, err)
 		require.GreaterOrEqual(t, batch.Size, 1)
 		require.LessOrEqual(t, int64(batch.Size), conn.MaxPayload())
-		require.Greater(t, batch.Count, 0)
+		require.Positive(t, batch.Count)
 		require.LessOrEqual(t, batch.Count, 4096)
 		require.True(t, event.ValidTopic(batch.Topic))
 		payload := make([]byte, batch.Size)
@@ -239,7 +239,7 @@ func reportCapacityMemory(b *testing.B, phase string) uint64 {
 	processStatus, err := os.ReadFile("/proc/self/status")
 	require.NoError(b, err)
 	var resident, peak uint64
-	for _, line := range strings.Split(string(processStatus), "\n") {
+	for line := range strings.SplitSeq(string(processStatus), "\n") {
 		if value, ok := strings.CutPrefix(line, "VmRSS:"); ok {
 			_, err = fmt.Sscan(value, &resident)
 			require.NoError(b, err)

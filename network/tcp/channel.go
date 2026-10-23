@@ -8,7 +8,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"yola/api/protocol/v1"
+	v1 "yola/api/protocol/v1"
 	"yola/network"
 
 	"github.com/go-kratos/kratos/v3/encoding"

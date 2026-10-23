@@ -6,7 +6,7 @@ import (
 	"log/slog"
 
 	"yola/test/internal/xgo"
-	"yola/test/whot/api/v1"
+	v1 "yola/test/whot/api/v1"
 	"yola/test/whot/internal/biz/player"
 	"yola/test/whot/pkg/codes"
 )

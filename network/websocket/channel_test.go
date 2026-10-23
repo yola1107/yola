@@ -10,7 +10,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"yola/api/protocol/v1"
+	v1 "yola/api/protocol/v1"
 	"yola/network"
 
 	"github.com/stretchr/testify/assert"
@@ -256,19 +256,15 @@ func TestChannelSendConcurrentClose(t *testing.T) {
 	errs := make(chan error, 32)
 	var wg sync.WaitGroup
 	for range 32 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			<-start
 			errs <- ch.SendProto(&v1.Proto{Op: v1.OpHeartbeat})
-		}()
+		})
 	}
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		<-start
 		_ = ch.Close()
-	}()
+	})
 	close(start)
 	wg.Wait()
 	close(errs)

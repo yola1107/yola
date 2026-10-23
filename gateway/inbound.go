@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	"time"
 
-	"yola/api/protocol/v1"
+	v1 "yola/api/protocol/v1"
 	"yola/internal/gateclient"
 	"yola/locate"
 	"yola/network"

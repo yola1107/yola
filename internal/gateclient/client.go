@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"yola/api/cluster/v1"
+	v1 "yola/api/cluster/v1"
 	"yola/internal/clusterroute"
 	"yola/internal/grpcendpoint"
 	"yola/internal/tlsconfig"

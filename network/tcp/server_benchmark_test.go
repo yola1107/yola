@@ -20,7 +20,7 @@ import (
 	"testing"
 	"time"
 
-	"yola/api/protocol/v1"
+	v1 "yola/api/protocol/v1"
 	"yola/network"
 
 	"google.golang.org/protobuf/proto"
@@ -28,7 +28,7 @@ import (
 
 func BenchmarkTCPServer(b *testing.B) {
 	logger := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	slog.SetDefault(slog.New(slog.DiscardHandler))
 	b.Cleanup(func() { slog.SetDefault(logger) })
 
 	for _, count := range []int{1000, 5000, 10000} {

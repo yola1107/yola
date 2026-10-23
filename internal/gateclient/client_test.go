@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"yola/api/cluster/v1"
+	v1 "yola/api/cluster/v1"
 	"yola/locate"
 
 	"github.com/go-kratos/kratos/v3/transport/grpc"
@@ -142,11 +142,9 @@ func TestClientReusesConcurrentConnection(t *testing.T) {
 	errs := make([]error, callers)
 	var wg sync.WaitGroup
 	for i := range callers {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			rpcs[i], errs[i] = client.acquire(context.Background(), "grpc://127.0.0.1:1")
-		}()
+		})
 	}
 	wg.Wait()
 	for i := range callers {

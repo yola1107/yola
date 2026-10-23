@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"yola/api/protocol/v1"
+	v1 "yola/api/protocol/v1"
 	"yola/locate"
 	"yola/network"
 )

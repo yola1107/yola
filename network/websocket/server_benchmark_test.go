@@ -2,11 +2,10 @@ package websocket
 
 import (
 	"fmt"
-	"io"
 	"log/slog"
 	"testing"
 
-	"yola/api/protocol/v1"
+	v1 "yola/api/protocol/v1"
 
 	"github.com/gorilla/websocket"
 	"google.golang.org/protobuf/proto"
@@ -14,7 +13,7 @@ import (
 
 func BenchmarkWebSocketServer(b *testing.B) {
 	logger := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	slog.SetDefault(slog.New(slog.DiscardHandler))
 	b.Cleanup(func() { slog.SetDefault(logger) })
 
 	for _, payloadSize := range []int{32, 4000} {

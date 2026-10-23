@@ -13,7 +13,7 @@ import (
 
 	"yola/network/websocket"
 	"yola/test/internal/pushbench"
-	"yola/test/whot/api/v1"
+	v1 "yola/test/whot/api/v1"
 	"yola/test/whot/internal/biz"
 	"yola/test/whot/internal/biz/player"
 	"yola/test/whot/internal/conf"

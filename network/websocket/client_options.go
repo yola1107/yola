@@ -189,7 +189,7 @@ func resolveClientOptions(opts ...ClientOption) (*clientOptions, error) {
 	o.pushHandler = maps.Clone(o.pushHandler)
 	u, err := parseURL(o.endpoint, o.tlsConf == nil)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrInvalidURL, err)
+		return nil, fmt.Errorf("%w: %w", ErrInvalidURL, err)
 	}
 	if o.tlsConf != nil && u.Scheme != _secureWebSocketScheme {
 		return nil, errors.New("websocket: TLS config requires a wss endpoint")

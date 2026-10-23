@@ -10,7 +10,7 @@ import (
 	"yola/network/websocket"
 	"yola/test/internal/broadcastprobe"
 	"yola/test/internal/xgo"
-	"yola/test/ludo/api/v1"
+	v1 "yola/test/ludo/api/v1"
 
 	"google.golang.org/protobuf/proto"
 )

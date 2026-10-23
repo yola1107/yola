@@ -11,7 +11,7 @@ import (
 	"github.com/go-kratos/kratos/v3/registry"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
-	"go.etcd.io/etcd/client/v3"
+	clientv3 "go.etcd.io/etcd/client/v3"
 	"google.golang.org/grpc"
 )
 

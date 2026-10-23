@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"yola/test/ludo/api/v1"
+	v1 "yola/test/ludo/api/v1"
 	"yola/test/ludo/internal/biz/player"
 	"yola/test/ludo/internal/conf"
 	"yola/test/ludo/internal/model"

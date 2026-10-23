@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"io"
 
-	"yola/api/protocol/v1"
+	v1 "yola/api/protocol/v1"
 	"yola/network"
 
 	"github.com/go-kratos/kratos/v3/encoding"
@@ -46,7 +46,7 @@ func unmarshalFrame(codec encoding.Codec, body []byte, p *v1.Proto) error {
 		return err
 	}
 	if err := codec.Unmarshal(body, p); err != nil {
-		return fmt.Errorf("%w: %v", errInvalidFrame, err)
+		return fmt.Errorf("%w: %w", errInvalidFrame, err)
 	}
 	p.ProtoReflect().SetUnknown(nil)
 	return nil
