@@ -1,99 +1,184 @@
+# 基于 golang-lint 技能提供的 assets/.golangci.yml 模板。
+# 已使用 golangci-lint v2.15.0 验证。
 version: "2"
 run:
+  concurrency: 4
+  # 分析超时时间。
+  timeout: 5m
+  # 将测试文件纳入检查。
+  tests: true
+  # 检查时以只读模式处理共享 module 的依赖。
   modules-download-mode: readonly
+
+issues:
+  max-issues-per-linter: 0 # 不限制单个 linter 的告警数量
+  max-same-issues: 0 # 不限制相同文本的告警数量
+  uniq-by-line: false # 保留同一行的不同诊断
+
+output:
+  show-stats: true # 输出总数与各 linter 的告警数量
+
 linters:
+  # 显式列出启用项，避免工具升级改变默认检查集合。
   default: none
-  # 沿用 Uber 的软行长限制；不按行数、参数数量或名称长度机械拆分代码。
   enable:
-    - bodyclose
-    - dogsled
-    - durationcheck
-    - errcheck
-    - errname # 哨兵错误使用 Err 前缀，错误类型使用 Error 后缀。
-    - errorlint # 检查不兼容错误包装的类型断言和类型 switch。
-    - gocognit
-    - goconst
-    - gocritic # 仅启用默认稳定规则，不启用全部或实验性规则。
-    - gocyclo
-    - govet
-    - ineffassign
-    - loggercheck
-    - misspell
-    - mnd
-    - nilnesserr
-    - nolintlint
-    - predeclared # 避免遮蔽 len、error 等预声明标识符。
-    - revive
-    - staticcheck
-    - unconvert
-    - unused
-    - wastedassign
-    - whitespace
+    # 正确性
+    - govet # 检查锁复制、格式字符串、结构体标签和不可达代码等问题
+    - staticcheck # 综合静态分析：弃用 API、常见错误及可简化的代码
+    - unused # 检查未使用的变量、函数和类型
+    - errcheck # 检查未处理的错误返回值和类型断言
+    - errorlint # 检查 errors.Is/As 和 %w 错误包装的用法（Go 1.13+）
+    - nilerr # 检查发现非 nil 错误后却返回 nil 的情况
+    - forcetypeassert # 检查未使用 comma-ok 判断结果的类型断言
+    - copyloopvar # 检查循环变量的多余复制（Go 1.22+）
+    - durationcheck # 检查两个 time.Duration 相乘导致的错误
+    - reassign # 检查包级变量的重新赋值
+    # 代码风格
+    - gocritic # 检查多余转换、遍历时的值复制和冗余代码等问题
+    - revive # 检查命名、导出类型及与包名重复的标识符
+    - funcorder # 检查构造函数位于类型声明之后、方法之前
+    - dogsled # 检查一次赋值中丢弃过多返回值的写法
+    - whitespace # 检查多余空白和空行
+    - godot # 检查导出符号的注释是否以句号结尾
+    - misspell # 检查标识符和注释中的常见英文拼写错误
+    - dupword # 检查注释和字符串中的重复单词，如 the the
+    - predeclared # 检查遮蔽 Go 内置标识符的命名，如 len、cap、error
+    - errname # 检查错误变量和类型的命名，如 ErrFoo、FooError
+    - asciicheck # 检查非 ASCII 标识符，防范形似字符欺骗
+    # 复杂度
+    - gocyclo # 检查函数圈复杂度
+    - gocognit # 检查嵌套与控制流带来的认知复杂度
+    - nestif # 检查过深的 if/else 嵌套
+    - funlen # 限制函数行数和语句数
+    - dupl # 检查重复代码
+    # 性能与简化
+    - perfsprint # 提示可替代 fmt.Sprintf 的更高效写法
+    - unconvert # 检查多余的类型转换
+    - ineffassign # 检查赋值后未被读取的变量
+    - goconst # 检查可提取为常量的重复字面量
+    - mnd # 检查分支、条件和返回值中的魔法数字
+    - prealloc # 检查简单循环中可预分配容量的切片
+    # 安全与资源管理
+    - gosec # 检查 SQL 注入、硬编码凭据、弱加密和路径穿越等问题
+    - bidichk # 检查危险的 Unicode 双向控制字符（CVE-2021-42574）
+    - bodyclose # 检查未关闭的 HTTP 响应体，避免连接泄漏
+    - noctx # 检查未关联 context.Context 的 HTTP 请求
+    - containedctx # 检查将 context.Context 存入结构体字段的做法
+    - fatcontext # 检查循环内不断派生 Context 导致的链条增长和内存泄漏
+    - sqlclosecheck # 检查未关闭的 sql.Rows 和 sql.Stmt
+    - rowserrcheck # 检查遍历结束后是否处理 sql.Rows.Err()
+    # 日志
+    - sloglint # 统一 log/slog 的使用风格
+    - loggercheck # 检查结构化日志的键值对，如 zap、slog、logr
+    # 测试
+    - testifylint # 检查 testify 的常见使用问题
+    - thelper # 检查测试辅助函数是否调用 t.Helper()
+    - usetesting # 提示在测试中使用 t.Setenv/t.TempDir 等测试专用方法
+    - paralleltest # 检查测试及子测试是否缺少 t.Parallel()
+    # 现代 Go 写法与完整性
+    - modernize # 提示可用较新 Go 特性简化的旧写法
+    - exptostd # 提示使用标准库替代 golang.org/x/exp/ 中的对应功能
+    - intrange # 提示使用整数 range 替代简单计数循环（Go 1.22+）
+    - usestdlibvars # 提示使用标准库常量替代硬编码值
+    - exhaustive # 检查 switch 是否覆盖全部枚举值
+
+  disable:
+    - wsl_v5 # 空行按语义分组，避免强制分隔连续流程
+    - lll # 行长检查；采用 gofmt/gofumpt 排版，不额外限制行长
+    - wrapcheck # 强制包装所有外部错误，默认启用会产生较多干扰
+    - err113 # 强制使用包级哨兵错误，对常见错误处理方式限制过多
+    - iface # 接口污染检查；规则较主观，暂不启用
+    - nakedret # 裸返回检查；已有 funlen 限制函数长度，暂不额外约束
+    - noinlineerr # 禁止在 if 初始化语句中处理错误，与常见 Go 写法冲突
+    - cyclop # 圈复杂度检查；与 gocyclo 重复
+    - depguard # 导入允许和禁止列表，需按项目边界配置
+    - goheader # 文件头检查，需按项目策略配置
+    - importas # 导入别名检查，需按项目约定配置
+    - godoclint # godoc 检查；与 godot、revive 的约束重叠
+    - varnamelen # 变量名长度检查；Go 允许在短作用域内使用短名称
+    - exhaustruct # 强制初始化全部结构体字段，不利于使用零值
+    - gochecknoglobals # 禁止全局变量过于严格，仍存在合理用法
+    - gochecknoinits # 禁止 init() 过于严格，仍存在合理用法
+    - unparam # 未使用参数检查；接口实现中容易出现误报
+    - makezero # 检查切片初始长度，容易误判 make([]T, n) 的意图
+    - testpackage # 强制使用独立的 _test 包，不作为默认约束
+    - embeddedstructfieldcheck # 嵌入类型的位置属于局部风格，不作强制要求
+    - iotamixing # 检查混合常量块中的 iota，问题较少见
+    - unqueryvet # 检查 SELECT *，暂不作为默认约束
+    - recvcheck # 接收者类型一致性检查；与 gocritic 的约束重叠
+    - mirror # 检查 bytes/strings 对应方法的使用，适用场景较少
+    - protogetter # 要求通过 getter 访问 Protobuf 字段，按需启用
+    - spancheck # OpenTelemetry span 检查，接入 OTel 后按需启用
+    - zerologlint # zerolog 用法检查，使用该日志库时再启用
+
+  exclusions:
+    # Protobuf、Wire 和 Ent 产物使用标准的生成文件标记。
+    # 手写 API 辅助代码、Wire 注入定义和 Ent schema 仍在检查范围内。
+    generated: strict
+    paths:
+      - (^|/)(vendor|third_party)/
+
   settings:
-    errorlint:
-      # 包装哪些错误、是否保持错误身份由接口契约决定，不统一要求 %w 或 errors.Is。
-      errorf: false
-      comparison: false
-      asserts: true
+    dupl:
+      threshold: 100 # 按词法单元数量计，数值越小越严格
+    errcheck:
+      check-type-assertions: true
+    funcorder:
+      # 约束构造函数位置，其余函数与方法按职责排列。
+      constructor: true
+      struct-method: false
+      alphabetical: false
+      function: false
+    funlen:
+      lines: 120
+      statements: 80
+    goconst:
+      min-len: 3
+      min-occurrences: 4
     gocognit:
-      min-complexity: 35
+      min-complexity: 15 # 关注阅读负担，与圈复杂度互补
     gocyclo:
-      min-complexity: 20
-    govet:
-      enable:
-        - shadow
-    misspell:
-      locale: US
+      min-complexity: 13 # 数值越小，对复杂度的限制越严格
     mnd:
+      # 沿用 Kratos 的检查范围。
       checks:
         - case
         - condition
         - return
-    nolintlint:
-      require-explanation: true
-      require-specific: true
     revive:
-      # 自定义规则时保留默认命名、接收者和导出名称检查。
-      # 不启用 confusing-naming：允许公开入口委托同名私有实现。
+      # 保留默认规则，额外约束主流程的嵌套。
       enable-default-rules: true
       rules:
         - name: early-return
-          arguments:
-            - preserve-scope
-        - name: superfluous-else
-          arguments:
-            - preserve-scope
-    whitespace:
-      # gofumpt 会移除函数体开头的空行。
-      multi-func: false
-  exclusions:
-    generated: lax
-    warn-unused: true
-    presets:
-      - comments
-      - std-error-handling
-    rules:
-      - linters:
-          - gocognit
-          - goconst
-        path: (.+)_test\.go
-issues:
-  # 不截断同一检查器的告警数量。
-  max-issues-per-linter: 0
-  max-same-issues: 0
+          arguments: [preserve-scope]
+
 formatters:
+  # 格式工具按列表启用；未启用项保留为注释，并说明原因。
+  # 此处不支持 disable 配置块，添加后会导致
+  # golangci-lint config verify 校验失败。
   enable:
-    - gci
-    - gofumpt
+    - gofumpt # 包含 gofmt 规则，并追加更严格的格式约束
+    - goimports # 整理导入：补充缺失项，移除未使用项
+    - gci # 按标准库、项目包、第三方包分组，组间留空行
+    # - gofmt    # 已由 gofumpt 覆盖，无需重复启用
+    # - golines  # 自动折行可能影响可读性，暂不启用
+    # - swaggo   # 使用 swaggo 时再启用其注释格式化
   settings:
     gci:
-      sections:
-        - standard
-        - prefix(yola)
-        - default
+      # 严格按以下顺序分组，各组内部按导入路径排序。
       custom-order: true
+      sections:
+        - standard # Go 标准库
+        - prefix(yola) # 根目录与 test/ 两个 module 的项目包
+        - default # 第三方包
     gofumpt:
       # 两个 module 共用 yola 前缀，避免项目导入被识别为标准库。
       module-path: yola
+      # 等价于模板中已弃用的 extra-rules: true。
+      extra:
+        group-params: true
+        clothe-returns: true
   exclusions:
-    generated: lax
+    generated: strict
+    paths:
+      - (^|/)(vendor|third_party)/
