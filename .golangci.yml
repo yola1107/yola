@@ -29,6 +29,7 @@ linters:
     - errcheck # 检查未处理的错误返回值和类型断言
     - errorlint # 检查 errors.Is/As 和 %w 错误包装的用法（Go 1.13+）
     - nilerr # 检查发现非 nil 错误后却返回 nil 的情况
+    - nilnesserr # 检查误用已知为 nil 的 error 值
     - forcetypeassert # 检查未使用 comma-ok 判断结果的类型断言
     - copyloopvar # 检查循环变量的多余复制（Go 1.22+）
     - durationcheck # 检查两个 time.Duration 相乘导致的错误
@@ -39,9 +40,10 @@ linters:
     - funcorder # 检查构造函数位于类型声明之后、方法之前
     - dogsled # 检查一次赋值中丢弃过多返回值的写法
     - whitespace # 检查多余空白和空行
+    - nolintlint # 检查无效或不规范的抑制指令，不代表允许使用
     - godot # 检查导出符号的注释是否以句号结尾
     - misspell # 检查标识符和注释中的常见英文拼写错误
-    - dupword # 检查注释和字符串中的重复单词，如 the the
+    - dupword # 检查注释中的重复单词，如 the the
     - predeclared # 检查遮蔽 Go 内置标识符的命名，如 len、cap、error
     - errname # 检查错误变量和类型的命名，如 ErrFoo、FooError
     - asciicheck # 检查非 ASCII 标识符，防范形似字符欺骗
@@ -55,6 +57,7 @@ linters:
     - perfsprint # 提示可替代 fmt.Sprintf 的更高效写法
     - unconvert # 检查多余的类型转换
     - ineffassign # 检查赋值后未被读取的变量
+    - wastedassign # 检查未使用或使用前被覆盖的赋值
     - goconst # 检查可提取为常量的重复字面量
     - mnd # 检查分支、条件和返回值中的魔法数字
     - prealloc # 检查简单循环中可预分配容量的切片
@@ -74,7 +77,7 @@ linters:
     - testifylint # 检查 testify 的常见使用问题
     - thelper # 检查测试辅助函数是否调用 t.Helper()
     - usetesting # 提示在测试中使用 t.Setenv/t.TempDir 等测试专用方法
-    - paralleltest # 检查测试及子测试是否缺少 t.Parallel()
+    - paralleltest # 检查已有并行测试的清理方式，不强制并行
     # 现代 Go 写法与完整性
     - modernize # 提示可用较新 Go 特性简化的旧写法
     - exptostd # 提示使用标准库替代 golang.org/x/exp/ 中的对应功能
@@ -121,6 +124,8 @@ linters:
   settings:
     dupl:
       threshold: 100 # 按词法单元数量计，数值越小越严格
+    dupword:
+      comments-only: true # 避免自动修复改写 Lua、SQL 等业务字符串
     errcheck:
       check-type-assertions: true
     funcorder:
@@ -139,18 +144,32 @@ linters:
       min-complexity: 15 # 关注阅读负担，与圈复杂度互补
     gocyclo:
       min-complexity: 13 # 数值越小，对复杂度的限制越严格
+    govet:
+      enable:
+        - shadow
     mnd:
       # 沿用 Kratos 的检查范围。
       checks:
         - case
         - condition
         - return
+    nolintlint:
+      allow-unused: false
+      require-explanation: true
+      require-specific: true
+    paralleltest:
+      ignore-missing: true # 测试隔离后再决定是否并行
+      check-cleanup: true # 提示使用 t.Cleanup，避免并行子测试前提前清理
     revive:
       # 保留默认规则，额外约束主流程的嵌套。
       enable-default-rules: true
       rules:
         - name: early-return
           arguments: [preserve-scope]
+    whitespace:
+      # 不强制多行签名或条件之后留块首空行，与 gofumpt 保持一致。
+      multi-func: false
+      multi-if: false
 
 formatters:
   # 格式工具按列表启用；未启用项保留为注释，并说明原因。
