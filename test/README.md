@@ -15,7 +15,7 @@ test module --replace--> 根 module
 | Ludo Server | `-conf` 指向文件或目录，默认 `ludo/configs` | `ludo/configs/config.yaml`：gRPC `:9001`、本机 Redis/etcd |
 | Whot Server | `-conf` 指向文件或目录，默认 `whot/configs` | `whot/configs/config.yaml`：gRPC `:9002`、配置内的 Redis/etcd 地址 |
 
-当前没有全局 `YOLA_TEST_REDIS_*` 或 `YOLA_TEST_ETCD_*` 覆盖逻辑。Gateway 使用 `-redis-*` 和 `-etcd-*` 参数；游戏 Node 使用配置文件的 `data.redis` 和 `data.registry`。本地凭据应放在仓库外的配置副本或启动参数中，不得提交。
+Gateway 通过 `-redis-*` 和 `-etcd-*` 启动参数连接 Redis 和 etcd。游戏 Node 从配置文件读取 `data.redis` 和 `data.registry`。本地凭据应放在仓库外的配置副本或启动参数中，不得提交。
 
 `test/gateway/main.go` 通过 `Transport` 拥有 WebSocket transport；当前测试入口不启动 TCP transport。Gateway 和游戏 Node 的环境 registry prefix 必须一致，统一由 `NewNodeRegistry` 派生内部目录。Node 的 Registrar 在 server 构造时注入，App 只装配 transport；Wire cleanup 先停 Node，再关闭其依赖。
 
@@ -63,7 +63,7 @@ go build -o ./bin/gateway ./gateway
 
 只有一台 macOS 时，可为 `lo0` 增加多个目标 IP alias，并让现有 press 轮询这些 URL，在本机完成五档相对曲线，不需要修改 client；同机结果包含客户端资源竞争，不替代上述分机验收。真实连接不能仅看 Go heap：还需从进程和主机侧采集 RSS、CPU、FD、socket、带宽与丢包。Gateway 和压测客户端必须同步系统时钟，否则客户端广播端到端延迟无效。完整客户端配置、loopback 设置、档位和指标见 [Ludo press](./ludo/README.md#单-gateway-阶梯容量)。
 
-仓库当前没有 `ludo-smoke` 或 `whot-smoke` 入口。Ludo 的运行、完整流程测试和压测入口见 [ludo/README](./ludo/README.md)。
+Ludo 和 Whot 的冒烟用例见[真实游戏测试命令](#真实游戏测试命令)。
 
 ## Table Push 分段基准
 
@@ -115,7 +115,12 @@ Configured 只对齐请求预算，room、玩家、到达率仍由合成夹具�
 
 `GameProbe.Stop` 保留独立 15s 的 Node 排空检查，让 Gateway 和客户端继续接收至消息流断言完成；App 注销和 Run 退出在测试 cleanup 中完成。早失败路径不保证先排空 Node 再关闭 Gateway。原生 App.Run 也引入原夹具未包含的应用初始化成本，不能直接以跨版本启动/RSS 差值宣称性能收益。
 
+### 真实游戏测试命令
+
+从 `test/` 目录按场景选择命令，使用可丢弃的专用 Redis 和 etcd 实例。
+
 ```powershell
+$env:YOLA_REDIS_INTEGRATION = '<dedicated-redis>:6379'
 $env:YOLA_ETCD_INTEGRATION = '<dedicated-etcd>:2379'
 $env:YOLA_GAME_DURATION = '30s'
 go test -p=1 ./ludo/tools/press ./whot/tools/press -run '^TestGameDelivery$' -count=1 -v -timeout=20m

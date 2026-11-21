@@ -60,7 +60,7 @@ Redis 保存连接定位与 Node 绑定，etcd 提供 Node 注册与发现；需
 
 ### 常用命令
 
-以下命令均从仓库根目录执行，定义见 [Makefile](../Makefile)。首次开发先用 `make init` 安装检查工具。`golangci-lint` 的版本在根目录 `Makefile` 中固定，格式化、lint 及其配置校验会检查本机版本是否一致；检查规则和格式工具以 [.golangci.yml](../.golangci.yml) 为准。
+以下命令均从仓库根目录执行，定义见 [Makefile](../Makefile)。首次开发先用 `make init` 安装检查工具。`golangci-lint` 的版本由 Makefile 固定，格式化、lint 及其配置校验都会检查本机版本。
 
 | 命令 | 功能与范围 |
 | --- | --- |
@@ -94,7 +94,7 @@ go test ./gateway
 (cd test && go test ./...)
 ```
 
-测试编写遵循 [Go 测试约定](agents/go-styles.md#测试)：TTL、Redis 原子修改和 etcd 租约由 adapter 测试验证，示例测试验证装配参数。
+适配器测试验证 TTL、Redis 原子修改和 etcd 租约。`examples/env` 测试核对示例注册与发现使用的 etcd 地址和前缀。
 
 #### Redis 与 etcd 集成测试
 
@@ -122,6 +122,5 @@ go test -race -count=1 -timeout=180s -v \
 - 仅在本文维护文档导航，不重复维护完整目录树或源码导航。标题按阅读任务组织，同一主题的步骤、前提和注意事项放在一起。
 - 操作说明写清依赖、配置、命令和预期结果；完整代码由可运行示例维护。详细实现链接源码，必要的运行配置直接说明。
 - 移动文档或修改标题时，同步路径与锚点。
-- Uber [原文](harness/rules/uber-go/style.md)和[许可证](harness/rules/uber-go/LICENSE)作为外部参考保留，来自 [uber-go/guide@1d60a91](https://github.com/uber-go/guide/blob/1d60a91aa5e87d443002e23c21903c49489dbde5/style.md)，收录于 `2026-10-18`；保持原样，升级时从同一提交替换并更新来源。
 - 部署验收条件随功能文档维护，完成证据放在 `.scratch/<feature>/`；术语和架构决策分别维护在 `GLOSSARY.md` 与 `docs/adr/`，历史记录由 Git 追溯。
 - 项目说明使用“本项目”或“框架”等通用称呼；代码和命令中的 API、路径、环境变量与实际实现一致。
