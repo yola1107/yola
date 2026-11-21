@@ -3,12 +3,10 @@ package websocket
 import (
 	"bufio"
 	"context"
-	"crypto/sha1"
-	"encoding/base64"
 	"errors"
-	"fmt"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -163,11 +161,12 @@ func openTestWebSocket(t *testing.T, clientConn, serverConn net.Conn) *websocket
 			return
 		}
 		_ = request.Body.Close()
-		key := request.Header.Get("Sec-WebSocket-Key")
-		digest := sha1.Sum([]byte(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"))
-		accept := base64.StdEncoding.EncodeToString(digest[:])
-		_, err = fmt.Fprintf(serverConn, "HTTP/1.1 101 Switching Protocols\r\n"+
-			"Upgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: %s\r\n\r\n", accept)
+		writer := &pipeUpgradeWriter{
+			ResponseRecorder: httptest.NewRecorder(),
+			conn:             serverConn,
+			buffer:           bufio.NewReadWriter(reader, bufio.NewWriter(serverConn)),
+		}
+		_, err = (&websocket.Upgrader{}).Upgrade(writer, request, nil)
 		handshakeDone <- err
 	}()
 	dialer := websocket.Dialer{
@@ -193,4 +192,14 @@ func openTestWebSocket(t *testing.T, clientConn, serverConn net.Conn) *websocket
 		_ = serverConn.Close()
 	})
 	return conn
+}
+
+type pipeUpgradeWriter struct {
+	*httptest.ResponseRecorder
+	conn   net.Conn
+	buffer *bufio.ReadWriter
+}
+
+func (w *pipeUpgradeWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	return w.conn, w.buffer, nil
 }

@@ -89,7 +89,7 @@ func TestLoginReleasesRobotsEnteredBeforeTableError(t *testing.T) {
 	if _, free := manager.free.Load(repo.enteredID); free {
 		t.Fatalf("entered robot %d remained in free pool", repo.enteredID)
 	}
-	if manager.countFree() != 1 {
-		t.Fatalf("free robots = %d, want 1", manager.countFree())
+	if _, _, free := manager.Counts(); free != 1 {
+		t.Fatalf("free robots = %d, want 1", free)
 	}
 }

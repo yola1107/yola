@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"math"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -41,14 +42,15 @@ func newSocketPipeline(t testing.TB, address, service string, tableCount int, me
 	client := redis.NewClient(&redis.Options{Addr: address, ContextTimeoutEnabled: true})
 	t.Cleanup(func() { require.NoError(t, client.Close()) })
 	store := locateredis.New(client)
+	limit := socketPlayerLimit(t, tableCount*4)
 	socket := websocket.NewServer(websocket.Address("127.0.0.1:0"),
-		websocket.MaxConnLimit(int32(tableCount*4+1)), websocket.MaxConnPerIP(int32(tableCount*4+1)))
+		websocket.MaxConnLimit(limit), websocket.MaxConnPerIP(limit))
 	gate, err := gateway.NewServer(
 		gateway.Address("127.0.0.1:0"), gateway.Auth(benchmarkAuthenticator{}),
 		gateway.Locator(store), gateway.Discovery(unusedDiscovery{}), gateway.Transport(socket),
 	)
 	require.NoError(t, err)
-	startServer(t, gate, "gateway", service+"-gateway", gatewayReady(gate))
+	require.NoError(t, startServer(t, gate, "gateway", service+"-gateway", gatewayReady(gate)))
 	sender, err := push.NewSender(&measuredLocator{Locator: store, measurements: measurements}, push.ClientMiddleware(measurements.rpc))
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, sender.Close()) })
@@ -109,7 +111,7 @@ func (p *socketPipeline) reconnect(t testing.TB, index int, readDelay time.Durat
 	require.NotEqual(t, before.Binding.BindingToken, after.Binding.BindingToken)
 }
 
-func (p *socketPipeline) waitReceived(t testing.TB, want uint64) {
+func (p *socketPipeline) waitReceived(t testing.TB, want int64) {
 	t.Helper()
 	require.Eventually(t, func() bool {
 		for _, receiver := range p.receivers {
@@ -120,7 +122,7 @@ func (p *socketPipeline) waitReceived(t testing.TB, want uint64) {
 				t.Error(err)
 				return true
 			}
-			if received != want {
+			if want < 0 || received != uint64(want) {
 				return false
 			}
 		}
@@ -160,7 +162,7 @@ func (r *socketReceiver) receive(body []byte) {
 		r.err = err
 		return
 	}
-	if len(message.Value) != 256 || binary.LittleEndian.Uint64(message.Value) != uint64(r.table) {
+	if len(message.Value) != 256 || r.table < 0 || binary.LittleEndian.Uint64(message.Value) != uint64(r.table) {
 		r.err = fmt.Errorf("unexpected payload for table %d", r.table)
 		return
 	}
@@ -174,16 +176,17 @@ func (r *socketReceiver) receive(body []byte) {
 		return
 	}
 	r.received++
-	scheduled := time.Duration(binary.LittleEndian.Uint64(message.Value[16:]))
-	r.measurements.record("client_scheduled", r.origin.Add(scheduled), nil)
+	var nanos int64
+	_, _ = binary.Decode(message.Value[16:24], binary.LittleEndian, &nanos)
+	r.measurements.record("client_scheduled", r.origin.Add(time.Duration(nanos)), nil)
 }
 
-func cadencePayload(table int, sequence uint64, scheduled time.Duration) *wrapperspb.BytesValue {
+func cadencePayload(table int, sequence int64, scheduled time.Duration) *wrapperspb.BytesValue {
 	data := make([]byte, 256)
-	binary.LittleEndian.PutUint64(data, uint64(table))
-	binary.LittleEndian.PutUint64(data[8:], sequence)
+	_, _ = binary.Encode(data[:8], binary.LittleEndian, int64(table))
+	_, _ = binary.Encode(data[8:16], binary.LittleEndian, sequence)
 	// 同进程回环测试传相对时间，接收侧恢复 time.Time 的 monotonic 时钟。
-	binary.LittleEndian.PutUint64(data[16:], uint64(scheduled))
+	_, _ = binary.Encode(data[16:24], binary.LittleEndian, int64(scheduled))
 	return wrapperspb.Bytes(data)
 }
 
@@ -201,4 +204,13 @@ func (c delayedReadCodec) Unmarshal(data []byte, value any) error {
 		time.Sleep(c.delay)
 	}
 	return nil
+}
+
+func socketPlayerLimit(tb testing.TB, players int) int32 {
+	tb.Helper()
+	if players >= 0 && players < math.MaxInt32 {
+		return int32(players) + 1
+	}
+	tb.Fatalf("invalid WebSocket player count: %d", players)
+	return 0
 }

@@ -37,34 +37,27 @@ func TestChannelSendProto(t *testing.T) {
 	}
 }
 
-func TestChannelSendProtoRejectsFullQueue(t *testing.T) {
-	codec := &countingCodec{}
-	ch := &Channel{
-		codec:    codec,
-		outbound: make(chan outboundFrame, 1),
-	}
-	ch.outbound <- outboundFrame{}
-	ping := &v1.Proto{Op: v1.OpHeartbeat}
-	if err := ch.SendProto(ping); !errors.Is(err, network.ErrSendQueueFull) {
-		t.Fatalf("SendProto() error = %v, want %v", err, network.ErrSendQueueFull)
-	}
-	if codec.marshals.Load() != 0 {
-		t.Fatal("SendProto encoded a frame after the outbound queue was already full")
-	}
-}
+func TestChannelRejectsSendBeforeEncoding(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		full   bool
+		closed bool
+		want   error
+	}{
+		{name: "full", full: true, want: network.ErrSendQueueFull},
+		{name: "closed", closed: true, want: network.ErrConnectionClosed},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			codec := &countingCodec{}
+			ch := &Channel{codec: codec, outbound: make(chan outboundFrame, 1)}
+			ch.closed.Store(test.closed)
+			if test.full {
+				ch.outbound <- outboundFrame{}
+			}
 
-func TestChannelSendProtoRejectsClosedChannel(t *testing.T) {
-	codec := &countingCodec{}
-	ch := &Channel{
-		codec:    codec,
-		outbound: make(chan outboundFrame, 1),
-	}
-	ch.closed.Store(true)
-	if err := ch.SendProto(&v1.Proto{Op: v1.OpHeartbeat}); !errors.Is(err, network.ErrConnectionClosed) {
-		t.Fatalf("SendProto() error = %v, want %v", err, network.ErrConnectionClosed)
-	}
-	if codec.marshals.Load() != 0 {
-		t.Fatal("SendProto encoded a frame after the channel was already closed")
+			require.ErrorIs(t, ch.SendProto(&v1.Proto{Op: v1.OpHeartbeat}), test.want)
+			require.Zero(t, codec.marshals.Load())
+		})
 	}
 }
 

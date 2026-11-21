@@ -99,8 +99,14 @@ func TestClientCancellationLeavesStartedRequestRunning(t *testing.T) {
 
 func TestCanceledForwardRemainsInNodeDrain(t *testing.T) {
 	for _, transportName := range []string{"tcp", "websocket"} {
-		for _, interruption := range []string{"disconnect", "forward deadline"} {
-			t.Run(transportName+"/"+interruption, func(t *testing.T) {
+		for _, tc := range []struct {
+			name       string
+			rpcTimeout time.Duration
+		}{
+			{name: "disconnect", rpcTimeout: 3 * time.Second},
+			{name: "forward deadline", rpcTimeout: 250 * time.Millisecond},
+		} {
+			t.Run(transportName+"/"+tc.name, func(t *testing.T) {
 				store := testLocator(t)
 				started := make(chan context.Context, 1)
 				release := make(chan struct{})
@@ -122,11 +128,7 @@ func TestCanceledForwardRemainsInNodeDrain(t *testing.T) {
 					return nil, nil
 				})
 				server.RegisterRawHandler(2, func(context.Context, []byte) ([]byte, error) { return nil, nil })
-				rpcTimeout := 3 * time.Second
-				if interruption == "forward deadline" {
-					rpcTimeout = 250 * time.Millisecond
-				}
-				fixture := startRequestLifecycle(t, transportName, store, server, registration, rpcTimeout)
+				fixture := startRequestLifecycle(t, transportName, store, server, registration, tc.rpcTimeout)
 				t.Cleanup(unblock)
 				client := fixture.dial(nil, nil)
 				result := make(chan lifecycleRequestResult, 1)
@@ -135,7 +137,7 @@ func TestCanceledForwardRemainsInNodeDrain(t *testing.T) {
 					result <- lifecycleRequestResult{code: code, err: requestErr}
 				}()
 				nodeCtx := receiveWithin(t, started)
-				if interruption == "disconnect" {
+				if tc.name == "disconnect" {
 					client.Close()
 					require.Error(t, receiveWithin(t, result).err)
 					client = fixture.dial(nil, nil)

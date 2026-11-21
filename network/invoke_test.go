@@ -11,12 +11,6 @@ import (
 	"github.com/go-kratos/kratos/v3/middleware"
 )
 
-func TestConnectionHandlerOperation(t *testing.T) {
-	if ConnectionHandlerOperation != "/network.ConnectionHandler/Handle" {
-		t.Fatalf("ConnectionHandlerOperation = %q", ConnectionHandlerOperation)
-	}
-}
-
 func TestInvokerBuildsMiddlewareOnce(t *testing.T) {
 	built := 0
 	called := 0

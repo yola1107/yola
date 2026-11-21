@@ -22,7 +22,9 @@ func TestMeasurementsSeparateFailuresAndExcludeWarmup(t *testing.T) {
 			if instrument.Name != "pushbench_seconds" {
 				continue
 			}
-			for _, point := range instrument.Data.(metricdata.Histogram[float64]).DataPoints {
+			histogram, ok := instrument.Data.(metricdata.Histogram[float64])
+			require.True(t, ok)
+			for _, point := range histogram.DataPoints {
 				require.GreaterOrEqual(t, point.Sum, 0.001, "duration is recorded in seconds")
 				failed, _ := point.Attributes.Value("error")
 				if failed.AsBool() {
@@ -50,7 +52,12 @@ func TestPercentileReportsBucketUpperBound(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			point := metricdata.HistogramDataPoint[float64]{Count: 10, Bounds: []float64{1, 2, 3}, BucketCounts: test.counts}
-			require.Equal(t, test.want, percentileUpperBound(point, test.quantile))
+			got := percentileUpperBound(point, test.quantile)
+			if math.IsInf(test.want, 1) {
+				require.True(t, math.IsInf(got, 1))
+			} else {
+				require.InDelta(t, test.want, got, 0)
+			}
 		})
 	}
 }

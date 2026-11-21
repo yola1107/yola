@@ -130,15 +130,6 @@ func (t *Table) broadcastReadyRsp(p *player.Player, ready bool) {
 	}, p.GetPlayerID())
 }
 
-func (t *Table) broadcastChatRsp(p *player.Player, in *v1.ChatReq) {
-	t.SendPacketToAllExcept(v1.GameCommand_CmdChatPush, &v1.ChatRsp{
-		UserID: int32(p.GetPlayerID()),
-		OpType: in.OpType,
-		FaceID: in.FaceID,
-		Msg:    in.Msg,
-	}, p.GetPlayerID())
-}
-
 func (t *Table) broadcastHostingRsp(p *player.Player, hosting bool) {
 	status := int32(1)
 	if hosting {
@@ -190,11 +181,10 @@ func (t *Table) dispatchCardPush(canGameSeats []*player.Player, bottom []int32, 
 	}
 }
 
-// SendSceneInfo 发送游戏场景信息
+// SceneInfo 返回游戏场景及查看者自己的手牌和可用操作。
 func (t *Table) SceneInfo(viewer *player.Player) *v1.SceneRsp {
-	roomConfig := t.rc
 	return &v1.SceneRsp{
-		BaseScore:   roomConfig.Game.BaseMoney,
+		BaseScore:   t.rc.Game.BaseMoney,
 		Stage:       int32(t.stage.State()),
 		Timeout:     int64(t.stage.Remaining().Seconds()),
 		Active:      t.active,
@@ -252,7 +242,7 @@ func (t *Table) broadcastActivePlayerPush() {
 			Timeout:  int64(t.stage.Remaining().Seconds()),
 			Active:   t.active,
 			LeftNum:  t.cards.GetCardNum(),
-			CardsNum: int32(len(p.GetCards())),
+			CardsNum: cardCount(len(p.GetCards())),
 			Pending:  t.pending,
 			CanOp:    t.getCanOp(p),
 		}
@@ -269,48 +259,7 @@ func (t *Table) broadcastPlayerAction(p *player.Player, action v1.ACTION, cs []i
 			continue
 		}
 
-		hand := p.GetCards()
-		self := v.GetPlayerID() == p.GetPlayerID()
-
-		rsp := &v1.PlayerActionRsp{
-			Code:    0,
-			Message: "",
-			UserId:  p.GetPlayerID(),
-			ChairId: p.GetChairID(),
-			Action:  action,
-			LeftNum: t.cards.GetCardNum(),
-			Effect:  t.pending,
-			PlayResult: &v1.PlayCardResult{
-				CardsNum: int32(len(hand)),
-				Card:     0,
-				Cards:    nil,
-			},
-			DrawResult: &v1.DrawCardResult{
-				CardsNum: int32(len(hand)),
-				DrawNum:  0,
-				Cards:    nil,
-			},
-			DeclareResult: &v1.DeclareSuitResult{
-				Suit: declaredSuit,
-			},
-		}
-
-		switch action {
-		case v1.ACTION_PLAY_CARD:
-			if len(cs) == 1 {
-				rsp.PlayResult.Card = cs[0]
-			}
-			if self {
-				rsp.PlayResult.Cards = hand
-			}
-		case v1.ACTION_DRAW_CARD:
-			rsp.DrawResult.DrawNum = int32(len(cs))
-			if self {
-				rsp.DrawResult.Drawn = cs
-				rsp.DrawResult.Cards = hand
-			}
-		}
-
+		rsp := t.playerActionPush(p, v, action, cs, declaredSuit)
 		t.SendPacketToClient(v, v1.GameCommand_CmdPlayerActionPush, rsp)
 	}
 
@@ -330,14 +279,45 @@ func (t *Table) broadcastPlayerAction(p *player.Player, action v1.ACTION, cs []i
 	}
 }
 
+func (t *Table) playerActionPush(p, viewer *player.Player, action v1.ACTION, cards []int32, declaredSuit v1.SUIT) *v1.PlayerActionRsp {
+	hand := p.GetCards()
+	handSize := cardCount(len(hand))
+	self := viewer.GetPlayerID() == p.GetPlayerID()
+	rsp := &v1.PlayerActionRsp{
+		UserId:        p.GetPlayerID(),
+		ChairId:       p.GetChairID(),
+		Action:        action,
+		LeftNum:       t.cards.GetCardNum(),
+		Effect:        t.pending,
+		PlayResult:    &v1.PlayCardResult{CardsNum: handSize},
+		DrawResult:    &v1.DrawCardResult{CardsNum: handSize},
+		DeclareResult: &v1.DeclareSuitResult{Suit: declaredSuit},
+	}
+	switch action {
+	case v1.ACTION_PLAY_CARD:
+		if len(cards) == 1 {
+			rsp.PlayResult.Card = cards[0]
+		}
+		if self {
+			rsp.PlayResult.Cards = hand
+		}
+	case v1.ACTION_DRAW_CARD:
+		rsp.DrawResult.DrawNum = cardCount(len(cards))
+		if self {
+			rsp.DrawResult.Drawn = cards
+			rsp.DrawResult.Cards = hand
+		}
+	}
+	return rsp
+}
+
 func (t *Table) getCanOp(p *player.Player) []*v1.ActionOption {
-	if p == nil || !p.IsGaming() || len(t.GetGamers()) <= 1 || p.GetChairID() != t.active {
+	if !t.isCurrentGamer(p) {
 		return nil
 	}
 	switch t.stage.State() {
 	case StWait, StReady, StSendCard, StWaitEnd, StEnd:
 		return nil
-	default:
 	}
 
 	var ops []*v1.ActionOption
@@ -374,6 +354,7 @@ func (t *Table) getCanOp(p *player.Player) []*v1.ActionOption {
 	return ops
 }
 
+// sendMarketDrawCardPush 广播市场牌使单个玩家抽取的一张牌。
 func (t *Table) sendMarketDrawCardPush(p *player.Player, draw []int32) {
 	for _, v := range t.seats {
 		if v == nil {
@@ -382,8 +363,8 @@ func (t *Table) sendMarketDrawCardPush(p *player.Player, draw []int32) {
 		rsp := &v1.MarketDrawCardPush{
 			UserID:   p.GetPlayerID(),
 			ChairID:  p.GetChairID(),
-			DrawNum:  int32(len(draw)),
-			CardsNum: int32(len(p.GetCards())),
+			DrawNum:  1,
+			CardsNum: cardCount(len(p.GetCards())),
 			LeftNum:  t.cards.GetCardNum(),
 			Draw:     nil,
 			Cards:    nil,

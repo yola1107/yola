@@ -62,17 +62,16 @@ func NewRunner(conf Press) *Runner {
 	if err != nil {
 		panic(fmt.Sprintf("create pressure workers: %v", err))
 	}
-	runner := &Runner{
+	return &Runner{
 		conf:        conf,
 		workers:     workers,
 		ctx:         ctx,
 		cancel:      cancel,
 		actionSlots: make(chan struct{}, conf.ActionConcurrency),
+		connectUser: (*User).Init,
 		users:       make(map[int64]*User, max(int(conf.Num), 0)),
 		loginToken:  loginToken,
 	}
-	runner.connectUser = func(user *User) error { return user.Init() }
-	return runner
 }
 
 func (r *Runner) Start() error {
@@ -123,12 +122,8 @@ func (r *Runner) Load() {
 		return
 	}
 	batch := xgo.RandInt(r.conf.Batch[0], r.conf.Batch[1])
-	toLoad := min(r.conf.Num-int32(r.userCount()), batch)
-	if toLoad <= 0 {
-		return
-	}
-
-	loaded := int32(0)
+	toLoad := min(int(r.conf.Num)-r.userCount(), int(batch))
+	loaded := 0
 	for loaded < toLoad {
 		id, ok := r.nextUserID()
 		if !ok {
@@ -144,21 +139,26 @@ func (r *Runner) Load() {
 		if !r.trackUser(user) {
 			continue
 		}
-		if err := r.workers.Submit(func() { r.startUser(user) }); err != nil {
-			if r.ctx.Err() == nil {
-				r.startupRejected.Add(1)
-				if !errors.Is(err, ants.ErrFull) {
-					slog.Warn("start pressure user", "uid", id, "error", err)
-				}
-			}
-			r.RemoveUser(user)
-			if errors.Is(err, ants.ErrFull) {
-				break
-			}
+		if err := r.submitUser(user); err != nil {
 			return
 		}
 		loaded++
 	}
+}
+
+func (r *Runner) submitUser(user *User) error {
+	err := r.workers.Submit(func() { r.startUser(user) })
+	if err == nil {
+		return nil
+	}
+	if r.ctx.Err() == nil {
+		r.startupRejected.Add(1)
+		if !errors.Is(err, ants.ErrFull) {
+			slog.Warn("start pressure user", "uid", user.id, "error", err)
+		}
+	}
+	r.RemoveUser(user)
+	return err
 }
 
 func (r *Runner) RemoveUser(user *User) {
@@ -172,7 +172,7 @@ func (r *Runner) RemoveUser(user *User) {
 			user.eventMu.Unlock()
 			return
 		}
-		if r.transitionUser(user, state, userClosing) {
+		if user.transition(state, userClosing) {
 			break
 		}
 	}
@@ -186,7 +186,7 @@ func (r *Runner) RemoveUser(user *User) {
 		delete(r.users, user.id)
 	}
 	r.usersMu.Unlock()
-	if r.transitionUser(user, userClosing, userClosed) && tracked {
+	if user.transition(userClosing, userClosed) && tracked {
 		r.closedPlayers.Add(1)
 	}
 }
@@ -285,29 +285,13 @@ func (r *Runner) startUser(user *User) {
 	}
 	user.authenticated.Store(true)
 	if r.conf.Scenario == scenarioConnect {
-		r.transitionUser(user, userStarting, userActive)
+		user.transition(userStarting, userActive)
 		user.eventMu.Unlock()
 		return
 	}
-	started = time.Now()
-	startupErr := user.login()
-	r.recordStage(stageLogin, started, startupErr)
-	failedStage := stageLogin
-	status := int32(0)
+	failedStage, startupErr := r.prepareUser(user)
 	if startupErr == nil {
-		started = time.Now()
-		status, startupErr = user.scene()
-		r.recordStage(stageScene, started, startupErr)
-		failedStage = stageScene
-	}
-	if startupErr == nil {
-		started = time.Now()
-		startupErr = user.markReady(status)
-		r.recordStage(stageReady, started, startupErr)
-		failedStage = stageReady
-	}
-	if startupErr == nil {
-		r.transitionUser(user, userStarting, userActive)
+		user.transition(userStarting, userActive)
 	}
 	user.eventMu.Unlock()
 
@@ -321,6 +305,27 @@ func (r *Runner) startUser(user *User) {
 		}
 		r.RemoveUser(user)
 	}
+}
+
+func (r *Runner) prepareUser(user *User) (startupStage, error) {
+	started := time.Now()
+	err := user.login()
+	r.recordStage(stageLogin, started, err)
+	if err != nil {
+		return stageLogin, err
+	}
+
+	started = time.Now()
+	status, err := user.scene()
+	r.recordStage(stageScene, started, err)
+	if err != nil {
+		return stageScene, err
+	}
+
+	started = time.Now()
+	err = user.markReady(status)
+	r.recordStage(stageReady, started, err)
+	return stageReady, err
 }
 
 func (r *Runner) trackUser(user *User) bool {
@@ -350,10 +355,6 @@ func (r *Runner) userSnapshot() []*User {
 		users = append(users, user)
 	}
 	return users
-}
-
-func (r *Runner) transitionUser(user *User, from, to userState) bool {
-	return user != nil && user.state.CompareAndSwap(int32(from), int32(to))
 }
 
 func (r *Runner) nextUserID() (int64, bool) {

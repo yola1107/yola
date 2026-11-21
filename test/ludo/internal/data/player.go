@@ -40,12 +40,12 @@ func (r *playerRepo) SavePlayer(ctx context.Context, base *player.BaseData) erro
 	if base == nil || base.UID <= 0 {
 		return errors.New("invalid player data")
 	}
-	return r.data.redis.HSet(ctx, playerKey(base.UID), playerRedisFields(base)).Err()
+	return r.redis.HSet(ctx, playerKey(base.UID), playerRedisFields(base)).Err()
 }
 
 func (r *playerRepo) LoadPlayer(ctx context.Context, uid int64) (*player.BaseData, error) {
 	key := playerKey(uid)
-	exists, err := r.data.redis.Exists(ctx, key).Result()
+	exists, err := r.redis.Exists(ctx, key).Result()
 	if err != nil {
 		return nil, err
 	}
@@ -53,7 +53,7 @@ func (r *playerRepo) LoadPlayer(ctx context.Context, uid int64) (*player.BaseDat
 		return nil, biz.ErrPlayerNotFound
 	}
 
-	values, err := r.data.redis.HMGet(ctx, key, playerFields...).Result()
+	values, err := r.redis.HMGet(ctx, key, playerFields...).Result()
 	if err != nil {
 		return nil, err
 	}
@@ -86,120 +86,92 @@ func redisFieldMap(fields []string, values []any) (map[string]string, error) {
 }
 
 func playerFromRedisData(uid int64, data map[string]string) (*player.BaseData, error) {
-	storedUID, err := parseInt64Field(data, xredis.PlayerUIDField)
-	if err != nil {
-		return nil, err
+	reader := playerFieldReader{data: data}
+	storedUID := reader.int64(xredis.PlayerUIDField)
+	if reader.err != nil {
+		return nil, reader.err
 	}
 	if storedUID != uid {
 		return nil, fmt.Errorf("redis player field %q does not match key", xredis.PlayerUIDField)
 	}
-	vip, err := parseInt32Field(data, xredis.PlayerVIPField)
-	if err != nil {
-		return nil, err
-	}
-	money, err := parseFloat64Field(data, xredis.PlayerMoneyField)
-	if err != nil {
-		return nil, err
-	}
-	channelID, err := parseInt32Field(data, xredis.PlayerChannelIDField)
-	if err != nil {
-		return nil, err
-	}
-	payTotal, err := parseFloat64Field(data, xredis.PlayerPayTotalField)
-	if err != nil {
-		return nil, err
-	}
-	withdrawTotal, err := parseFloat64Field(data, xredis.PlayerWithdrawTotalField)
-	if err != nil {
-		return nil, err
-	}
-	presentBet, err := parseFloat64Field(data, xredis.PlayerPresentBetField)
-	if err != nil {
-		return nil, err
-	}
-	presentProfit, err := parseFloat64Field(data, xredis.PlayerPresentProfitField)
-	if err != nil {
-		return nil, err
-	}
-	presentWinScore, err := parseFloat64Field(data, xredis.PlayerPresentWinScoreField)
-	if err != nil {
-		return nil, err
-	}
-	presentBoard, err := parseInt32Field(data, xredis.PlayerPresentBoardField)
-	if err != nil {
-		return nil, err
-	}
-	totalBoard, err := parseInt32Field(data, xredis.PlayerTotalBoardField)
-	if err != nil {
-		return nil, err
-	}
-	totalEarn, err := parseFloat64Field(data, xredis.PlayerTotalEarnField)
-	if err != nil {
-		return nil, err
-	}
-	totalConsume, err := parseFloat64Field(data, xredis.PlayerTotalConsumeField)
-	if err != nil {
-		return nil, err
-	}
-	allTotalBoard, err := parseInt64Field(data, xredis.PlayerAllTotalBoardField)
-	if err != nil {
-		return nil, err
-	}
-	return &player.BaseData{
+
+	base := &player.BaseData{
 		UID:             uid,
-		VIP:             vip,
+		VIP:             reader.int32(xredis.PlayerVIPField),
 		NickName:        data[xredis.PlayerNickNameField],
 		Avatar:          data[xredis.PlayerAvatarField],
 		AvatarURL:       data[xredis.PlayerAvatarURLField],
-		Money:           money,
-		ChannelID:       channelID,
-		PayTotal:        payTotal,
-		WithdrawTotal:   withdrawTotal,
-		PresentBet:      presentBet,
-		PresentProfit:   presentProfit,
-		PresentWinScore: presentWinScore,
-		PresentBoard:    presentBoard,
-		TotalBoard:      totalBoard,
-		TotalEarn:       totalEarn,
-		TotalConsume:    totalConsume,
-		AllTotalBoard:   allTotalBoard,
-	}, nil
+		Money:           reader.float64(xredis.PlayerMoneyField),
+		ChannelID:       reader.int32(xredis.PlayerChannelIDField),
+		PayTotal:        reader.float64(xredis.PlayerPayTotalField),
+		WithdrawTotal:   reader.float64(xredis.PlayerWithdrawTotalField),
+		PresentBet:      reader.float64(xredis.PlayerPresentBetField),
+		PresentProfit:   reader.float64(xredis.PlayerPresentProfitField),
+		PresentWinScore: reader.float64(xredis.PlayerPresentWinScoreField),
+		PresentBoard:    reader.int32(xredis.PlayerPresentBoardField),
+		TotalBoard:      reader.int32(xredis.PlayerTotalBoardField),
+		TotalEarn:       reader.float64(xredis.PlayerTotalEarnField),
+		TotalConsume:    reader.float64(xredis.PlayerTotalConsumeField),
+		AllTotalBoard:   reader.int64(xredis.PlayerAllTotalBoardField),
+	}
+	if reader.err != nil {
+		return nil, reader.err
+	}
+	return base, nil
 }
 
-func parseInt64Field(data map[string]string, field string) (int64, error) {
-	value, ok := data[field]
+// playerFieldReader 保留第一个数值字段错误，错误中只包含字段名。
+type playerFieldReader struct {
+	data map[string]string
+	err  error
+}
+
+func (r *playerFieldReader) value(field string) (string, bool) {
+	if r.err != nil {
+		return "", false
+	}
+	value, ok := r.data[field]
 	if !ok {
-		return 0, fmt.Errorf("redis player field %q is missing", field)
+		r.err = fmt.Errorf("redis player field %q is missing", field)
+	}
+	return value, ok
+}
+
+func (r *playerFieldReader) int64(field string) int64 {
+	value, ok := r.value(field)
+	if !ok {
+		return 0
 	}
 	parsed, err := strconv.ParseInt(value, 10, 64)
 	if err != nil {
-		return 0, fmt.Errorf("redis player field %q is invalid", field)
+		r.err = fmt.Errorf("redis player field %q is invalid", field)
 	}
-	return parsed, nil
+	return parsed
 }
 
-func parseInt32Field(data map[string]string, field string) (int32, error) {
-	value, ok := data[field]
+func (r *playerFieldReader) int32(field string) int32 {
+	value, ok := r.value(field)
 	if !ok {
-		return 0, fmt.Errorf("redis player field %q is missing", field)
+		return 0
 	}
 	parsed, err := strconv.ParseInt(value, 10, 32)
 	if err != nil {
-		return 0, fmt.Errorf("redis player field %q is invalid", field)
+		r.err = fmt.Errorf("redis player field %q is invalid", field)
+		return 0
 	}
-	return int32(parsed), nil
+	return int32(parsed)
 }
 
-func parseFloat64Field(data map[string]string, field string) (float64, error) {
-	value, ok := data[field]
+func (r *playerFieldReader) float64(field string) float64 {
+	value, ok := r.value(field)
 	if !ok {
-		return 0, fmt.Errorf("redis player field %q is missing", field)
+		return 0
 	}
 	parsed, err := strconv.ParseFloat(value, 64)
 	if err != nil || math.IsNaN(parsed) || math.IsInf(parsed, 0) {
-		return 0, fmt.Errorf("redis player field %q is invalid", field)
+		r.err = fmt.Errorf("redis player field %q is invalid", field)
 	}
-	return parsed, nil
+	return parsed
 }
 
 func playerRedisFields(base *player.BaseData) map[string]string {

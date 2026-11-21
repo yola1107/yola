@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
-	"sync/atomic"
 
 	"yola/test/internal/xgo"
 )
@@ -45,27 +44,18 @@ func (s Status) String() string {
 	}
 }
 
-type GameData struct {
-	tableID   atomic.Int32
-	chairID   atomic.Int32
-	status    Status
-	idleCount int32
-	bet       float64
-	cards     []int32
-}
-
 func (p *Player) Reset() {
-	p.gameData.status = StFree
-	p.gameData.idleCount = 0
-	p.gameData.bet = 0
-	p.gameData.cards = nil
+	p.status = StFree
+	p.idleCount = 0
+	p.bet = 0
+	p.cards = nil
 }
 
 func (p *Player) ExitReset(nextTableID int32) {
 	p.Reset()
-	p.gameData.chairID.Store(-1)
-	p.gameData.tableID.Store(nextTableID)
-	p.gameData.status = Status(-1)
+	p.chairID.Store(-1)
+	p.tableID.Store(nextTableID)
+	p.status = Status(-1)
 }
 
 func (p *Player) Desc() string {
@@ -74,95 +64,88 @@ func (p *Player) Desc() string {
 }
 
 func (p *Player) SetTableID(tableID int32) {
-	p.gameData.tableID.Store(tableID)
+	p.tableID.Store(tableID)
 }
 
 func (p *Player) GetTableID() int32 {
-	return p.gameData.tableID.Load()
+	return p.tableID.Load()
 }
 
 func (p *Player) SetChairID(chairID int32) {
-	p.gameData.chairID.Store(chairID)
+	p.chairID.Store(chairID)
 }
 
 func (p *Player) GetChairID() int32 {
-	return p.gameData.chairID.Load()
+	return p.chairID.Load()
 }
 
 func (p *Player) IncrTimeoutCnt(timeout bool) {
 	if !timeout {
 		return
 	}
-	p.gameData.idleCount++
+	p.idleCount++
 }
 
 func (p *Player) ClearTimeoutCnt() {
-	p.gameData.idleCount = 0
+	p.idleCount = 0
 }
 
 func (p *Player) GetTimeoutCnt() int32 {
-	return p.gameData.idleCount
+	return p.idleCount
 }
 
 func (p *Player) GetStatus() Status {
-	return p.gameData.status
+	return p.status
 }
 
 func (p *Player) SetSit() {
-	p.gameData.status = StSit
+	p.status = StSit
 }
 
 func (p *Player) SetReady() {
-	p.gameData.status = StReady
+	p.status = StReady
 }
 
 func (p *Player) IsReady() bool {
-	return p.gameData.status == StReady
+	return p.status == StReady
 }
 
 func (p *Player) SetGaming() {
-	p.gameData.status = StGaming
+	p.status = StGaming
 }
 
 func (p *Player) IsGaming() bool {
-	return p.gameData.status == StGaming
+	return p.status == StGaming
 }
 
 func (p *Player) SetFold() {
-	p.gameData.status = StGameFold
+	p.status = StGameFold
 }
 
 func (p *Player) IsFold() bool {
-	return p.gameData.status == StGameFold
+	return p.status == StGameFold
 }
 
 func (p *Player) SetLost() {
-	p.gameData.status = StGameLost
+	p.status = StGameLost
 }
 
 func (p *Player) IsLost() bool {
-	return p.gameData.status == StGameLost
+	return p.status == StGameLost
 }
 
 func (p *Player) GetCards() []int32 {
-	return p.gameData.cards
+	return p.cards
 }
 
 func (p *Player) AddCards(cs []int32) {
-	p.gameData.cards = append(p.gameData.cards, cs...)
-	p.refreshCards()
+	p.cards = append(p.cards, cs...)
+	slices.Sort(p.cards)
 }
 
 func (p *Player) RemoveCard(card int32) {
-	p.gameData.cards = xgo.SliceSubtract(p.gameData.cards, []int32{card})
-	p.refreshCards()
-}
-
-func (p *Player) refreshCards() {
-	if len(p.gameData.cards) == 0 {
-		return
-	}
-	slices.Sort(p.gameData.cards)
+	p.cards = xgo.SliceSubtract(p.cards, []int32{card})
+	slices.Sort(p.cards)
 }
 
 func (p *Player) GetHandScore() int32 {
@@ -175,13 +158,13 @@ func (p *Player) GetHandScore() int32 {
 
 func (p *Player) IntoGaming(bet float64) {
 	p.UseMoney(bet)
-	p.gameData.bet += bet
+	p.bet += bet
 }
 
 // Settle 结算
 func (p *Player) Settle(totalBet float64) float64 {
 	win := totalBet
-	bet := p.gameData.bet
+	bet := p.bet
 	profit := win - bet
 
 	if slog.Default().Enabled(context.Background(), slog.LevelDebug) {

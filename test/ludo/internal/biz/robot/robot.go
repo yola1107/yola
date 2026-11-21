@@ -10,6 +10,7 @@ import (
 	"yola/test/ludo/internal/biz/player"
 	"yola/test/ludo/internal/biz/table"
 	"yola/test/ludo/internal/conf"
+	"yola/test/ludo/pkg/codes"
 )
 
 const (
@@ -75,8 +76,8 @@ func (m *Manager) Leave(uid int64) bool {
 }
 
 func (m *Manager) Counts() (all, gaming, free int32) {
-	all = m.countAll()
-	free = m.countFree()
+	all = countPlayers(&m.all)
+	free = countPlayers(&m.free)
 	return all, all - free, free
 }
 
@@ -85,7 +86,7 @@ func (m *Manager) load() {
 	if !cfg.Open || cfg.Num <= 0 {
 		return
 	}
-	current := m.countAll()
+	current := countPlayers(&m.all)
 	toLoad := min(cfg.Num-current, defaultBatchLoadCount)
 	if toLoad <= 0 {
 		return
@@ -113,15 +114,14 @@ func (m *Manager) release() {
 	if cfg := m.rc.Robot; cfg.Open {
 		maxNum = cfg.Num
 	}
-	excess := m.countAll() - maxNum
+	excess := countPlayers(&m.all) - maxNum
 	toRelease := min(excess, defaultBatchReleaseCount)
 	if toRelease <= 0 {
 		return
 	}
 
 	m.free.Range(func(k, v any) bool {
-		p := v.(*player.Player)
-		if p.GetTableID() > 0 {
+		if v.(*player.Player).GetTableID() > 0 {
 			return true
 		}
 		m.all.Delete(k)
@@ -136,18 +136,18 @@ func (m *Manager) login(ctx context.Context) {
 		return
 	}
 
-	seated := m.countAll() - m.countFree()
+	seated := countPlayers(&m.all) - countPlayers(&m.free)
 	if seated >= m.rc.Robot.MinPlayCount {
 		return
 	}
 
-	players := make([]*player.Player, 0, m.countFree())
+	players := make([]*player.Player, 0, countPlayers(&m.free))
 	m.free.Range(func(_, value any) bool {
 		p, ok := value.(*player.Player)
 		if !ok || p.GetTableID() > 0 {
 			return true
 		}
-		if code, _ := table.CheckRoomLimit(p, m.rc.Game); code != 0 {
+		if code, _ := table.CheckRoomLimit(p, m.rc.Game); code != codes.Success {
 			return true
 		}
 		players = append(players, p)
@@ -177,18 +177,9 @@ func (m *Manager) reset(p *player.Player) {
 	}
 }
 
-func (m *Manager) countAll() int32 {
+func countPlayers(players *sync.Map) int32 {
 	var count int32
-	m.all.Range(func(_, _ any) bool {
-		count++
-		return true
-	})
-	return count
-}
-
-func (m *Manager) countFree() int32 {
-	var count int32
-	m.free.Range(func(_, _ any) bool {
+	players.Range(func(_, _ any) bool {
 		count++
 		return true
 	})

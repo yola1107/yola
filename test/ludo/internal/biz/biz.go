@@ -172,10 +172,7 @@ func (uc *Usecase) renewNodeBindings(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		if p.IsRobot() || uc.pm.GetByID(p.GetPlayerID()) != p {
-			continue
-		}
-		sess, version := p.SessionForRenewal()
+		sess, version := uc.residentSessionForRenewal(p)
 		if sess == nil {
 			continue
 		}
@@ -199,6 +196,13 @@ func (uc *Usecase) renewNodeBindings(ctx context.Context) {
 	if failed > 0 {
 		slog.Warn("renew player Node bindings", "failed", failed, "error", firstErr)
 	}
+}
+
+func (uc *Usecase) residentSessionForRenewal(p *player.Player) (player.Session, uint64) {
+	if p.IsRobot() || uc.pm.GetByID(p.GetPlayerID()) != p {
+		return nil, 0
+	}
+	return p.SessionForRenewal()
 }
 
 func (uc *Usecase) loseNodeBinding(ctx context.Context, p *player.Player, version uint64) error {

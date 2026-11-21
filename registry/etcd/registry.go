@@ -84,7 +84,7 @@ func New(opts ...Option) (*Registry, error) {
 	if len(c.endpoints) == 0 {
 		return nil, errors.New("etcd: endpoints are empty")
 	}
-	if c.prefix == "" || !strings.HasPrefix(c.prefix, "/") {
+	if !strings.HasPrefix(c.prefix, "/") {
 		return nil, errors.New("etcd: prefix must start with '/'")
 	}
 	if c.dialTimeout <= 0 {

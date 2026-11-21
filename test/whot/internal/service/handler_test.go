@@ -19,9 +19,9 @@ func TestOnLoginReqValidatesAuthenticatedUID(t *testing.T) {
 		reason  string
 	}{
 		{name: "missing session", request: &v1.LoginReq{UserID: 42}, reason: "INVALID_SESSION"},
-		{name: "noncanonical session UID", session: loginSession("042"), request: &v1.LoginReq{UserID: 42}, reason: "INVALID_SESSION"},
-		{name: "missing request", session: loginSession("42"), reason: "INVALID_REQUEST"},
-		{name: "mismatched UID", session: loginSession("42"), request: &v1.LoginReq{UserID: 43}, reason: "UID_MISMATCH"},
+		{name: "noncanonical session UID", session: identitySession{uid: "042"}, request: &v1.LoginReq{UserID: 42}, reason: "INVALID_SESSION"},
+		{name: "missing request", session: identitySession{uid: "42"}, reason: "INVALID_REQUEST"},
+		{name: "mismatched UID", session: identitySession{uid: "42"}, request: &v1.LoginReq{UserID: 43}, reason: "UID_MISMATCH"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			ctx := context.Background()
@@ -32,10 +32,6 @@ func TestOnLoginReqValidatesAuthenticatedUID(t *testing.T) {
 			require.Equal(t, test.reason, errors.Reason(err))
 		})
 	}
-}
-
-func loginSession(uid string) node.Session {
-	return identitySession{uid: uid}
 }
 
 type identitySession struct {

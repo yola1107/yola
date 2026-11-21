@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"io/fs"
 	"log/slog"
+	"math"
 	"os"
 	"path/filepath"
 	"testing"
@@ -52,9 +54,9 @@ func TestLoggerWritesStructuredFiles(t *testing.T) {
 	cleanup()
 	cleanup()
 
-	mainLog, err := os.ReadFile(filepath.Join(dir, "yola.log"))
+	mainLog, err := fs.ReadFile(os.DirFS(dir), "yola.log")
 	require.NoError(t, err)
-	errorLog, err := os.ReadFile(filepath.Join(dir, "yola_error.log"))
+	errorLog, err := fs.ReadFile(os.DirFS(dir), "yola_error.log")
 	require.NoError(t, err)
 	require.Contains(t, string(mainLog), `"N":"gateway"`)
 	require.Contains(t, string(mainLog), "logger_test.go")
@@ -82,7 +84,7 @@ func TestWithFileWritesConsoleAndLocalFile(t *testing.T) {
 	consoleOutput := restoreStdout()
 	cleanup()
 	require.Contains(t, consoleOutput, `"M":"combined output"`)
-	fileOutput, err := os.ReadFile(filepath.Join(dir, "gateway.log"))
+	fileOutput, err := fs.ReadFile(os.DirFS(dir), "gateway.log")
 	require.NoError(t, err)
 	require.Contains(t, string(fileOutput), `"M":"combined output"`)
 	require.Regexp(t, `"T":"\d{4}"`, string(fileOutput))
@@ -119,33 +121,31 @@ func TestWithFileDisabledWritesConsoleOnly(t *testing.T) {
 }
 
 func TestRotationOptions(t *testing.T) {
-	tests := []struct {
+	for _, field := range []struct {
 		name   string
-		option zapslog.Option
-		value  func(*zapslog.Log) int32
-		want   int32
+		option func(int) zapslog.Option
+		get    func(*zapslog.Log) int32
 	}{
-		{name: "zero max size", option: zapslog.WithMaxSize(0), value: func(cfg *zapslog.Log) int32 { return cfg.MaxSize }, want: 0},
-		{name: "zero max backups", option: zapslog.WithMaxBackups(0), value: func(cfg *zapslog.Log) int32 { return cfg.MaxBackups }, want: 0},
-		{name: "zero max age", option: zapslog.WithMaxAge(0), value: func(cfg *zapslog.Log) int32 { return cfg.MaxAge }, want: 0},
-		{name: "negative max size", option: zapslog.WithMaxSize(-1), value: func(cfg *zapslog.Log) int32 { return cfg.MaxSize }, want: 1},
-		{name: "negative max backups", option: zapslog.WithMaxBackups(-1), value: func(cfg *zapslog.Log) int32 { return cfg.MaxBackups }, want: 1},
-		{name: "negative max age", option: zapslog.WithMaxAge(-1), value: func(cfg *zapslog.Log) int32 { return cfg.MaxAge }, want: 1},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
+		{"size", zapslog.WithMaxSize, (*zapslog.Log).GetMaxSize},
+		{"backups", zapslog.WithMaxBackups, (*zapslog.Log).GetMaxBackups},
+		{"age", zapslog.WithMaxAge, (*zapslog.Log).GetMaxAge},
+	} {
+		t.Run(field.name, func(t *testing.T) {
 			cfg := &zapslog.Log{MaxSize: 1, MaxBackups: 1, MaxAge: 1}
-			test.option(cfg)
-			if got := test.value(cfg); got != test.want {
-				t.Errorf("configured value = %d, want %d", got, test.want)
+			field.option(-1)(cfg)
+			require.Equal(t, int32(1), field.get(cfg), "negative limit must keep the configured value")
+			if math.MaxInt > math.MaxInt32 {
+				field.option(math.MaxInt)(cfg)
+				require.Equal(t, int32(1), field.get(cfg), "oversized limit must keep the configured value")
 			}
+			field.option(0)(cfg)
+			require.Zero(t, field.get(cfg), "zero is a valid limit")
 		})
 	}
 }
 
 func TestLoggerRespectsSlogLevels(t *testing.T) {
 	dir := t.TempDir()
-	level := slog.LevelWarn
 	logger, cleanup, err := zapslog.New(
 		zapslog.WithFormat("json"),
 		zapslog.WithOutput("yola.log"),
@@ -156,10 +156,10 @@ func TestLoggerRespectsSlogLevels(t *testing.T) {
 	require.NoError(t, err)
 
 	logger.Info("filtered")
-	logger.Log(context.Background(), level, "written")
+	logger.Log(context.Background(), slog.LevelWarn, "written")
 	cleanup()
 
-	output, err := os.ReadFile(filepath.Join(dir, "yola.log"))
+	output, err := fs.ReadFile(os.DirFS(dir), "yola.log")
 	require.NoError(t, err)
 	require.NotContains(t, string(output), "filtered")
 	require.Contains(t, string(output), `"M":"written"`)

@@ -68,7 +68,7 @@ func TestClientRejectsInvalidConfiguration(t *testing.T) {
 		},
 		{
 			name: "insecure TLS",
-			opts: []ClientOption{WithTLSConfig(&tls.Config{InsecureSkipVerify: true})},
+			opts: []ClientOption{WithTLSConfig(&tls.Config{InsecureSkipVerify: true})}, // #nosec G402 -- 验证配置入口会拒绝关闭证书校验。
 			want: "tcp: TLS certificate verification must be enabled",
 		},
 	}

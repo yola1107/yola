@@ -149,13 +149,7 @@ func (m *Manager) EnterRobots(ctx context.Context, players []*player.Player) ([]
 			tableIndex++
 			joined := false
 			err := m.call(ctx, target.ID, func(gameTable *Table) error {
-				if p.GetTableID() > 0 {
-					joined = true
-					return nil
-				}
-				if !gameTable.isFull() && gameTable.canEnterRobot(p) {
-					joined = gameTable.Seat(p)
-				}
+				joined = gameTable.seatRobot(p)
 				return nil
 			})
 			if err != nil {
@@ -173,6 +167,13 @@ func (m *Manager) EnterRobots(ctx context.Context, players []*player.Player) ([]
 	return entered, nil
 }
 
+func (t *Table) seatRobot(p *player.Player) bool {
+	if p.GetTableID() > 0 {
+		return true
+	}
+	return t.canEnterRobot(p) && t.Seat(p)
+}
+
 func (m *Manager) Switch(ctx context.Context, p *player.Player, gameConfig *conf.Room_Game) (int32, string, error) {
 	if p == nil {
 		return codes.PlayerInvalid, "PLAYER_INVALID", nil
@@ -186,43 +187,18 @@ func (m *Manager) Switch(ctx context.Context, p *player.Player, gameConfig *conf
 		return codes.EnterTableFail, "ENTER_TABLE_FAIL", nil
 	}
 
-	code, message := codes.Success, ""
-	canSwitch := false
-	removed := false
-	err := m.CallPlayer(ctx, p, func(current *Table) error {
-		code, message = CheckRoomLimit(p, gameConfig)
-		if code != codes.Success {
-			return nil
-		}
-		canSwitch = current.canExit(p)
-		if canSwitch {
-			removed = current.RemovePlayer(p, true)
-		}
-		return nil
-	})
+	code, message, err := m.removeForSwitch(ctx, p, gameConfig)
 	if err != nil {
 		return 0, "", err
 	}
 	if code != codes.Success {
 		return code, message, nil
 	}
-	if !canSwitch {
-		return codes.SwitchTable, "SWITCH_TABLE", nil
-	}
-	if !removed {
-		return codes.ExitTableFail, "EXIT_TABLE_FAIL", nil
-	}
 
 	migrationCtx, cancelMigration := context.WithTimeout(context.Background(), tableMigrationTimeout)
 	defer cancelMigration()
 	entered, err := m.tryAvailableTables(oldTableID, func(target *Table) (bool, error) {
-		var seated bool
-		migrationErr := m.migrationCall(migrationCtx, target.ID, func(gameTable *Table) error {
-			var seatErr error
-			seated, seatErr = seatMigratingPlayer(gameTable, p)
-			return seatErr
-		})
-		return seated, migrationErr
+		return m.seatMigratingPlayer(migrationCtx, target.ID, p)
 	})
 	if err != nil {
 		if errors.Is(err, ErrPlayerDisconnected) {
@@ -237,6 +213,25 @@ func (m *Manager) Switch(ctx context.Context, p *player.Player, gameConfig *conf
 		return 0, "", err
 	}
 	return codes.EnterTableFail, "ENTER_TABLE_FAIL", nil
+}
+
+func (m *Manager) removeForSwitch(ctx context.Context, p *player.Player, gameConfig *conf.Room_Game) (int32, string, error) {
+	code, message := codes.Success, ""
+	err := m.CallPlayer(ctx, p, func(current *Table) error {
+		code, message = CheckRoomLimit(p, gameConfig)
+		if code != codes.Success {
+			return nil
+		}
+		if !current.canExit(p) {
+			code, message = codes.SwitchTable, "SWITCH_TABLE"
+			return nil
+		}
+		if !current.RemovePlayer(p, true) {
+			code, message = codes.ExitTableFail, "EXIT_TABLE_FAIL"
+		}
+		return nil
+	})
+	return code, message, err
 }
 
 func (m *Manager) CallPlayer(ctx context.Context, p *player.Player, action func(*Table) error) error {
@@ -256,7 +251,7 @@ func (m *Manager) CallPlayer(ctx context.Context, p *player.Player, action func(
 }
 
 func (m *Manager) table(tableID int32) *Table {
-	if tableID <= 0 || tableID > int32(len(m.tables)) {
+	if tableID <= 0 || int(tableID) > len(m.tables) {
 		return nil
 	}
 	return m.tables[tableID-1]
@@ -381,12 +376,8 @@ func (m *Manager) pushToUID(uid int64, command int32, msg proto.Message) (bool, 
 func (m *Manager) restorePlayer(gameTable *Table, p *player.Player) error {
 	restoreCtx, cancelRestore := context.WithTimeout(context.Background(), tableMigrationTimeout)
 	defer cancelRestore()
-	restored := false
-	if err := m.migrationCall(restoreCtx, gameTable.ID, func(current *Table) error {
-		var seatErr error
-		restored, seatErr = seatMigratingPlayer(current, p)
-		return seatErr
-	}); err != nil {
+	restored, err := m.seatMigratingPlayer(restoreCtx, gameTable.ID, p)
+	if err != nil {
 		p.SetTableID(player.TableIDDetached)
 		return err
 	}
@@ -395,6 +386,16 @@ func (m *Manager) restorePlayer(gameTable *Table, p *player.Player) error {
 		return errors.New("restore player to original table")
 	}
 	return nil
+}
+
+func (m *Manager) seatMigratingPlayer(ctx context.Context, tableID int32, p *player.Player) (bool, error) {
+	var seated bool
+	err := m.migrationCall(ctx, tableID, func(gameTable *Table) error {
+		var seatErr error
+		seated, seatErr = seatMigratingPlayer(gameTable, p)
+		return seatErr
+	})
+	return seated, err
 }
 
 func CheckRoomLimit(p *player.Player, game *conf.Room_Game) (int32, string) {

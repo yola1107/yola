@@ -40,7 +40,7 @@ func TestSessionPushUsesConfiguredTimeout(t *testing.T) {
 		if dialErr != nil {
 			return false
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 		defer cancel()
 		conn.Connect()

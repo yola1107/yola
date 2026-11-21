@@ -10,13 +10,14 @@ import (
 	"yola/test/internal/broadcastprobe"
 	v1 "yola/test/ludo/api/v1"
 
+	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 )
 
 func TestRunnerStopReleasesTrackedUsers(t *testing.T) {
 	runner := NewRunner(Press{})
 	user := trackStartingUser(t, runner, 42)
-	if !runner.transitionUser(user, userStarting, userActive) {
+	if !user.transition(userStarting, userActive) {
 		t.Fatal("mark user active failed")
 	}
 
@@ -28,7 +29,8 @@ func TestRunnerStopReleasesTrackedUsers(t *testing.T) {
 }
 
 func TestRunnerStartFailsWhenAuthenticationProbeCannotConnect(t *testing.T) {
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	var config net.ListenConfig
+	listener, err := config.Listen(t.Context(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,12 +59,10 @@ func TestRunnerSeparatesConnectAndPlayScenarios(t *testing.T) {
 
 		runner.startUser(user)
 
-		if user.stateValue() != userActive || !user.authenticated.Load() || user.seated.Load() {
-			t.Fatalf("connect user: state=%v authenticated=%t seated=%t", user.stateValue(), user.authenticated.Load(), user.seated.Load())
-		}
-		if report := runner.stages[stageLogin].report(); report.Attempts != 0 {
-			t.Fatalf("Login attempts = %d, want 0", report.Attempts)
-		}
+		require.Equal(t, userActive, user.stateValue())
+		require.True(t, user.authenticated.Load())
+		require.False(t, user.seated.Load())
+		require.Zero(t, runner.stages[stageLogin].report().Attempts)
 	})
 
 	t.Run("play", func(t *testing.T) {
@@ -71,28 +71,30 @@ func TestRunnerSeparatesConnectAndPlayScenarios(t *testing.T) {
 		user := trackStartingUser(t, runner, 42)
 		runner.connectUser = func(*User) error { return nil }
 		user.requestFn = func(command v1.GameCommand, _, response proto.Message) error {
-			switch command {
-			case v1.GameCommand_CmdLogin:
-				response.(*v1.LoginRsp).ChairID = 2
-			case v1.GameCommand_CmdScene:
-				response.(*v1.SceneRsp).Players = []*v1.PlayerInfo{{UserId: 42, Status: playerStatusSit}}
-			case v1.GameCommand_CmdReady:
-				response.(*v1.ReadyRsp).IsReady = true
+			switch reply := response.(type) {
+			case *v1.LoginRsp:
+				require.Equal(t, v1.GameCommand_CmdLogin, command)
+				reply.ChairID = 2
+			case *v1.SceneRsp:
+				require.Equal(t, v1.GameCommand_CmdScene, command)
+				reply.Players = []*v1.PlayerInfo{{UserId: 42, Status: playerStatusSit}}
+			case *v1.ReadyRsp:
+				require.Equal(t, v1.GameCommand_CmdReady, command)
+				reply.IsReady = true
 			}
 			return nil
 		}
 
 		runner.startUser(user)
 
-		if user.stateValue() != userActive || !user.authenticated.Load() || !user.seated.Load() || !user.ready.Load() {
-			t.Fatalf("play user: state=%v authenticated=%t seated=%t ready=%t",
-				user.stateValue(), user.authenticated.Load(), user.seated.Load(), user.ready.Load())
-		}
+		require.Equal(t, userActive, user.stateValue())
+		require.True(t, user.authenticated.Load())
+		require.True(t, user.seated.Load())
+		require.True(t, user.ready.Load())
 		for stage := stageConnect; stage < startupStageCount; stage++ {
 			report := runner.stages[stage].report()
-			if report.Attempts != 1 || report.Succeeded != 1 {
-				t.Fatalf("stage %s report = %+v", startupStageNames[stage], report)
-			}
+			require.Equal(t, int64(1), report.Attempts, "stage %s", startupStageNames[stage])
+			require.Equal(t, int64(1), report.Succeeded, "stage %s", startupStageNames[stage])
 		}
 	})
 }
@@ -103,20 +105,22 @@ func TestUserDrivesReadySceneDiceAndMoveCommands(t *testing.T) {
 	var moveRequest *v1.MoveReq
 	user := &User{runner: runner, id: 42, targetTableID: 7}
 	user.requestFn = func(command v1.GameCommand, request, response proto.Message) error {
-		switch command {
-		case v1.GameCommand_CmdLogin:
-			if login := request.(*v1.LoginReq); login.TableID != user.targetTableID {
-				t.Fatalf("login table = %d, want %d", login.TableID, user.targetTableID)
-			}
-			response.(*v1.LoginRsp).ChairID = 2
-		case v1.GameCommand_CmdScene:
-			scene := response.(*v1.SceneRsp)
-			scene.Players = []*v1.PlayerInfo{{UserId: 42, Color: 1, Status: playerStatusSit}}
-			scene.Pieces = []*v1.Piece{{Id: 7, Pos: 13, Color: 1, Status: 1}}
-		case v1.GameCommand_CmdReady:
-			response.(*v1.ReadyRsp).IsReady = true
-		case v1.GameCommand_CmdMove:
-			moveRequest = proto.Clone(request).(*v1.MoveReq)
+		switch reply := response.(type) {
+		case *v1.LoginRsp:
+			require.Equal(t, v1.GameCommand_CmdLogin, command)
+			login := requireMessage[*v1.LoginReq](t, request)
+			require.Equal(t, user.targetTableID, login.TableID)
+			reply.ChairID = 2
+		case *v1.SceneRsp:
+			require.Equal(t, v1.GameCommand_CmdScene, command)
+			reply.Players = []*v1.PlayerInfo{{UserId: 42, Color: 1, Status: playerStatusSit}}
+			reply.Pieces = []*v1.Piece{{Id: 7, Pos: 13, Color: 1, Status: 1}}
+		case *v1.ReadyRsp:
+			require.Equal(t, v1.GameCommand_CmdReady, command)
+			reply.IsReady = true
+		case *v1.MoveRsp:
+			require.Equal(t, v1.GameCommand_CmdMove, command)
+			moveRequest = proto.CloneOf(requireMessage[*v1.MoveReq](t, request))
 		}
 		return nil
 	}
@@ -152,48 +156,55 @@ func TestUserDrivesReadySceneDiceAndMoveCommands(t *testing.T) {
 	}
 }
 
-func TestSendMoveSelectsOneLegalMove(t *testing.T) {
-	runner := NewRunner(Press{})
-	defer runner.Stop()
-	user := &User{runner: runner, id: 42}
-	user.updatePieces(0, []*v1.Piece{
-		{Id: 1, Pos: 106, Color: 0, Status: 3},
-		{Id: 2, Pos: -1, Color: 0, Status: 0},
-		{Id: 3, Pos: 12, Color: 0, Status: 1},
-	})
-	var request *v1.MoveReq
-	user.requestFn = func(_ v1.GameCommand, message, _ proto.Message) error {
-		request = proto.Clone(message).(*v1.MoveReq)
-		return nil
-	}
+func TestSendMoveUsesLegalSnapshot(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		pieces []*v1.Piece
+		dices  []int32
+		move   *v1.MoveReq
+	}{
+		{
+			name: "skip arrived and idle pieces",
+			pieces: []*v1.Piece{
+				{Id: 1, Pos: 106, Color: 0, Status: 3},
+				{Id: 2, Pos: -1, Color: 0, Status: 0},
+				{Id: 3, Pos: 12, Color: 0, Status: 1},
+			},
+			dices: []int32{4},
+			move:  &v1.MoveReq{UserId: 42, PieceId: 3, DiceValue: 4},
+		},
+		{
+			name: "reject illegal snapshots",
+			pieces: []*v1.Piece{
+				{Id: 1, Pos: -1, Color: 0, Status: 0},
+				{Id: 2, Pos: 106, Color: 0, Status: 3},
+				{Id: 3, Pos: 105, Color: 0, Status: 2},
+				{Id: 4, Pos: 0, Color: 0, Status: 3},
+			},
+			dices: []int32{2, 5},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			runner := NewRunner(Press{})
+			t.Cleanup(runner.Stop)
+			user := &User{runner: runner, id: 42}
+			user.updatePieces(0, tc.pieces)
+			var moves []*v1.MoveReq
+			user.requestFn = func(command v1.GameCommand, message, _ proto.Message) error {
+				require.Equal(t, v1.GameCommand_CmdMove, command)
+				moves = append(moves, proto.CloneOf(requireMessage[*v1.MoveReq](t, message)))
+				return nil
+			}
 
-	user.sendMove([]int32{4})
+			user.sendMove(tc.dices)
 
-	if request == nil || request.PieceId != 3 || request.DiceValue != 4 {
-		t.Fatalf("Move request = %+v, want piece 3 and dice 4", request)
-	}
-}
-
-func TestSendMoveRejectsInvalidSnapshots(t *testing.T) {
-	runner := NewRunner(Press{})
-	defer runner.Stop()
-	user := &User{runner: runner, id: 42}
-	user.updatePieces(0, []*v1.Piece{
-		{Id: 1, Pos: -1, Color: 0, Status: 0},
-		{Id: 2, Pos: 106, Color: 0, Status: 3},
-		{Id: 3, Pos: 105, Color: 0, Status: 2},
-		{Id: 4, Pos: 0, Color: 0, Status: 3},
-	})
-	requests := 0
-	user.requestFn = func(v1.GameCommand, proto.Message, proto.Message) error {
-		requests++
-		return nil
-	}
-
-	user.sendMove([]int32{2, 5})
-
-	if requests != 0 {
-		t.Fatalf("Move requests = %d, want 0", requests)
+			if tc.move == nil {
+				require.Empty(t, moves)
+				return
+			}
+			require.Len(t, moves, 1)
+			require.True(t, proto.Equal(tc.move, moves[0]), "Move request = %v, want %v", moves[0], tc.move)
+		})
 	}
 }
 
@@ -205,7 +216,7 @@ func TestSendMoveUsesResponsePieceState(t *testing.T) {
 	requests := 0
 	user.requestFn = func(_ v1.GameCommand, _, response proto.Message) error {
 		requests++
-		response.(*v1.MoveRsp).Pieces = []*v1.Piece{{Id: 3, Pos: 106, Color: 0, Status: 3}}
+		requireMessage[*v1.MoveRsp](t, response).Pieces = []*v1.Piece{{Id: 3, Pos: 106, Color: 0, Status: 3}}
 		return nil
 	}
 	user.sendMove([]int32{1})
@@ -269,7 +280,7 @@ func TestUserSkipsReadyWhenAlreadyPrepared(t *testing.T) {
 	user := &User{runner: runner, id: 42}
 	user.requestFn = func(command v1.GameCommand, _, response proto.Message) error {
 		if command == v1.GameCommand_CmdScene {
-			response.(*v1.SceneRsp).Players = []*v1.PlayerInfo{{UserId: 42, Status: playerStatusReady}}
+			requireMessage[*v1.SceneRsp](t, response).Players = []*v1.PlayerInfo{{UserId: 42, Status: playerStatusReady}}
 		}
 		return nil
 	}
@@ -433,4 +444,11 @@ func waitSignal(t *testing.T, signal <-chan struct{}, message string) {
 	case <-time.After(time.Second):
 		t.Fatal(message)
 	}
+}
+
+func requireMessage[T proto.Message](t *testing.T, message proto.Message) T {
+	t.Helper()
+	typed, ok := message.(T)
+	require.True(t, ok, "got protobuf %T, want %T", message, typed)
+	return typed
 }

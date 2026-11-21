@@ -64,36 +64,21 @@ func (s *Server) Start(ctx context.Context) (err error) {
 	s.lifecycle.startupDone = startupDone
 	s.lifecycle.startupCancel = cancel
 	s.lifecycle.mu.Unlock()
-	handoff := sync.OnceFunc(func() { close(startupDone) })
 	defer func() {
-		handoff()
+		if startupDone != nil {
+			close(startupDone)
+		}
 		s.beginShutdown()
 		<-s.lifecycle.shutdownDone
 		err = errors.Join(err, s.lifecycle.shutdownErr)
 	}()
 
-	if err := s.prepare(runCtx); err != nil {
+	if err = s.prepare(runCtx); err != nil {
 		return err
 	}
-	grpcResult := make(chan error, 1)
-	s.lifecycle.workers.Go(func() {
-		err := s.grpcServer.Start(runCtx)
-		if errors.Is(err, grpc.ErrServerStopped) {
-			err = nil
-		} else if err != nil {
-			err = fmt.Errorf("gateway: start gRPC transport: %w", err)
-		}
-		grpcResult <- err
-	})
-	select {
-	case <-s.grpcListener.Accepting():
-	case err := <-grpcResult:
-		if err == nil {
-			err = errors.New("gateway: gRPC transport stopped before accepting")
-		}
+	grpcResult, err := s.startGRPC(runCtx)
+	if err != nil {
 		return err
-	case <-runCtx.Done():
-		return runCtx.Err()
 	}
 	s.lifecycle.mu.Lock()
 	if s.lifecycle.state != _stStarting || runCtx.Err() != nil {
@@ -114,8 +99,13 @@ func (s *Server) Start(ctx context.Context) (err error) {
 		})
 	}
 	s.lifecycle.mu.Unlock()
-	handoff()
+	close(startupDone)
+	startupDone = nil
 
+	return waitTransports(runCtx, grpcResult, clientResults)
+}
+
+func waitTransports(ctx context.Context, grpcResult, clientResults <-chan error) error {
 	for {
 		select {
 		case err := <-grpcResult:
@@ -124,9 +114,33 @@ func (s *Server) Start(ctx context.Context) (err error) {
 			if err != nil {
 				return err
 			}
-		case <-runCtx.Done():
+		case <-ctx.Done():
 			return nil
 		}
+	}
+}
+
+func (s *Server) startGRPC(ctx context.Context) (<-chan error, error) {
+	result := make(chan error, 1)
+	s.lifecycle.workers.Go(func() {
+		err := s.grpcServer.Start(ctx)
+		if errors.Is(err, grpc.ErrServerStopped) {
+			err = nil
+		} else if err != nil {
+			err = fmt.Errorf("gateway: start gRPC transport: %w", err)
+		}
+		result <- err
+	})
+	select {
+	case <-s.grpcListener.Accepting():
+		return result, nil
+	case err := <-result:
+		if err == nil {
+			err = errors.New("gateway: gRPC transport stopped before accepting")
+		}
+		return nil, err
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
 }
 
@@ -367,15 +381,15 @@ func (s *Server) startSessionDrain(ctx context.Context, sessions []*session) <-c
 		return done
 	}
 	workerCount := min(_shutdownWorkerCount, len(sessions))
-	var next atomic.Uint64
+	var next atomic.Int64
 	var workers sync.WaitGroup
 	workers.Add(workerCount)
 	for range workerCount {
 		go func() {
 			defer workers.Done()
 			for {
-				index := int(next.Add(1) - 1)
-				if index >= len(sessions) {
+				index := next.Add(1) - 1
+				if index >= int64(len(sessions)) {
 					return
 				}
 				s.drainSession(ctx, sessions[index])

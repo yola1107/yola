@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"yola/internal/contextwait"
 	"yola/test/internal/timer"
 )
 
@@ -21,8 +22,7 @@ type state uint8
 const (
 	stateNew state = iota
 	stateRunning
-	stateStopping
-	stateStopped
+	stateClosed
 )
 
 // Option configures a Scheduler.
@@ -49,7 +49,6 @@ type Scheduler struct {
 
 	running   atomic.Int32
 	callbacks sync.WaitGroup
-	doneOnce  sync.Once
 }
 
 // New creates a scheduler. Tasks may be registered before Start.
@@ -118,17 +117,10 @@ func (s *Scheduler) Stop(ctx context.Context) error {
 		return nil
 	default:
 	}
-	select {
-	case <-s.done:
-		return nil
-	case <-ctx.Done():
-		select {
-		case <-s.done:
-			return nil
-		default:
-			return fmt.Errorf("stop stdlib timer: %w", ctx.Err())
-		}
+	if err := contextwait.Done(ctx, s.done); err != nil {
+		return fmt.Errorf("stop stdlib timer: %w", err)
 	}
+	return nil
 }
 
 // Once registers a one-shot callback.
@@ -190,7 +182,7 @@ func (s *Scheduler) schedule(delay, interval time.Duration, repeated bool, callb
 	}
 
 	s.mu.Lock()
-	if s.state == stateStopping || s.state == stateStopped {
+	if s.state == stateClosed {
 		s.mu.Unlock()
 		return 0, timer.ErrStopped
 	}
@@ -199,7 +191,6 @@ func (s *Scheduler) schedule(delay, interval time.Duration, repeated bool, callb
 		id:       s.nextID,
 		execAt:   time.Now().Add(delay),
 		interval: interval,
-		repeated: repeated,
 		callback: callback,
 	}
 	s.tasks[scheduled.id] = scheduled
@@ -213,8 +204,7 @@ func (s *Scheduler) schedule(delay, interval time.Duration, repeated bool, callb
 
 func (s *Scheduler) arm(scheduled *task) {
 	s.mu.Lock()
-	current, ok := s.tasks[scheduled.id]
-	if s.state != stateRunning || !ok || current != scheduled || scheduled.scheduled != nil {
+	if s.state != stateRunning || s.tasks[scheduled.id] != scheduled || scheduled.scheduled != nil {
 		s.mu.Unlock()
 		return
 	}
@@ -228,8 +218,7 @@ func (s *Scheduler) arm(scheduled *task) {
 
 func (s *Scheduler) execute(scheduled *task) {
 	s.mu.Lock()
-	current, ok := s.tasks[scheduled.id]
-	if s.state != stateRunning || !ok || current != scheduled {
+	if s.state != stateRunning || s.tasks[scheduled.id] != scheduled {
 		s.mu.Unlock()
 		return
 	}
@@ -255,52 +244,42 @@ func (s *Scheduler) execute(scheduled *task) {
 
 func (s *Scheduler) finish(scheduled *task) {
 	s.mu.Lock()
-	current, ok := s.tasks[scheduled.id]
-	if s.state != stateRunning || !ok || current != scheduled {
+	if s.state != stateRunning || s.tasks[scheduled.id] != scheduled {
 		s.mu.Unlock()
 		return
 	}
-	if !scheduled.repeated {
+	if scheduled.interval == 0 {
 		delete(s.tasks, scheduled.id)
 		s.mu.Unlock()
 		return
 	}
-	scheduled.execAt = nextExecution(scheduled.execAt, scheduled.interval, time.Now())
+	scheduled.execAt = timer.NextExecution(scheduled.execAt, scheduled.interval, time.Now())
 	s.mu.Unlock()
 	s.arm(scheduled)
 }
 
 func (s *Scheduler) requestStop() {
 	s.mu.Lock()
-	stateBeforeStop := s.state
-	switch s.state {
-	case stateNew:
-		s.state = stateStopped
-	case stateRunning:
-		s.state = stateStopping
-	default:
+	if s.state == stateClosed {
 		s.mu.Unlock()
 		return
 	}
+	started := s.state == stateRunning
+	s.state = stateClosed
 	scheduled := s.cancelAllLocked()
 	s.mu.Unlock()
 
 	for _, taskTimer := range scheduled {
 		taskTimer.Stop()
 	}
-	if stateBeforeStop == stateNew {
-		s.doneOnce.Do(func() { close(s.done) })
+	if !started {
+		close(s.done)
 		return
 	}
-	go s.completeStop()
-}
-
-func (s *Scheduler) completeStop() {
-	s.callbacks.Wait()
-	s.mu.Lock()
-	s.state = stateStopped
-	s.mu.Unlock()
-	s.doneOnce.Do(func() { close(s.done) })
+	go func() {
+		s.callbacks.Wait()
+		close(s.done)
+	}()
 }
 
 func (s *Scheduler) cancelAll() []*time.Timer {
@@ -323,19 +302,10 @@ func (s *Scheduler) cancelAllLocked() []*time.Timer {
 }
 
 type task struct {
-	id        timer.TaskID
-	execAt    time.Time
-	interval  time.Duration
-	repeated  bool
+	id       timer.TaskID
+	execAt   time.Time
+	interval time.Duration
+
 	callback  func()
 	scheduled *time.Timer
-}
-
-func nextExecution(previous time.Time, interval time.Duration, now time.Time) time.Time {
-	next := previous.Add(interval)
-	if next.After(now) {
-		return next
-	}
-	missed := int64(now.Sub(next)/interval) + 1
-	return next.Add(time.Duration(missed) * interval)
 }

@@ -110,12 +110,11 @@ func (r *RobotLogic) onMessage(p *player.Player, cmd v1.GameCommand, msg proto.M
 	case v1.GameCommand_CmdActivePush:
 		r.onActivePlayer(p, msg)
 	case v1.GameCommand_CmdResultPush:
-		r.onExit(p, msg)
-	default:
+		r.onExit(p)
 	}
 }
 
-func (r *RobotLogic) onExit(p *player.Player, _ proto.Message) {
+func (r *RobotLogic) onExit(p *player.Player) {
 	if !r.table.canRobotExit(p) {
 		return
 	}
@@ -140,22 +139,21 @@ func (r *RobotLogic) onActivePlayer(p *player.Player, msg proto.Message) {
 		return
 	}
 
-	stage := r.table.stage.State()
-	if stage != StMove && stage != StDice {
-		return
-	}
-
-	if stage == StDice {
+	switch r.table.stage.State() {
+	case StDice:
 		r.scheduleRollDice(p)
-		return
+	case StMove:
+		r.scheduleMove(p, rsp)
 	}
+}
 
-	// 移动阶段：快照闭包需要的玩家状态。
+func (r *RobotLogic) scheduleMove(p *player.Player, active *v1.ActivePush) {
+	// 保存定时任务执行时要核验的玩家状态。
 	uid := p.GetPlayerID()
 	chair := p.GetChairID()
 	color := p.GetColor()
 	stageGeneration := r.table.stage.Generation()
-	dices := append([]int32(nil), p.UnusedDice()...)
+	dices := p.UnusedDice()
 	delay := time.Duration(xgo.RandInt(1000, int(r.table.stage.Remaining().Milliseconds()*3/4))) * time.Millisecond
 
 	bestID, bestDice := model.FindBestMoveSequence(r.table.board, dices, color)
@@ -165,17 +163,14 @@ func (r *RobotLogic) onActivePlayer(p *player.Player, msg proto.Message) {
 			"player", p.Desc(),
 			"dice", dices,
 			"piece_id", bestID,
-			"move", xgo.ToJSON(rsp),
+			"move", xgo.ToJSON(active),
 		)
 		return
 	}
 
 	r.table.manager.after(r.table.ID, delay, func(gameTable *Table) {
-		current := gameTable.playerAt(chair)
-		if current == nil || current.GetPlayerID() != uid || !current.IsGaming() || current.IsFinish() {
-			return
-		}
-		if gameTable.activeChair != chair || gameTable.stage.State() != StMove || gameTable.stage.Generation() != stageGeneration {
+		current := gameTable.robotForTurn(chair, uid, StMove, stageGeneration)
+		if current == nil {
 			return
 		}
 		rsp := gameTable.MovePiece(current, &v1.MoveReq{
@@ -196,15 +191,23 @@ func (r *RobotLogic) scheduleRollDice(p *player.Player) {
 
 	delay := time.Duration(xgo.RandInt(1000, 2200)) * time.Millisecond
 	r.table.manager.after(r.table.ID, delay, func(gameTable *Table) {
-		current := gameTable.playerAt(chair)
-		if current == nil || current.GetPlayerID() != uid || !current.IsGaming() || current.IsFinish() {
-			return
-		}
-		if gameTable.activeChair != chair || gameTable.stage.State() != StDice || gameTable.stage.Generation() != stageGeneration {
+		current := gameTable.robotForTurn(chair, uid, StDice, stageGeneration)
+		if current == nil {
 			return
 		}
 		if rsp := gameTable.RollDice(current, false); rsp != nil {
 			gameTable.BroadcastDicePush(nil, rsp)
 		}
 	})
+}
+
+func (t *Table) robotForTurn(chair int32, uid int64, stage StageID, generation uint64) *player.Player {
+	current := t.playerAt(chair)
+	if current == nil || current.GetPlayerID() != uid || !current.IsGaming() || current.IsFinish() {
+		return nil
+	}
+	if t.activeChair != chair || t.stage.State() != stage || t.stage.Generation() != generation {
+		return nil
+	}
+	return current
 }

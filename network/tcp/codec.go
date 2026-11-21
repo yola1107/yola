@@ -35,14 +35,14 @@ func readFrame(rr *bufio.Reader, codec encoding.Codec, p *v1.Proto) error {
 	if err != nil {
 		return err
 	}
-	length := binary.LittleEndian.Uint32(prefix)
-	if sizeErr := validateFrameSize(int(length)); sizeErr != nil {
+	length := int(binary.LittleEndian.Uint32(prefix))
+	if _, sizeErr := frameLength(length); sizeErr != nil {
 		return sizeErr
 	}
 	if _, err = rr.Discard(_framePrefixSize); err != nil {
 		return err
 	}
-	body, err := rr.Peek(int(length))
+	body, err := rr.Peek(length)
 	if err != nil {
 		return err
 	}
@@ -50,7 +50,7 @@ func readFrame(rr *bufio.Reader, codec encoding.Codec, p *v1.Proto) error {
 		return fmt.Errorf("%w: %w", errInvalidFrame, unmarshalErr)
 	}
 	p.ProtoReflect().SetUnknown(nil)
-	_, err = rr.Discard(int(length))
+	_, err = rr.Discard(length)
 	return err
 }
 
@@ -62,12 +62,12 @@ func writeFrame(wr *bufio.Writer, codec encoding.Codec, p *v1.Proto) error {
 	if err != nil {
 		return err
 	}
-	length := len(body)
-	if err = validateFrameSize(length); err != nil {
+	length, err := frameLength(len(body))
+	if err != nil {
 		return err
 	}
 	var prefix [_framePrefixSize]byte
-	binary.LittleEndian.PutUint32(prefix[:], uint32(length))
+	binary.LittleEndian.PutUint32(prefix[:], length)
 	if _, err = wr.Write(prefix[:]); err != nil {
 		return err
 	}
@@ -77,27 +77,30 @@ func writeFrame(wr *bufio.Writer, codec encoding.Codec, p *v1.Proto) error {
 
 func validateFrame(codec encoding.Codec, p *v1.Proto) error {
 	if _, ok := codec.(protoFrameCodec); ok {
-		return validateFrameSize(proto.Size(p))
+		_, err := frameLength(proto.Size(p))
+		return err
 	}
 	body, err := codec.Marshal(p)
 	if err != nil {
 		return err
 	}
-	return validateFrameSize(len(body))
+	_, err = frameLength(len(body))
+	return err
 }
 
 func writeFrameAppend(wr *bufio.Writer, p *v1.Proto) error {
-	length := proto.Size(p)
-	if err := validateFrameSize(length); err != nil {
+	size := proto.Size(p)
+	length, err := frameLength(size)
+	if err != nil {
 		return err
 	}
-	if wr.Available() < _framePrefixSize+length {
-		if err := wr.Flush(); err != nil {
-			return err
+	if wr.Available() < _framePrefixSize+size {
+		if flushErr := wr.Flush(); flushErr != nil {
+			return flushErr
 		}
 	}
-	frame := binary.LittleEndian.AppendUint32(wr.AvailableBuffer(), uint32(length))
-	frame, err := proto.MarshalOptions{}.MarshalAppend(frame, p)
+	frame := binary.LittleEndian.AppendUint32(wr.AvailableBuffer(), length)
+	frame, err = proto.MarshalOptions{}.MarshalAppend(frame, p)
 	if err != nil {
 		return err
 	}
@@ -105,14 +108,14 @@ func writeFrameAppend(wr *bufio.Writer, p *v1.Proto) error {
 	return err
 }
 
-func validateFrameSize(size int) error {
-	if size == 0 {
-		return errFrameLength
+func frameLength(size int) (uint32, error) {
+	if size <= 0 {
+		return 0, errFrameLength
 	}
 	if size > v1.MaxProtoSize {
-		return network.ErrFrameTooLarge
+		return 0, network.ErrFrameTooLarge
 	}
-	return nil
+	return uint32(size), nil
 }
 
 type protoFrameCodec struct {

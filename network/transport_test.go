@@ -15,7 +15,9 @@ func TestCarrierNormalizesKeys(t *testing.T) {
 	require.Equal(t, []string{"first", "second", "third"}, c.Values("trace-id"))
 }
 
-func TestConnectionIDKey(t *testing.T) {
+func TestTransportExposesConnectionMetadata(t *testing.T) {
 	tr := NewTransport(KindTCP, "tcp://127.0.0.1:1", "127.0.0.1", "connection-1")
 	require.Equal(t, "connection-1", tr.RequestHeader().Get("conn_id"))
+	require.Equal(t, "/network.ConnectionHandler/Handle", ConnectionHandlerOperation)
+	require.Equal(t, ConnectionHandlerOperation, tr.Operation())
 }

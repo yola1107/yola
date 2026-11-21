@@ -2,6 +2,7 @@ package mailbox
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -28,7 +29,7 @@ type Group struct {
 
 func NewGroup(mailboxCount, workerCount, queueSize, batchSize int) (*Group, error) {
 	if mailboxCount <= 0 || workerCount <= 0 || queueSize <= 0 || batchSize <= 0 {
-		return nil, fmt.Errorf("mailbox group counts and sizes must be positive")
+		return nil, errors.New("mailbox group counts and sizes must be positive")
 	}
 	g := &Group{
 		mailboxes: make([]*mailboxQueue, mailboxCount),
@@ -72,19 +73,17 @@ func (g *Group) Stop(ctx context.Context) error {
 	g.mu.Lock()
 	if !g.stopped {
 		g.stopped = true
-		started := g.started
 		close(g.stopping)
-		if started {
+		if g.started {
 			go g.finishStop()
 		} else {
 			close(g.done)
 			close(g.finished)
 		}
 	}
-	finished := g.finished
 	g.mu.Unlock()
 	select {
-	case <-finished:
+	case <-g.finished:
 		return nil
 	case <-ctx.Done():
 		return fmt.Errorf("stop mailbox group: %w", ctx.Err())
@@ -123,7 +122,7 @@ func (g *Group) Post(ctx context.Context, index int, job func()) error {
 			return err
 		}
 		err := mailbox.TryPost(job)
-		if err != ErrFull {
+		if !errors.Is(err, ErrFull) {
 			return err
 		}
 		if err = mailbox.waitForSpace(ctx); err != nil {
@@ -211,8 +210,7 @@ func (mailbox *mailboxQueue) Call(ctx context.Context, job func() error) error {
 	if err != nil {
 		return err
 	}
-	err = mailbox.TryPost(call.run)
-	if err != nil {
+	if err := mailbox.TryPost(call.run); err != nil {
 		return err
 	}
 	return call.wait(ctx)
@@ -273,16 +271,11 @@ func (mailbox *mailboxQueue) waitForSpace(ctx context.Context) error {
 	}
 }
 
-const (
-	callQueued int32 = iota
-	callStarted
-	callCanceled
-)
-
 type mailboxCall struct {
-	state  atomic.Int32
-	result chan error
-	job    func() error
+	// 执行者和取消者只有一方能认领排队中的任务。
+	claimed atomic.Bool
+	result  chan error
+	job     func() error
 }
 
 func newMailboxCall(ctx context.Context, job func() error) (context.Context, *mailboxCall, error) {
@@ -299,7 +292,7 @@ func newMailboxCall(ctx context.Context, job func() error) (context.Context, *ma
 }
 
 func (c *mailboxCall) run() {
-	if !c.state.CompareAndSwap(callQueued, callStarted) {
+	if !c.claimed.CompareAndSwap(false, true) {
 		return
 	}
 	defer func() {
@@ -313,7 +306,7 @@ func (c *mailboxCall) run() {
 func (c *mailboxCall) wait(ctx context.Context) error {
 	select {
 	case <-ctx.Done():
-		if c.state.CompareAndSwap(callQueued, callCanceled) {
+		if c.claimed.CompareAndSwap(false, true) {
 			return ctx.Err()
 		}
 		return <-c.result

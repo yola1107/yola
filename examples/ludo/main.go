@@ -45,7 +45,7 @@ func main() {
 		slog.Error("create registry", "error", err)
 		return
 	}
-	defer registry.Close()
+	defer func() { _ = registry.Close() }()
 
 	nodeServer, err := node.NewServer(node.Address(grpcAddr), node.Registration(registry))
 	if err != nil {

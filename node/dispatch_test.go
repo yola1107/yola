@@ -260,27 +260,9 @@ func TestDisconnectHandlerReceivesSession(t *testing.T) {
 }
 
 func TestCommandMetadataDistinguishesSharedRequestsThroughGRPC(t *testing.T) {
-	type observation struct {
-		stage     string
-		command   int32
-		present   bool
-		uid       string
-		operation string
-		typed     bool
-		err       error
-	}
-	observed := make(chan observation, 16)
+	observed := make(chan commandObservation, 16)
 	record := func(ctx context.Context, stage string, request any, err error) {
-		command, present := CommandFromContext(ctx)
-		var uid, operation string
-		if sess, ok := FromContext(ctx); ok {
-			uid = sess.UID()
-		}
-		if tr, ok := transport.FromServerContext(ctx); ok {
-			operation = tr.Operation()
-		}
-		_, typed := request.(*emptypb.Empty)
-		observed <- observation{stage: stage, command: command, present: present, uid: uid, operation: operation, typed: typed, err: err}
+		observed <- observeCommand(ctx, stage, request, err)
 	}
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
@@ -354,6 +336,29 @@ func TestCommandMetadataDistinguishesSharedRequestsThroughGRPC(t *testing.T) {
 		t.Fatalf("unexpected middleware call for raw handler: %+v", extra)
 	default:
 	}
+}
+
+type commandObservation struct {
+	stage     string
+	command   int32
+	present   bool
+	uid       string
+	operation string
+	typed     bool
+	err       error
+}
+
+func observeCommand(ctx context.Context, stage string, request any, err error) commandObservation {
+	seen := commandObservation{stage: stage, err: err}
+	seen.command, seen.present = CommandFromContext(ctx)
+	if sess, ok := FromContext(ctx); ok {
+		seen.uid = sess.UID()
+	}
+	if tr, ok := transport.FromServerContext(ctx); ok {
+		seen.operation = tr.Operation()
+	}
+	_, seen.typed = request.(*emptypb.Empty)
+	return seen
 }
 
 func TestCommandMetadataIsAbsentOutsideForward(t *testing.T) {

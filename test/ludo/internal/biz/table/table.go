@@ -12,15 +12,14 @@ import (
 )
 
 type Table struct {
-	ID         int32
-	rc         *conf.Room
-	repo       Repo
-	manager    *Manager
-	stage      Stage
-	mLog       *Log
-	seats      []*player.Player
-	seatCount  atomic.Int32
-	maxPlayers int32
+	ID        int32
+	rc        *conf.Room
+	repo      Repo
+	manager   *Manager
+	stage     Stage
+	mLog      *Log
+	seats     []*player.Player
+	seatCount atomic.Int32
 
 	activeChair    int32
 	firstChair     int32
@@ -44,7 +43,6 @@ func newTable(tableID int32, room *conf.Room, repo Repo, tableLog *Log, manager 
 		manager:     manager,
 		mLog:        tableLog,
 		seats:       make([]*player.Player, room.Table.ChairNum),
-		maxPlayers:  room.Table.ChairNum,
 		activeChair: -1,
 		firstChair:  -1,
 		fastTimerID: -1,
@@ -74,7 +72,7 @@ func (t *Table) Desc() string {
 }
 
 func (t *Table) isFull() bool {
-	return t.seatedCount() >= t.maxPlayers
+	return int(t.seatedCount()) >= len(t.seats)
 }
 
 func (t *Table) seatedCount() int32 { return t.seatCount.Load() }
@@ -185,41 +183,35 @@ func (t *Table) canRobotExit(p *player.Player) bool {
 	return t.canExit(p) && t.robotLogic.canExit(p)
 }
 
-func (t *Table) nextPlayer(chair int32) *player.Player {
-	maxPlayers := t.maxPlayers
-	for i := int32(0); i < maxPlayers; i++ {
-		chair = (chair + 1) % maxPlayers
-		if t.seats[chair] == nil || !t.seats[chair].IsGaming() || t.seats[chair].IsFinish() {
+func (t *Table) nextPlayer(chair int) *player.Player {
+	for range t.seats {
+		chair = (chair + 1) % len(t.seats)
+		p := t.seats[chair]
+		if p == nil || !p.IsGaming() || p.IsFinish() {
 			continue
 		}
-		return t.seats[chair]
+		return p
 	}
 
 	return nil
 }
 
 func (t *Table) activePlayer() *player.Player {
-	active := t.activeChair
-	if active < 0 || active >= t.maxPlayers {
-		return nil
-	}
-	return t.seats[active]
+	return t.playerAt(t.activeChair)
 }
 
 func (t *Table) getNextActiveChair() int32 {
-	var p *player.Player
-	if t.activeChair >= 0 && t.activeChair < t.maxPlayers {
-		p = t.nextPlayer(t.activeChair)
+	if chair := int(t.activeChair); chair >= 0 && chair < len(t.seats) {
+		if p := t.nextPlayer(chair); p != nil {
+			return p.GetChairID()
+		}
 	}
-	if p == nil {
-		slog.Error("next active player not found", "active_chair", t.activeChair, "table", t.Desc())
-		return -1
-	}
-	return p.GetChairID()
+	slog.Error("next active player not found", "active_chair", t.activeChair, "table", t.Desc())
+	return -1
 }
 
 func (t *Table) playerAt(chair int32) *player.Player {
-	if chair < 0 || chair >= t.maxPlayers {
+	if chair < 0 || int(chair) >= len(t.seats) {
 		return nil
 	}
 	return t.seats[chair]
@@ -248,7 +240,7 @@ func (t *Table) checkKick() {
 		if p == nil {
 			continue
 		}
-		if code, msg := t.checkKickPlayer(p, t.rc.Game); code != 0 {
+		if code, msg := t.checkKickPlayer(p, t.rc.Game); code != codes.Success {
 			if _, err := t.Exit(p, code, msg); err != nil {
 				slog.Error("kick player", "player", p.Desc(), "error", err)
 			}
@@ -257,19 +249,12 @@ func (t *Table) checkKick() {
 }
 
 func (t *Table) checkKickPlayer(p *player.Player, game *conf.Room_Game) (int32, string) {
-	switch t.stage.State() {
-	case StWait:
-		if p.IsOffline() {
-			return codes.KickByBroke, "KICK_BY_BROKE"
-		}
-		if code, msg := CheckRoomLimit(p, game); code != 0 {
-			return code, msg
-		}
-	case StResult:
-		if p.IsOffline() {
-			return codes.KickByBroke, "KICK_BY_BROKE"
-		}
-	default:
+	stage := t.stage.State()
+	if (stage == StWait || stage == StResult) && p.IsOffline() {
+		return codes.KickByBroke, "KICK_BY_BROKE"
 	}
-	return 0, ""
+	if stage == StWait {
+		return CheckRoomLimit(p, game)
+	}
+	return codes.Success, ""
 }

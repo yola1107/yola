@@ -26,42 +26,47 @@ func TestSendProtoSharesImmutableInputAcrossTransports(t *testing.T) {
 				codecName = "custom"
 			}
 			t.Run(transportName+"/"+codecName, func(t *testing.T) {
-				conn, received := startOwnershipConnection(t, transportName, customCodec)
-				message := &v1.Proto{Op: v1.OpPush, Cmd: 42, Body: bytes.Repeat([]byte{7}, 1024)}
-				expected := proto.CloneOf(message)
-				const sends = 16
-				results := make(chan error, sends)
-				var workers sync.WaitGroup
-				workers.Add(sends)
-				for range sends {
-					go func() {
-						defer workers.Done()
-						results <- conn.SendProto(message)
-					}()
-				}
-				workers.Wait()
-				for range sends {
-					require.NoError(t, <-results)
-					require.Equal(t, expected.Body, receiveOwnershipPayload(t, received))
-				}
-				require.True(t, proto.Equal(expected, message), "encoding must not modify shared input")
-
-				prepared := &network.PreparedProto{}
-				prepared.Reset(message)
-				if capable, ok := conn.(network.PreparedConnection); ok {
-					require.NoError(t, capable.SendPrepared(prepared))
-				} else {
-					require.NoError(t, conn.SendProto(prepared.Message()))
-				}
-				next := proto.CloneOf(message)
-				next.Body[0] = 9
-				prepared.Reset(next)
-				require.NoError(t, conn.SendProto(next))
-				require.Equal(t, expected.Body, receiveOwnershipPayload(t, received))
-				require.Equal(t, next.Body, receiveOwnershipPayload(t, received))
+				checkImmutableSend(t, transportName, customCodec)
 			})
 		}
 	}
+}
+
+func checkImmutableSend(t *testing.T, transportName string, customCodec bool) {
+	t.Helper()
+	conn, received := startOwnershipConnection(t, transportName, customCodec)
+	message := &v1.Proto{Op: v1.OpPush, Cmd: 42, Body: bytes.Repeat([]byte{7}, 1024)}
+	expected := proto.CloneOf(message)
+	const sends = 16
+	results := make(chan error, sends)
+	var workers sync.WaitGroup
+	workers.Add(sends)
+	for range sends {
+		go func() {
+			defer workers.Done()
+			results <- conn.SendProto(message)
+		}()
+	}
+	workers.Wait()
+	for range sends {
+		require.NoError(t, <-results)
+		require.Equal(t, expected.Body, receiveOwnershipPayload(t, received))
+	}
+	require.True(t, proto.Equal(expected, message), "encoding must not modify shared input")
+
+	prepared := &network.PreparedProto{}
+	prepared.Reset(message)
+	if capable, ok := conn.(network.PreparedConnection); ok {
+		require.NoError(t, capable.SendPrepared(prepared))
+	} else {
+		require.NoError(t, conn.SendProto(prepared.Message()))
+	}
+	next := proto.CloneOf(message)
+	next.Body[0] = 9
+	prepared.Reset(next)
+	require.NoError(t, conn.SendProto(next))
+	require.Equal(t, expected.Body, receiveOwnershipPayload(t, received))
+	require.Equal(t, next.Body, receiveOwnershipPayload(t, received))
 }
 
 type ownershipHandler struct {
@@ -111,19 +116,7 @@ func startOwnershipConnection(t *testing.T, transportName string, customCodec bo
 	}
 	var stopped chan error
 	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-		defer cancel()
-		if err := server.Stop(ctx); err != nil {
-			t.Errorf("stop ownership test server: %v", err)
-		}
-		if stopped != nil {
-			select {
-			case err := <-stopped:
-				require.NoError(t, err)
-			case <-ctx.Done():
-				t.Error("ownership test server did not stop")
-			}
-		}
+		stopOwnershipServer(t, server, stopped)
 	})
 	opened := make(chan network.Connection, 1)
 	require.NoError(t, server.SetHandler(ownershipHandler{opened: opened}))
@@ -153,6 +146,24 @@ func startOwnershipConnection(t *testing.T, transportName string, customCodec bo
 	case <-time.After(time.Second):
 		t.Fatal("server did not expose its connection")
 		return nil, nil
+	}
+}
+
+func stopOwnershipServer(t *testing.T, server interface{ Stop(context.Context) error }, stopped <-chan error) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := server.Stop(ctx); err != nil {
+		t.Errorf("stop ownership test server: %v", err)
+	}
+	if stopped == nil {
+		return
+	}
+	select {
+	case err := <-stopped:
+		require.NoError(t, err)
+	case <-ctx.Done():
+		t.Error("ownership test server did not stop")
 	}
 }
 

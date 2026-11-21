@@ -3,6 +3,7 @@ package nats
 import (
 	"context"
 	"crypto/tls"
+	"net/url"
 	"testing"
 	"time"
 
@@ -36,12 +37,16 @@ func TestOptionSetters(t *testing.T) {
 }
 
 func TestRedactedURL(t *testing.T) {
+	credentials := &url.URL{
+		Scheme: "nats", Host: "127.0.0.1:4222", User: url.UserPassword("test-user", "test-password"),
+		Path: "/events", RawQuery: "cluster=test",
+	}
 	for _, test := range []struct {
 		name string
 		raw  string
 		want string
 	}{
-		{name: "credentials", raw: "nats://test-user:test-password@127.0.0.1:4222/events?cluster=test", want: "nats://127.0.0.1:4222/events?cluster=test"},
+		{name: "credentials", raw: credentials.String(), want: "nats://127.0.0.1:4222/events?cluster=test"},
 		{name: "missing scheme", raw: "127.0.0.1", want: "nats://"},
 		{name: "malformed URL", raw: "://127.0.0.1:4222", want: "nats://"},
 	} {
@@ -55,8 +60,11 @@ func TestWithTLSClonesConfiguration(t *testing.T) {
 	tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12}
 	configured := &options{}
 	WithTLS(tlsConfig)(configured)
+	require.NotSame(t, tlsConfig, configured.tls)
 	tlsConfig.MinVersion = tls.VersionTLS13
 	require.Equal(t, uint16(tls.VersionTLS12), configured.tls.MinVersion)
+	WithTLS(nil)(configured)
+	require.Nil(t, configured.tls)
 }
 
 func TestNewRejectsInvalidConfiguration(t *testing.T) {

@@ -70,7 +70,7 @@ func NewUsecase(repo PlayerRepo, c *conf.Room) (*Usecase, func(), error) {
 	uc := &Usecase{repo: repo, rc: c, cancel: cancel}
 
 	uc.tm = table.NewManager(c, uc)
-	uc.pm = player.NewManager()
+	uc.pm = new(player.Manager)
 	uc.rm = robot.NewManager(c, uc)
 
 	cleanup := func() {
@@ -181,9 +181,7 @@ func (uc *Usecase) renewNodeBindings(ctx context.Context) {
 		if err == nil {
 			continue
 		}
-		if status.Code(err) == codes.Aborted {
-			err = errors.Join(err, uc.loseNodeBinding(ctx, p, version))
-		}
+		err = uc.handleRenewalError(ctx, p, version, err)
 		failed++
 		if firstErr == nil {
 			firstErr = fmt.Errorf("player %d: %w", p.GetPlayerID(), err)
@@ -192,6 +190,13 @@ func (uc *Usecase) renewNodeBindings(ctx context.Context) {
 	if failed > 0 {
 		slog.Warn("renew player Node bindings", "failed", failed, "error", firstErr)
 	}
+}
+
+func (uc *Usecase) handleRenewalError(ctx context.Context, p *player.Player, version uint64, err error) error {
+	if status.Code(err) == codes.Aborted {
+		return errors.Join(err, uc.loseNodeBinding(ctx, p, version))
+	}
+	return err
 }
 
 func (uc *Usecase) loseNodeBinding(ctx context.Context, p *player.Player, version uint64) error {

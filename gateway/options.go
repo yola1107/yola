@@ -175,7 +175,7 @@ func ServerTLS(config *tls.Config) Option {
 		if err := tlsconfig.ValidateServer(config); err != nil {
 			return fmt.Errorf("gateway: %w", err)
 		}
-		o.grpcOptions = append(o.grpcOptions, grpc.TLSConfig(tlsconfig.Clone(config)))
+		o.grpcOptions = append(o.grpcOptions, grpc.TLSConfig(config.Clone()))
 		o.serverTLS = true
 		return nil
 	}
@@ -252,7 +252,7 @@ func ClientTLS(config *tls.Config) Option {
 		if err := tlsconfig.ValidateClient(config); err != nil {
 			return fmt.Errorf("gateway: gRPC %w", err)
 		}
-		o.clientTLS = tlsconfig.Clone(config)
+		o.clientTLS = config.Clone()
 		return nil
 	}
 }

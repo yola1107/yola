@@ -56,7 +56,7 @@ func WithUserInfo(username, password string) Option {
 func WithTLS(config *tls.Config) Option {
 	return func(o *options) {
 		o.tlsSet = true
-		o.tls = tlsconfig.Clone(config)
+		o.tls = config.Clone()
 	}
 }
 

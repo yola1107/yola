@@ -77,11 +77,8 @@ func (d *Dispatcher) run() {
 	defer func() {
 		if value := recover(); value != nil {
 			slog.ErrorContext(d.ctx, "[network] request panic", "conn_id", d.conn.ConnID(), "value", value, "stack", string(debug.Stack()))
-			d.cancel()
 			// 连接关闭解阻读循环，读循环仍负责等待本协程和执行 handler.Close。
-			if err := d.conn.Close(); err != nil {
-				slog.WarnContext(d.ctx, "[network] close after panic failed", "conn_id", d.conn.ConnID(), "error", err)
-			}
+			d.closeAfterFailure("[network] close after panic failed")
 		}
 	}()
 	for {
@@ -96,13 +93,17 @@ func (d *Dispatcher) run() {
 				if d.ctx.Err() == nil {
 					slog.WarnContext(d.ctx, "[network] request failed", "conn_id", d.conn.ConnID(), "error", err)
 				}
-				d.cancel()
-				if err := d.conn.Close(); err != nil {
-					slog.WarnContext(d.ctx, "[network] close after request failed", "conn_id", d.conn.ConnID(), "error", err)
-				}
+				d.closeAfterFailure("[network] close after request failed")
 				return
 			}
 		}
+	}
+}
+
+func (d *Dispatcher) closeAfterFailure(message string) {
+	d.cancel()
+	if err := d.conn.Close(); err != nil {
+		slog.WarnContext(d.ctx, message, "conn_id", d.conn.ConnID(), "error", err)
 	}
 }
 

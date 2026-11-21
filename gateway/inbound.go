@@ -114,17 +114,16 @@ func (s *Server) authenticate(ctx context.Context, sess *session, msg *v1.Proto)
 		)
 		return
 	}
-	uid, err := s.authenticateUID(ctx, request.ServiceName, request.Token, connID)
-	if err != nil {
-		code := status.Code(err)
-		msg.Code = int32(code)
-		switch code {
+	uid, authCode := s.authenticateUID(ctx, request.ServiceName, request.Token, connID)
+	if authCode != codes.OK {
+		msg.Code = protocolCode(authCode)
+		switch authCode {
 		case codes.Unauthenticated:
 			slog.DebugContext(ctx, "session authentication rejected",
 				"conn_id", connID,
 				"service", request.ServiceName,
-				"code", int32(code),
-				"status", code.String(),
+				"code", msg.Code,
+				"status", authCode.String(),
 				"reason", "unauthenticated",
 			)
 		case codes.DeadlineExceeded:
@@ -144,7 +143,7 @@ func (s *Server) authenticate(ctx context.Context, sess *session, msg *v1.Proto)
 		BindingToken: uuid.NewString(),
 	}
 	if !s.sessions.admitAuthentication(ctx, sess) {
-		msg.Code = int32(authenticationFenceCode(ctx, sess))
+		msg.Code = protocolCode(authenticationFenceCode(ctx, sess))
 		return
 	}
 	defer s.sessions.authentications.Done()
@@ -152,14 +151,14 @@ func (s *Server) authenticate(ctx context.Context, sess *session, msg *v1.Proto)
 	lease, previous, err := s.locator.BindGate(ctx, binding, s.leaseTTL)
 	if err != nil {
 		code := locateStatusCode(err)
-		msg.Code = int32(code)
+		msg.Code = protocolCode(code)
 		if code != codes.Canceled {
 			slog.ErrorContext(ctx, "bind Gate failed",
 				"uid", uid,
 				"conn_id", connID,
 				"service", request.ServiceName,
 				"gate_id", s.identity.id,
-				"code", int32(code),
+				"code", msg.Code,
 				"status", code.String(),
 				"error", err,
 			)
@@ -167,7 +166,7 @@ func (s *Server) authenticate(ctx context.Context, sess *session, msg *v1.Proto)
 		return
 	}
 	if !s.sessions.commitAuthentication(ctx, sess, lease, boundAt) {
-		msg.Code = int32(authenticationFenceCode(ctx, sess))
+		msg.Code = protocolCode(authenticationFenceCode(ctx, sess))
 		cleanupCtx, cancel := s.cleanupContext(ctx)
 		s.unbindGate(cleanupCtx, lease.Binding)
 		cancel()
@@ -186,7 +185,7 @@ func (s *Server) authenticate(ctx context.Context, sess *session, msg *v1.Proto)
 	s.kickPrevious(ctx, *previous)
 }
 
-func (s *Server) authenticateUID(ctx context.Context, serviceName string, token []byte, connID string) (string, error) {
+func (s *Server) authenticateUID(ctx context.Context, serviceName string, token []byte, connID string) (string, codes.Code) {
 	remoteIP := ""
 	if tr, ok := transport.FromServerContext(ctx); ok {
 		remoteIP = tr.RequestHeader().Get("remote_ip")
@@ -195,24 +194,24 @@ func (s *Server) authenticateUID(ctx context.Context, serviceName string, token 
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrInvalidCredentials):
-			return "", status.Error(codes.Unauthenticated, "authentication failed")
+			return "", codes.Unauthenticated
 		case errors.Is(err, context.Canceled):
-			return "", status.Error(codes.Canceled, context.Canceled.Error())
+			return "", codes.Canceled
 		case errors.Is(err, context.DeadlineExceeded):
-			return "", status.Error(codes.DeadlineExceeded, context.DeadlineExceeded.Error())
+			return "", codes.DeadlineExceeded
 		default:
 			slog.ErrorContext(ctx, "authentication backend unavailable",
 				"conn_id", connID,
 				"service", serviceName,
 				"error", err,
 			)
-			return "", status.Error(codes.Unavailable, "authentication unavailable")
+			return "", codes.Unavailable
 		}
 	}
 	if !locate.ValidUID(uid) {
-		return "", status.Error(codes.Unauthenticated, "authentication failed")
+		return "", codes.Unauthenticated
 	}
-	return uid, nil
+	return uid, codes.OK
 }
 
 func authenticationFenceCode(ctx context.Context, sess *session) codes.Code {
@@ -250,7 +249,7 @@ func (s *Server) kickPrevious(ctx context.Context, previous locate.GateBinding) 
 		"service", previous.ServiceName,
 		"gate_id", s.identity.id,
 		"target_gate_id", previous.GateID,
-		"code", int32(code),
+		"code", int64(code),
 		"status", code.String(),
 		"error", err,
 	)
@@ -300,7 +299,7 @@ func (s *Server) unbindGate(ctx context.Context, binding locate.GateBinding) {
 		"conn_id", binding.ConnID,
 		"service", binding.ServiceName,
 		"gate_id", binding.GateID,
-		"code", int32(code),
+		"code", int64(code),
 		"status", code.String(),
 		"error", err,
 	)

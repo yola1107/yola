@@ -59,8 +59,6 @@ func WithConnMaxIdleTime(d time.Duration) Option {
 func NewClient(opts ...Option) (redis.UniversalClient, error) {
 	options := &redis.UniversalOptions{
 		Addrs:                 []string{"127.0.0.1:6379"},
-		Password:              "",
-		DB:                    0,
 		PoolSize:              10,
 		MinIdleConns:          5,
 		MaxIdleConns:          10,

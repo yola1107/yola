@@ -99,6 +99,19 @@ func TestBackendResolverFiltersNodes(t *testing.T) {
 	require.Contains(t, state.load().hostByNodeID, "node-a")
 	require.Contains(t, state.load().hostByNodeID, "node-b")
 
+	t.Run("stateless unnamed endpoint appears first", func(t *testing.T) {
+		unnamed := serviceInstance("game", "", "grpc://127.0.0.1:9001")
+		named := serviceInstance("game", "node-a", "grpc://127.0.0.1:9001")
+		unnamed.Metadata, named.Metadata = nil, nil
+
+		snapshot, addresses, err := resolveBackendInstances("game", []*registry.ServiceInstance{unnamed, named}, false)
+
+		require.NoError(t, err)
+		require.Len(t, addresses, 1)
+		require.Same(t, unnamed, addresses[0].Attributes.Value(_rawServiceInstanceKey))
+		require.Equal(t, "127.0.0.1:9001", snapshot.hostByNodeID["node-a"])
+	})
+
 	r.update(nil)
 	require.Len(t, client.states, 2)
 	require.Empty(t, client.states[1].Addresses)

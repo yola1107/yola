@@ -31,7 +31,7 @@ type Pusher interface {
 	PushToUID(context.Context, string, int32, proto.Message) error
 }
 
-func newPipeline(t testing.TB, address, service string, playerCount int, delay time.Duration, measurements *measurements) (Pusher, *atomic.Uint64) {
+func newPipeline(t testing.TB, address, service string, playerCount int, delay time.Duration, measurements *measurements) (Pusher, *atomic.Int64) {
 	t.Helper()
 	client := redis.NewClient(&redis.Options{Addr: address, ContextTimeoutEnabled: true})
 	t.Cleanup(func() { require.NoError(t, client.Close()) })
@@ -41,11 +41,11 @@ func newPipeline(t testing.TB, address, service string, playerCount int, delay t
 		gateway.Locator(store), gateway.Discovery(unusedDiscovery{}), gateway.LeaseTTL(time.Hour),
 	)
 	require.NoError(t, err)
-	startServer(t, gate, "gateway", service+"-gateway", gatewayReady(gate))
+	require.NoError(t, startServer(t, gate, "gateway", service+"-gateway", gatewayReady(gate)))
 	sender, err := push.NewSender(&measuredLocator{Locator: store, measurements: measurements}, push.ClientMiddleware(measurements.rpc))
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, sender.Close()) })
-	received := new(atomic.Uint64)
+	received := new(atomic.Int64)
 	for playerID := 1; playerID <= playerCount; playerID++ {
 		uid := strconv.Itoa(playerID)
 		connection := &benchmarkConnection{id: uid, received: received, delay: delay}
@@ -59,25 +59,24 @@ func newPipeline(t testing.TB, address, service string, playerCount int, delay t
 	pusher := &measuredPusher{sender: sender, service: service, measurements: measurements}
 	// 在计时前完成连接、路由和 protobuf 首次调用，确认投递确实到达真实 Gateway。
 	require.NoError(t, pusher.PushToUID(context.Background(), "1", 1, wrapperspb.Bytes(nil)))
-	require.Equal(t, uint64(1), received.Load())
+	require.Equal(t, int64(1), received.Load())
 	received.Store(0)
 	measurements.collect(t)
 	return pusher, received
 }
 
 // startServer 使用原生 App，probe 通过公开行为确认 transport 真正可用。
-func startServer(t testing.TB, server transport.Server, service, id string, probe func(context.Context) error) {
+func startServer(t testing.TB, server transport.Server, service, id string, probe func(context.Context) error) error {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
+	done := make(chan error, 1)
 	app := kratos.New(
 		kratos.Context(ctx), kratos.ID(id), kratos.Name(service), kratos.Server(server),
 		kratos.StopTimeout(10*time.Second),
 	)
-	var runErr error
 	go func() {
-		runErr = app.Run()
-		close(done)
+		defer close(done)
+		done <- app.Run()
 	}()
 	t.Cleanup(func() {
 		cancel()
@@ -85,7 +84,7 @@ func startServer(t testing.TB, server transport.Server, service, id string, prob
 		defer stopCancel()
 		cleanupErr := server.Stop(stopCtx)
 		select {
-		case <-done:
+		case runErr := <-done:
 			cleanupErr = errors.Join(cleanupErr, runErr)
 		case <-stopCtx.Done():
 			cleanupErr = errors.Join(cleanupErr, errors.New("benchmark application did not stop"), stopCtx.Err())
@@ -98,14 +97,16 @@ func startServer(t testing.TB, server transport.Server, service, id string, prob
 	defer ticker.Stop()
 	for {
 		select {
-		case <-done:
-			require.NoError(t, runErr)
-			t.Fatal("benchmark application exited before startup completed")
+		case runErr := <-done:
+			if runErr != nil {
+				return runErr
+			}
+			return errors.New("benchmark application exited before startup completed")
 		case <-readyCtx.Done():
-			t.Fatal("benchmark application did not become ready")
+			return errors.New("benchmark application did not become ready")
 		case <-ticker.C:
 			if probe(readyCtx) == nil {
-				return
+				return nil
 			}
 		}
 	}
@@ -191,7 +192,7 @@ func (unusedDiscovery) Watch(context.Context, string) (registry.Watcher, error) 
 // delay 只模拟 Gateway RPC 处理延迟，不能解释成真实慢客户端或 WebSocket 容量。
 type benchmarkConnection struct {
 	id       string
-	received *atomic.Uint64
+	received *atomic.Int64
 	delay    time.Duration
 }
 

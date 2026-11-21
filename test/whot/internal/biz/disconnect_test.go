@@ -16,7 +16,7 @@ import (
 
 func TestDisconnectOverlappingReconnectKeepsNewSessionOnline(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		uc, cleanup, err := NewUsecase(new(usecaseRepoStub), whotDrainTestRoom())
+		uc, cleanup, err := NewUsecase(new(usecaseRepoStub), whotTestRoom())
 		require.NoError(t, err)
 		t.Cleanup(cleanup)
 		original := &connectionSession{uid: "42", bindingToken: "original"}
@@ -52,7 +52,7 @@ func TestDisconnectOverlappingReconnectKeepsNewSessionOnline(t *testing.T) {
 
 func TestStaleDisconnectDoesNotClearCurrentSessionOfflineState(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		uc, cleanup, err := NewUsecase(new(usecaseRepoStub), whotDrainTestRoom())
+		uc, cleanup, err := NewUsecase(new(usecaseRepoStub), whotTestRoom())
 		require.NoError(t, err)
 		t.Cleanup(cleanup)
 		original := &connectionSession{uid: "42", bindingToken: "original"}

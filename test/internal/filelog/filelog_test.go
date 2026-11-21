@@ -2,6 +2,7 @@ package filelog
 
 import (
 	"errors"
+	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
@@ -10,7 +11,8 @@ import (
 )
 
 func TestLogWritesFormattedText(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "table.log")
+	dir := t.TempDir()
+	path := filepath.Join(dir, "table.log")
 	logger, err := New(path)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
@@ -21,7 +23,7 @@ func TestLogWritesFormattedText(t *testing.T) {
 	if closeErr := logger.Close(); closeErr != nil {
 		t.Fatalf("Close() error = %v", closeErr)
 	}
-	data, err := os.ReadFile(path)
+	data, err := fs.ReadFile(os.DirFS(dir), "table.log")
 	if err != nil {
 		t.Fatalf("ReadFile() error = %v", err)
 	}

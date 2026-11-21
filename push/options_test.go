@@ -37,7 +37,7 @@ func TestSenderRejectsInvalidConfiguration(t *testing.T) {
 		{name: "zero timeout", locator: lookup, options: []push.Option{push.Timeout(0)}},
 		{name: "negative timeout", locator: lookup, options: []push.Option{push.Timeout(-time.Second)}},
 		{name: "missing TLS", locator: lookup, options: []push.Option{push.ClientTLS(nil)}},
-		{name: "unverified TLS", locator: lookup, options: []push.Option{push.ClientTLS(&tls.Config{InsecureSkipVerify: true})}},
+		{name: "unverified TLS", locator: lookup, options: []push.Option{push.ClientTLS(&tls.Config{InsecureSkipVerify: true})}}, // #nosec G402 -- 验证配置入口会拒绝关闭证书校验。
 		{name: "missing middleware", locator: lookup, options: []push.Option{push.ClientMiddleware(nil)}},
 	}
 	for _, test := range tests {

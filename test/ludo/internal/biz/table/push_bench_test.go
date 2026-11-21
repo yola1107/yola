@@ -27,7 +27,7 @@ func newPushFanout(pusher pushbench.Pusher, tableCount int) func(int, proto.Mess
 	manager := &Manager{pusher: pusher}
 	tables := make([]*Table, tableCount)
 	for index := range tables {
-		gameTable := &Table{ID: int32(index + 1), manager: manager, maxPlayers: 4, seats: make([]*player.Player, 4)}
+		gameTable := &Table{ID: int32(index + 1), manager: manager, seats: make([]*player.Player, 4)}
 		for chair := range gameTable.seats {
 			uid := int64(index*4 + chair + 1)
 			p := player.New(&player.Raw{ID: uid, BaseData: &player.BaseData{UID: uid}})

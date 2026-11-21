@@ -51,3 +51,13 @@ type Scheduler interface {
 	Cancel(TaskID) bool
 	CancelAll()
 }
+
+// NextExecution 计算下一个固定频率的触发时刻，跳过已错过的周期。
+func NextExecution(previous time.Time, interval time.Duration, now time.Time) time.Time {
+	next := previous.Add(interval)
+	if next.After(now) {
+		return next
+	}
+	missed := int64(now.Sub(next)/interval) + 1
+	return next.Add(time.Duration(missed) * interval)
+}

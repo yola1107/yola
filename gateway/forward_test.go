@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"errors"
+	"math"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -17,6 +18,11 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
+
+func TestProtocolCode(t *testing.T) {
+	require.Equal(t, int32(42), protocolCode(codes.Code(42)))
+	require.Equal(t, int32(codes.Unknown), protocolCode(codes.Code(math.MaxInt32)+1))
+}
 
 func TestStickyRoutesUseEpochOnlyForForward(t *testing.T) {
 	store := &epochCountingLocator{Locator: testLocator(t)}
@@ -55,38 +61,24 @@ func TestStickyRoutesUseEpochOnlyForForward(t *testing.T) {
 	require.Zero(t, store.epochLookups.Load())
 }
 
-func TestForwardStatusCode(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name string
-		err  error
-		want codes.Code
-	}{
-		{name: "canceled", err: context.Canceled, want: codes.Canceled},
-		{name: "deadline", err: context.DeadlineExceeded, want: codes.DeadlineExceeded},
-		{name: "invalid binding", err: locate.ErrInvalidNodeBinding, want: codes.Internal},
-		{name: "invalid epoch", err: locate.ErrInvalidNodeEpoch, want: codes.Internal},
-		{name: "epoch missing", err: locate.ErrNodeEpochNotFound, want: codes.Aborted},
-		{name: "epoch conflict", err: locate.ErrNodeEpochConflict, want: codes.Aborted},
-		{name: "dial failure", err: errors.New("connection refused"), want: codes.Unavailable},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			require.Equal(t, tc.want, forwardStatusCode(tc.err))
-		})
-	}
-}
-
 func TestForwardReturnsLocatorStatusInProtocolReply(t *testing.T) {
 	for _, test := range []struct {
 		name string
 		err  error
-		want codes.Code
+		want int32
 	}{
-		{name: "invalid epoch", err: locate.ErrInvalidNodeEpoch, want: codes.Internal},
-		{name: "epoch missing", err: locate.ErrNodeEpochNotFound, want: codes.Aborted},
-		{name: "RPC error during route lookup", err: status.Error(codes.ResourceExhausted, "request rejected"), want: codes.Unavailable},
+		{name: "canceled", err: context.Canceled, want: int32(codes.Canceled)},
+		{name: "deadline", err: context.DeadlineExceeded, want: int32(codes.DeadlineExceeded)},
+		{name: "invalid binding", err: locate.ErrInvalidNodeBinding, want: int32(codes.Internal)},
+		{name: "invalid epoch", err: locate.ErrInvalidNodeEpoch, want: int32(codes.Internal)},
+		{name: "epoch missing", err: locate.ErrNodeEpochNotFound, want: int32(codes.Aborted)},
+		{name: "epoch conflict", err: locate.ErrNodeEpochConflict, want: int32(codes.Aborted)},
+		{name: "dial failure", err: errors.New("connection refused"), want: int32(codes.Unavailable)},
+		{
+			name: "RPC error during route lookup",
+			err:  status.Error(codes.ResourceExhausted, "request rejected"),
+			want: int32(codes.Unavailable),
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			store := &failingEpochLocator{Locator: testLocator(t), err: test.err}
@@ -97,12 +89,12 @@ func TestForwardReturnsLocatorStatusInProtocolReply(t *testing.T) {
 			initTestGateway(t, gate)
 			binding := testBinding()
 			bindTestPlayerNode(t, store.Locator, binding.ServiceName, binding.UID, "node-a")
-			message := &protocolv1.Proto{Op: protocolv1.OpRequest, Cmd: 1}
+			message := &protocolv1.Proto{Op: protocolv1.OpRequest, Cmd: 1, Body: []byte("request")}
 
 			gate.forward(context.Background(), activeSession(newTestConnection(binding.ConnID), binding), message)
 
 			require.Equal(t, protocolv1.OpResponse, message.Op)
-			require.Equal(t, int32(test.want), message.Code)
+			require.Equal(t, test.want, message.Code)
 			require.Nil(t, message.Body)
 		})
 	}
@@ -136,7 +128,7 @@ func TestForwardNodeLookupHonorsRequestContext(t *testing.T) {
 			started := time.Now()
 			gateway.forward(test.ctx(), activeSession(newTestConnection("conn-a"), testBinding()), request)
 
-			require.Equal(t, int32(test.code), request.Code)
+			require.Equal(t, int64(test.code), int64(request.Code))
 			require.Less(t, time.Since(started), 200*time.Millisecond)
 		})
 	}
@@ -165,14 +157,12 @@ func TestForwardCarriesRouteAndMapsNodeError(t *testing.T) {
 			conn := newTestConnection("conn-a")
 			binding := testBinding()
 			sess := activeSession(conn, binding)
-			var request *protocolv1.Proto
 			require.Eventually(t, func() bool {
-				request = &protocolv1.Proto{Op: protocolv1.OpRequest, Cmd: 7, Body: []byte("request")}
+				request := &protocolv1.Proto{Op: protocolv1.OpRequest, Cmd: 7, Body: []byte("request")}
 				gateway.forward(context.Background(), sess, request)
-				return request.Code == int32(code)
+				return int64(request.Code) == int64(code)
 			}, time.Second, time.Millisecond)
 
-			require.Equal(t, int32(code), request.Code)
 			require.False(t, isClosed(conn.closed)())
 			require.NotNil(t, service.request)
 			require.Equal(t, binding.ServiceName, service.request.GetRoute().GetServiceName())

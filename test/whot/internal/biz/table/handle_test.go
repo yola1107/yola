@@ -2,6 +2,7 @@ package table
 
 import (
 	"context"
+	"math"
 	"slices"
 	"sync"
 	"testing"
@@ -17,8 +18,8 @@ import (
 )
 
 func TestOnExitGameReportsSuccess(t *testing.T) {
-	repo := &exitTestRepo{room: testRoomConfig()}
-	_, table := newTestTable(t, repo.room, repo)
+	repo := new(exitTestRepo)
+	_, table := newTestTable(t, testRoomConfig(), repo)
 	p := player.New(&player.Raw{BaseData: &player.BaseData{UID: 7, Money: 100}})
 	if !table.Seat(p) {
 		t.Fatal("failed to arrange seated player")
@@ -31,15 +32,45 @@ func TestOnExitGameReportsSuccess(t *testing.T) {
 	}
 }
 
-func TestDrawPushKeepsPrivateHandInDrawResult(t *testing.T) {
-	room := &conf.Room{
-		Table:    &conf.Room_Table{TableNum: 1, ChairNum: 4},
-		Game:     &conf.Room_Game{MaxMoney: -1, BaseMoney: 1},
-		Robot:    &conf.Room_Robot{},
-		LogCache: &conf.Room_LogCache{},
+func TestOnChatReqUsesLegacyUIDAndBroadcastsToOtherPlayer(t *testing.T) {
+	_, table := newTestTable(t, testRoomConfig(), new(exitTestRepo))
+	senderSession, recipientSession := new(captureSession), new(captureSession)
+	const recipientUID = 1<<31 + 17
+	sender := player.New(&player.Raw{
+		Session:  senderSession,
+		BaseData: &player.BaseData{UID: 1<<32 + recipientUID, Money: 100},
+	})
+	recipient := player.New(&player.Raw{
+		Session:  recipientSession,
+		BaseData: &player.BaseData{UID: recipientUID, Money: 100},
+	})
+	if !table.Seat(sender) || !table.Seat(recipient) {
+		t.Fatal("failed to arrange seated players")
 	}
-	repo := &exitTestRepo{room: room}
-	_, table := newTestTable(t, room, repo)
+	senderSession.reset()
+	recipientSession.reset()
+
+	request := &v1.ChatReq{OpType: 1, FaceID: 2, Msg: "hello"}
+	if table.OnChatReq(sender, nil) != nil || table.OnChatReq(nil, request) != nil {
+		t.Fatal("chat accepted missing input")
+	}
+
+	reply := table.OnChatReq(sender, request)
+	want := &v1.ChatRsp{UserID: math.MinInt32 + 17, OpType: 1, FaceID: 2, Msg: "hello"}
+	if !proto.Equal(reply, want) {
+		t.Fatalf("chat reply = %v, want %v", reply, want)
+	}
+	if len(senderSession.pushes) != 0 || len(recipientSession.pushes) != 1 {
+		t.Fatalf("chat pushes: sender=%d recipient=%d", len(senderSession.pushes), len(recipientSession.pushes))
+	}
+	push := recipientSession.pushes[0]
+	if push.command != int32(v1.GameCommand_CmdChatPush) || !proto.Equal(push.message, want) {
+		t.Fatalf("chat push = %+v, want %v", push, want)
+	}
+}
+
+func TestDrawPushKeepsPrivateHandInDrawResult(t *testing.T) {
+	_, table := newTestTable(t, testRoomConfig(), new(exitTestRepo))
 	actorSession := new(captureSession)
 	observerSession := new(captureSession)
 	actor := player.New(&player.Raw{
@@ -75,14 +106,7 @@ func TestDrawPushKeepsPrivateHandInDrawResult(t *testing.T) {
 }
 
 func TestSceneOnlyIncludesRequestingPlayersPrivateCards(t *testing.T) {
-	room := &conf.Room{
-		Table:    &conf.Room_Table{TableNum: 1, ChairNum: 4},
-		Game:     &conf.Room_Game{MaxMoney: -1, BaseMoney: 1},
-		Robot:    &conf.Room_Robot{},
-		LogCache: &conf.Room_LogCache{},
-	}
-	repo := &exitTestRepo{room: room}
-	_, table := newTestTable(t, room, repo)
+	_, table := newTestTable(t, testRoomConfig(), new(exitTestRepo))
 	viewerSession := new(captureSession)
 	opponentSession := new(captureSession)
 	viewer := player.New(&player.Raw{
@@ -116,8 +140,8 @@ func TestSceneOnlyIncludesRequestingPlayersPrivateCards(t *testing.T) {
 }
 
 func TestPushNotFoundMarksOfflineAndQueuesNonGamingCleanup(t *testing.T) {
-	repo := &exitTestRepo{room: testRoomConfig()}
-	manager, table := newTestTable(t, repo.room, repo)
+	repo := new(exitTestRepo)
+	manager, table := newTestTable(t, testRoomConfig(), repo)
 	sess := new(captureSession)
 	p := player.New(&player.Raw{
 		Session:  sess,
@@ -151,8 +175,8 @@ func TestPushNotFoundMarksOfflineAndQueuesNonGamingCleanup(t *testing.T) {
 }
 
 func TestPushNotFoundCleanupSurvivesFullTableQueue(t *testing.T) {
-	repo := &exitTestRepo{room: testRoomConfig()}
-	manager := newManager(repo.room, repo, 1, 1, 1)
+	repo := new(exitTestRepo)
+	manager := newManager(testRoomConfig(), repo, 1, 1, 1)
 	if err := manager.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -207,8 +231,8 @@ func TestPushNotFoundCleanupSurvivesFullTableQueue(t *testing.T) {
 }
 
 func TestPushNotFoundKeepsGamingPlayerOfflineUntilStageCleanup(t *testing.T) {
-	repo := &exitTestRepo{room: testRoomConfig()}
-	manager, table := newTestTable(t, repo.room, repo)
+	repo := new(exitTestRepo)
+	manager, table := newTestTable(t, testRoomConfig(), repo)
 	sess := new(captureSession)
 	p := player.New(&player.Raw{
 		Session:  sess,
@@ -245,8 +269,8 @@ func TestPushNotFoundKeepsGamingPlayerOfflineUntilStageCleanup(t *testing.T) {
 }
 
 func TestPushNonNotFoundErrorDoesNotMarkPlayerOffline(t *testing.T) {
-	repo := &exitTestRepo{room: testRoomConfig()}
-	_, table := newTestTable(t, repo.room, repo)
+	repo := new(exitTestRepo)
+	_, table := newTestTable(t, testRoomConfig(), repo)
 	sess := new(captureSession)
 	p := player.New(&player.Raw{
 		Session:  sess,
@@ -269,30 +293,41 @@ func TestPushNonNotFoundErrorDoesNotMarkPlayerOffline(t *testing.T) {
 	}
 }
 
-func TestOfflineGamingPlayerIsReclaimedAfterRoundReset(t *testing.T) {
-	repo := &exitTestRepo{room: testRoomConfig()}
-	_, table := newTestTable(t, repo.room, repo)
-	p := player.New(&player.Raw{BaseData: &player.BaseData{UID: 42, Money: 100}})
-	if !table.Seat(p) {
-		t.Fatal("failed to arrange seated player")
-	}
-	p.SetGaming()
-	p.SetOffline(true)
+func TestOfflinePlayerIsReclaimedAfterRoundReset(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		setup func(*player.Player)
+	}{
+		{name: "free", setup: (*player.Player).Reset},
+		{name: "gaming", setup: (*player.Player).SetGaming},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := new(exitTestRepo)
+			_, table := newTestTable(t, testRoomConfig(), repo)
+			p := player.New(&player.Raw{BaseData: &player.BaseData{UID: 42, Money: 100}})
+			if !table.Seat(p) {
+				t.Fatal("failed to arrange seated player")
+			}
+			tc.setup(p)
+			p.SetOffline(true)
 
-	table.Reset()
-	table.stage.Set(StWait, time.Second, 0)
-	table.checkKick()
+			table.Reset()
+			if !p.IsOffline() {
+				t.Fatal("Reset cleared offline state before table cleanup")
+			}
+			table.checkKick()
 
-	if got := repo.logoutCalls; got != 1 {
-		t.Fatalf("LogoutGame calls = %d, want 1", got)
-	}
-	if got := table.seatedCount(); got != 0 {
-		t.Fatalf("seated players after round cleanup = %d, want 0", got)
+			if got := repo.logoutCalls; got != 1 {
+				t.Fatalf("LogoutGame calls = %d, want 1", got)
+			}
+			if got := table.seatedCount(); got != 0 {
+				t.Fatalf("seated players after round cleanup = %d, want 0", got)
+			}
+		})
 	}
 }
 
 type exitTestRepo struct {
-	room        *conf.Room
 	logoutCalls int
 }
 
@@ -379,7 +414,11 @@ func (sess *captureSession) lastActionPush(t *testing.T) *v1.PlayerActionRsp {
 	for index := len(sess.pushes) - 1; index >= 0; index-- {
 		record := sess.pushes[index]
 		if record.command == int32(v1.GameCommand_CmdPlayerActionPush) {
-			return record.message.(*v1.PlayerActionRsp)
+			reply, ok := record.message.(*v1.PlayerActionRsp)
+			if !ok {
+				t.Fatalf("player action push has type %T", record.message)
+			}
+			return reply
 		}
 	}
 	t.Fatal("player action push not found")

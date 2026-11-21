@@ -37,10 +37,7 @@ func TestBroadcastChecksLeaseAtEachSend(t *testing.T) {
 		done := make(chan struct{})
 		go func() {
 			defer close(done)
-			(&broadcaster{}).sendBatch(context.Background(), fanoutBatch{
-				message:  &prepared,
-				sessions: []*session{firstSession, secondSession},
-			})
+			(&broadcaster{}).sendBatch(context.Background(), &prepared, []*session{firstSession, secondSession})
 		}()
 		<-first.started
 		time.Sleep(2 * time.Second)
@@ -375,7 +372,7 @@ func startBenchmarkFanout(b *testing.B, sessions *sessionRegistry) (*broadcaster
 	running := &broadcastRun{
 		ctx:       ctx,
 		cancel:    cancel,
-		batches:   make(chan fanoutBatch, workers),
+		batches:   make(chan []*session, workers),
 		batchDone: make(chan struct{}, workers),
 	}
 	b.Cleanup(func() {

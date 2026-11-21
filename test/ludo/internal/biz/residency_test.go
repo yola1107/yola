@@ -263,6 +263,9 @@ func TestResidencyFollowsReconnectAndStopsAfterLogout(t *testing.T) {
 		synctest.Wait()
 		time.Sleep(time.Minute)
 		synctest.Wait()
+		require.Equal(t, int64(1), first.renews.Load())
+		binds, _ := first.counts()
+		require.Equal(t, 1, binds)
 
 		current := &residencySession{recordingSession: recordingSession{uid: "42", bindingToken: "current"}}
 		reply, err = uc.Login(t.Context(), current, 42, "valid", 0)
@@ -327,26 +330,6 @@ func TestDrainCancelsAndWaitsForNodeRenewal(t *testing.T) {
 		time.Sleep(time.Minute)
 		synctest.Wait()
 		require.Equal(t, int64(1), sess.renews.Load())
-	})
-}
-
-func TestResidentPlayerRenewsNodeWithoutRebinding(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		uc, cleanup, err := NewUsecase("ludo-test", new(memoryPlayerRepo), testRoom(1, 4))
-		require.NoError(t, err)
-		t.Cleanup(cleanup)
-		sess := &residencySession{recordingSession: recordingSession{uid: "42", bindingToken: "resident"}}
-		reply, err := uc.Login(t.Context(), sess, 42, "valid", 0)
-		require.NoError(t, err)
-		require.Equal(t, codes.Success, reply.Code)
-		synctest.Wait()
-
-		time.Sleep(time.Minute)
-		synctest.Wait()
-
-		require.Equal(t, int64(1), sess.renews.Load())
-		binds, _ := sess.counts()
-		require.Equal(t, 1, binds)
 	})
 }
 

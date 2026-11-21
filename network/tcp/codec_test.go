@@ -93,7 +93,7 @@ func TestReadFrameDiscardsUnknownFields(t *testing.T) {
 	}
 	body = append(body, 0x7a, 0x01, 'x')
 	got := &v1.Proto{}
-	if err := readFrame(bufio.NewReader(bytes.NewReader(frameWithLength(uint32(len(body)), body))), defaultCodec(), got); err != nil {
+	if err := readFrame(bufio.NewReader(bytes.NewReader(frameForBody(t, body))), defaultCodec(), got); err != nil {
 		t.Fatal(err)
 	}
 	if unknown := got.ProtoReflect().GetUnknown(); len(unknown) != 0 {
@@ -108,7 +108,7 @@ func BenchmarkCodec(b *testing.B) {
 		if err != nil {
 			b.Fatal(err)
 		}
-		frame := frameWithLength(uint32(len(body)), body)
+		frame := frameForBody(b, body)
 		name := fmt.Sprintf("payload=%d", payloadSize)
 
 		b.Run(name+"/read", func(b *testing.B) { benchmarkRead(b, frame) })
@@ -125,6 +125,7 @@ func (fixedSizeCodec) Unmarshal([]byte, any) error   { return nil }
 func (fixedSizeCodec) Name() string                  { return "fixed-size" }
 
 func benchmarkRead(b *testing.B, frame []byte) {
+	b.Helper()
 	var source bytes.Reader
 	rr := bufio.NewReaderSize(&source, _defaultIOBufferSize)
 	p := &v1.Proto{}
@@ -142,6 +143,7 @@ func benchmarkRead(b *testing.B, frame []byte) {
 }
 
 func benchmarkWrite(b *testing.B, p *v1.Proto) {
+	b.Helper()
 	wr := bufio.NewWriterSize(io.Discard, _defaultIOBufferSize)
 	codec := defaultCodec()
 	b.SetBytes(int64(proto.Size(p) + _framePrefixSize))

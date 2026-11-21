@@ -24,30 +24,17 @@ type Log struct {
 	sink    *filelog.Log
 }
 
-func newTableLog(instanceID string, c *conf.Room_LogCache) *Log {
-	logger := new(Log)
+func openTableLog(instanceID string, c *conf.Room_LogCache) *filelog.Log {
 	if c == nil || !c.Open {
-		return logger
+		return nil
 	}
 	path := tableLogPath(instanceID)
 	sink, err := filelog.New(path)
 	if err != nil {
 		slog.Error("create table log", "path", path, "error", err)
-		return logger
-	}
-	logger.sink = sink
-	return logger
-}
-
-func (l *Log) forTable(tableID int32) *Log {
-	return &Log{tableID: tableID, sink: l.sink}
-}
-
-func (l *Log) Close() error {
-	if l == nil || l.sink == nil {
 		return nil
 	}
-	return l.sink.Close()
+	return sink
 }
 
 func (l *Log) write(message string, args ...any) {
@@ -88,7 +75,7 @@ func (l *Log) userExit(p *player.Player, seatCount, lastChair int32, isSwitchTab
 
 func (l *Log) offline(p *player.Player) { l.writePlayer(p, "【玩家断线】玩家:%+v ") }
 
-func (l *Log) begin(table string, bet float64, seats []*player.Player, infos any) {
+func (l *Log) begin(table string, bet float64, seats []*player.Player, infos []string) {
 	if !l.enabled() {
 		return
 	}
@@ -101,8 +88,8 @@ func (l *Log) begin(table string, bet float64, seats []*player.Player, infos any
 	l.write("%s", strings.Join(logs, "\r\n"))
 }
 
-func (l *Log) activePush(p *player.Player, canAction v1.ACTION_TYPE, canMove, result string) {
-	l.writePlayer(p, "[操作通知] 玩家:%+v canAction=%q, canMoveDice=%s, Ret=%v", canAction, canMove, result)
+func (l *Log) activePush(p *player.Player, canAction v1.ACTION_TYPE, result string) {
+	l.writePlayer(p, "[操作通知] 玩家:%+v canAction=%q, canMoveDice=, Ret=%v", canAction, result)
 }
 
 func (l *Log) stage(stage string, active int32) {

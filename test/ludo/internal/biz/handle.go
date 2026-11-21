@@ -32,10 +32,14 @@ func (uc *Usecase) Disconnect(ctx context.Context, sess player.Session) error {
 	if sess == nil {
 		return nil
 	}
-	uid, err := strconv.ParseInt(sess.UID(), 10, 64)
-	if err != nil {
-		return nil
+	// 没有可识别玩家的断线通知可以直接忽略。
+	if uid, err := strconv.ParseInt(sess.UID(), 10, 64); err == nil {
+		return uc.disconnectPlayer(ctx, sess, uid)
 	}
+	return nil
+}
+
+func (uc *Usecase) disconnectPlayer(ctx context.Context, sess player.Session, uid int64) error {
 	p := uc.pm.GetByID(uid)
 	if p == nil || p.GetTableID() == player.TableIDDetached {
 		return nil
@@ -226,12 +230,12 @@ func (uc *Usecase) Move(ctx context.Context, uid int64, req *v1.MoveReq) (*v1.Mo
 }
 
 func (uc *Usecase) CreateRobot(raw *player.Raw) (*player.Player, error) {
+	avatar := fmt.Sprintf("avatar_%d", raw.ID)
 	base := &player.BaseData{
 		UID:       raw.ID,
-		VIP:       0,
 		NickName:  fmt.Sprintf("robot_%d", raw.ID),
-		Avatar:    fmt.Sprintf("avatar_%d", raw.ID),
-		AvatarURL: fmt.Sprintf("avatar_%d", raw.ID),
+		Avatar:    avatar,
+		AvatarURL: avatar,
 		Money:     xgo.RandFloat(uc.rc.Game.MinMoney, uc.rc.Game.MaxMoney),
 	}
 	raw.BaseData = base
@@ -392,12 +396,12 @@ func (uc *Usecase) createPlayer(ctx context.Context, raw *player.Raw) (*player.P
 	base, err := uc.repo.LoadPlayer(ctx, raw.ID)
 	switch {
 	case errors.Is(err, ErrPlayerNotFound):
+		avatar := fmt.Sprintf("avatar_%d", raw.ID%15)
 		base = &player.BaseData{
 			UID:       raw.ID,
-			VIP:       0,
 			NickName:  fmt.Sprintf("user_%d", raw.ID),
-			Avatar:    fmt.Sprintf("avatar_%d", raw.ID%15),
-			AvatarURL: fmt.Sprintf("avatar_%d", raw.ID%15),
+			Avatar:    avatar,
+			AvatarURL: avatar,
 			Money:     float64(int64(xgo.RandFloat(uc.rc.Game.MinMoney, uc.rc.Game.MaxMoney))),
 		}
 	case err != nil:
@@ -502,7 +506,8 @@ func (uc *Usecase) persistAndUnbindPlayer(ctx context.Context, p *player.Player)
 
 func mapTableCallError(err error) error {
 	if errors.Is(err, table.ErrTableNotFound) || errors.Is(err, table.ErrPlayerRouteChanged) || errors.Is(err, table.ErrPlayerExitInProgress) {
-		return fmt.Errorf("%w: %v", ErrInvalidPlayerState, err)
+		// 桌内错误统一映射为玩家状态错误，并保留原文供诊断。
+		return fmt.Errorf("%w: %s", ErrInvalidPlayerState, fmt.Sprint(err))
 	}
 	return err
 }

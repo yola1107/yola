@@ -4,11 +4,11 @@ package push
 import (
 	"context"
 	"errors"
-	"reflect"
 	"sync"
 	"time"
 
 	"yola/internal/gateclient"
+	"yola/internal/nilcheck"
 	"yola/locate"
 
 	"google.golang.org/grpc/codes"
@@ -42,7 +42,7 @@ type Sender struct {
 
 // NewSender 创建并持有一个 Gateway 回程客户端。
 func NewSender(locator GateLocator, opts ...Option) (*Sender, error) {
-	if isNil(locator) {
+	if nilcheck.IsNil(locator) {
 		return nil, errors.New("push: gate locator is required")
 	}
 	configured, err := resolveOptions(opts...)
@@ -154,17 +154,4 @@ func mapSenderError(ctx context.Context, err error) error {
 		return err
 	}
 	return status.Error(codes.Unavailable, "gateway is unavailable")
-}
-
-func isNil(value any) bool {
-	if value == nil {
-		return true
-	}
-	reflected := reflect.ValueOf(value)
-	switch reflected.Kind() {
-	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
-		return reflected.IsNil()
-	default:
-		return false
-	}
 }

@@ -12,7 +12,7 @@ type taskEntry struct {
 	id       timer.TaskID
 	execAt   time.Time
 	interval time.Duration
-	repeated bool
+
 	canceled atomic.Bool
 	callback func()
 	index    int
@@ -29,7 +29,10 @@ func (h taskHeap) Swap(i, j int) {
 }
 
 func (h *taskHeap) Push(value any) {
-	entry := value.(*taskEntry)
+	entry, ok := value.(*taskEntry)
+	if !ok {
+		panic("timer heap requires a *taskEntry")
+	}
 	entry.index = len(*h)
 	*h = append(*h, entry)
 }

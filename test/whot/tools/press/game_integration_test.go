@@ -3,7 +3,6 @@ package press
 import (
 	"fmt"
 	"log/slog"
-	"math/rand/v2"
 	"os"
 	"strconv"
 	"strings"
@@ -13,6 +12,7 @@ import (
 
 	"yola/network/websocket"
 	"yola/test/internal/pushbench"
+	"yola/test/internal/xgo"
 	v1 "yola/test/whot/api/v1"
 	"yola/test/whot/internal/biz"
 	"yola/test/whot/internal/biz/player"
@@ -67,7 +67,7 @@ func runGameDeliveryScenarios(t *testing.T, timeouts pushbench.RequestTimeouts) 
 	t.Cleanup(func() { slog.SetDefault(logger) })
 	for _, scenario := range []struct {
 		name   string
-		tables int
+		tables int32
 		robots bool
 	}{
 		{name: "smoke", tables: 2},
@@ -82,15 +82,16 @@ func runGameDeliveryScenarios(t *testing.T, timeouts pushbench.RequestTimeouts) 
 	}
 }
 
-func runGameDelivery(t *testing.T, tableCount int, robots bool, duration time.Duration, timeouts pushbench.RequestTimeouts) {
+func runGameDelivery(t *testing.T, tableCount int32, robots bool, duration time.Duration, timeouts pushbench.RequestTimeouts) {
 	t.Helper()
-	playerCount := tableCount * 4
+	numPlayers := tableCount * 4
 	if robots {
-		playerCount = 1
+		numPlayers = 1
 	}
-	uidStart := int64(2_000_000_000) + rand.Int64N(1_000_000_000)
+	playerCount := int(numPlayers)
+	uidStart := xgo.RandInt[int64](2_000_000_000, 3_000_000_000)
 	room := &conf.Room{
-		Table: &conf.Room_Table{TableNum: int32(tableCount), ChairNum: 4},
+		Table: &conf.Room_Table{TableNum: tableCount, ChairNum: 4},
 		Game:  &conf.Room_Game{BaseMoney: 1, MinMoney: 100, MaxMoney: 1000000, AutoReady: true},
 		Robot: &conf.Room_Robot{
 			Open:          robots,
@@ -105,7 +106,7 @@ func runGameDelivery(t *testing.T, tableCount int, robots bool, duration time.Du
 		},
 	}
 	client := pushbench.GameRedis(t)
-	repo := data.NewPlayerRepo(data.NewData(client))
+	repo := data.NewPlayerRepo(client)
 	for index := range playerCount {
 		require.NoError(t, repo.SavePlayer(t.Context(), &player.BaseData{UID: uidStart + int64(index), Money: 10000}))
 	}
@@ -113,9 +114,9 @@ func runGameDelivery(t *testing.T, tableCount int, robots bool, duration time.Du
 	require.NoError(t, err)
 	t.Cleanup(cleanup)
 	game := service.NewService(usecase)
-	probe := pushbench.StartGame(t, "whot", client, game.RegisterNode, game.Drain, playerCount, timeouts)
+	probe := pushbench.StartGame(t, "whot", client, game.RegisterNode, usecase.Drain, playerCount, timeouts)
 	// 连接由测试逐个装配观测 codec，后续请求和回调仍由原 User/Runner 执行。
-	runner := NewRunner(t.Context(), &LoadTest{Press: Press{URL: probe.Endpoint, Interval: 100, Num: int32(playerCount)}})
+	runner := NewRunner(t.Context(), &LoadTest{Press: Press{URL: probe.Endpoint, Interval: 100, Num: numPlayers}})
 	require.NoError(t, runner.Start())
 	t.Cleanup(runner.Stop)
 	observer := &gameDeliveryObserver{
@@ -126,6 +127,47 @@ func runGameDelivery(t *testing.T, tableCount int, robots bool, duration time.Du
 		runner:       runner,
 	}
 	observer.actions.Store(true)
+	users, tableIDs := startGameDeliveryUsers(t, observer, uidStart, playerCount)
+	require.Eventually(t, func() bool {
+		if probe.Err() != nil {
+			return true
+		}
+		for index := range playerCount {
+			if !observer.started[index].Load() {
+				return false
+			}
+		}
+		return true
+	}, 90*time.Second, 20*time.Millisecond, "every player must receive a real game start")
+	require.NoError(t, probe.Err())
+	assertGameDeliverySeats(t, tableCount, tableIDs)
+	probe.ResetMeasurements(t)
+	t.Logf("GAME phase: tables=%d started=%s duration=%s", tableCount, time.Now().Format(time.RFC3339Nano), duration)
+	timer := time.NewTimer(duration)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+	case <-t.Context().Done():
+		t.Fatal(t.Context().Err())
+	}
+	observer.actions.Store(false)
+	probe.ReportMeasurements(t)
+	verifiedScenes := verifyGameDeliveryScenes(t, tableCount, users, uidStart, tableIDs, robots)
+	probe.Stop(t)
+	probe.AssertDelivered(t, playerCount)
+	for _, user := range users {
+		require.False(t, user.logout.Load(), "player %d disconnected", user.id)
+	}
+	if robots {
+		require.Positive(t, observer.robotActions.Load())
+	}
+	t.Logf("GAME setup: game=whot tables=%d players=%d robots=%t workers=%d duration=%s result_pushes=%d robot_action_pushes=%d verified_scenes=%d commands=%v",
+		tableCount, playerCount, robots, min(tableCount, 16), duration, observer.results.Load(), observer.robotActions.Load(), verifiedScenes, runner.CommandCounts())
+}
+
+func startGameDeliveryUsers(t *testing.T, observer *gameDeliveryObserver, uidStart int64, playerCount int) ([]*User, []atomic.Int32) {
+	t.Helper()
+	runner, probe := observer.runner, observer.probe
 	tableIDs := make([]atomic.Int32, playerCount)
 	users := make([]*User, playerCount)
 	for index := range playerCount {
@@ -160,45 +202,31 @@ func runGameDelivery(t *testing.T, tableCount int, robots bool, duration time.Du
 		runner.count.Add(1)
 		user.Request(v1.GameCommand_CmdLogin, &v1.LoginReq{UserID: user.id, Token: "token"})
 	}
-	require.Eventually(t, func() bool {
-		if probe.Err() != nil {
-			return true
-		}
-		for index := range playerCount {
-			if !observer.started[index].Load() {
-				return false
-			}
-		}
-		return true
-	}, 90*time.Second, 20*time.Millisecond, "every player must receive a real game start")
-	require.NoError(t, probe.Err())
+	return users, tableIDs
+}
+
+func assertGameDeliverySeats(t *testing.T, tableCount int32, tableIDs []atomic.Int32) {
+	t.Helper()
 	seats := make(map[int32]int, tableCount)
-	for index := range playerCount {
+	for index := range tableIDs {
 		seats[tableIDs[index].Load()]++
 	}
-	require.Len(t, seats, tableCount)
+	require.Len(t, seats, int(tableCount))
 	for tableID, count := range seats {
 		require.Positive(t, tableID)
-		require.Equal(t, playerCount/tableCount, count)
+		require.Equal(t, len(tableIDs)/int(tableCount), count)
 	}
-	probe.ResetMeasurements(t)
-	t.Logf("GAME phase: tables=%d started=%s duration=%s", tableCount, time.Now().Format(time.RFC3339Nano), duration)
-	timer := time.NewTimer(duration)
-	defer timer.Stop()
-	select {
-	case <-timer.C:
-	case <-t.Context().Done():
-		t.Fatal(t.Context().Err())
-	}
-	observer.actions.Store(false)
-	probe.ReportMeasurements(t)
+}
+
+func verifyGameDeliveryScenes(t *testing.T, tableCount int32, users []*User, uidStart int64, tableIDs []atomic.Int32, robots bool) int {
+	t.Helper()
 	verified := make(map[int32]bool, tableCount)
 	for _, user := range users {
 		tableID := tableIDs[int(user.id-uidStart)].Load()
 		if verified[tableID] {
 			continue
 		}
-		body, code, err := user.client.Load().Request(runner.ctx, int32(v1.GameCommand_CmdScene), &v1.SceneReq{UserID: user.id})
+		body, code, err := user.client.Load().Request(user.repo.GetContext(), int32(v1.GameCommand_CmdScene), &v1.SceneReq{UserID: user.id})
 		require.NoError(t, err)
 		require.Zero(t, code)
 		var scene v1.SceneRsp
@@ -206,17 +234,8 @@ func runGameDelivery(t *testing.T, tableCount int, robots bool, duration time.Du
 		assertScenePlayers(t, scene.Players, tableID, uidStart, tableIDs, robots)
 		verified[tableID] = true
 	}
-	require.Len(t, verified, tableCount)
-	probe.Stop(t)
-	probe.AssertDelivered(t, playerCount)
-	for _, user := range users {
-		require.False(t, user.logout.Load(), "player %d disconnected", user.id)
-	}
-	if robots {
-		require.Positive(t, observer.robotActions.Load())
-	}
-	t.Logf("GAME setup: game=whot tables=%d players=%d robots=%t workers=%d duration=%s result_pushes=%d robot_action_pushes=%d verified_scenes=%d commands=%v",
-		tableCount, playerCount, robots, min(tableCount, 16), duration, observer.results.Load(), observer.robotActions.Load(), len(verified), runner.CommandCounts())
+	require.Len(t, verified, int(tableCount))
+	return len(verified)
 }
 
 func inspectGameResponse(command int32, body []byte, uid int64) (int32, error) {
@@ -287,25 +306,31 @@ func (o *gameDeliveryObserver) observePushes(t *testing.T, user *User, index int
 		if !strings.HasSuffix(name, "Push") {
 			continue
 		}
-		handler := handlers[command]
-		handlers[command] = func(body []byte) {
-			o.probe.RecordPush(user.id, command, body)
-			o.runner.RecordCommand(v1.GameCommand(command))
-			if command == int32(v1.GameCommand_CmdSendCardPush) {
-				o.started[index].Store(true)
-			}
-			if command == int32(v1.GameCommand_CmdResultPush) {
-				o.results.Add(1)
-			}
-			if o.robots && command == int32(v1.GameCommand_CmdPlayerActionPush) {
+		handlers[command] = o.observePush(t, user.id, index, command, handlers[command])
+	}
+}
+
+func (o *gameDeliveryObserver) observePush(t *testing.T, uid int64, index int, command int32, handler websocket.PushHandler) websocket.PushHandler {
+	t.Helper()
+	gameCommand := v1.GameCommand(command)
+	return func(body []byte) {
+		o.probe.RecordPush(uid, command, body)
+		o.runner.RecordCommand(gameCommand)
+		switch gameCommand {
+		case v1.GameCommand_CmdSendCardPush:
+			o.started[index].Store(true)
+		case v1.GameCommand_CmdResultPush:
+			o.results.Add(1)
+		case v1.GameCommand_CmdPlayerActionPush:
+			if o.robots {
 				var action v1.PlayerActionRsp
 				if assert.NoError(t, proto.Unmarshal(body, &action)) && action.UserId >= o.robotIDBegin {
 					o.robotActions.Add(1)
 				}
 			}
-			if o.actions.Load() && handler != nil {
-				handler(body)
-			}
+		}
+		if o.actions.Load() && handler != nil {
+			handler(body)
 		}
 	}
 }

@@ -19,9 +19,9 @@ type Invoker func(context.Context, *v1.Proto) (*v1.Proto, error)
 func NewInvoker(handler ConnectionHandler, conn Connection, timeout time.Duration, middlewares ...middleware.Middleware) Invoker {
 	heartbeat, _ := handler.(HeartbeatHandler)
 	h := middleware.Chain(middlewares...)(func(ctx context.Context, req any) (any, error) {
-		message, ok := req.(*v1.Proto)
-		if !ok || message == nil {
-			return nil, errInvalidHandlerReply
+		message, err := handlerProto(req)
+		if err != nil {
+			return nil, err
 		}
 		if heartbeat != nil && message.Op == v1.OpHeartbeat {
 			if err := heartbeat.Heartbeat(ctx, conn); err != nil {
@@ -42,10 +42,14 @@ func NewInvoker(handler ConnectionHandler, conn Connection, timeout time.Duratio
 		if err != nil {
 			return nil, err
 		}
-		p, ok := reply.(*v1.Proto)
-		if !ok || p == nil {
-			return nil, errInvalidHandlerReply
-		}
-		return p, nil
+		return handlerProto(reply)
 	}
+}
+
+func handlerProto(value any) (*v1.Proto, error) {
+	message, ok := value.(*v1.Proto)
+	if !ok || message == nil {
+		return nil, errInvalidHandlerReply
+	}
+	return message, nil
 }

@@ -18,6 +18,16 @@ func frameWithLength(length uint32, body []byte) []byte {
 	return wire
 }
 
+func frameForBody(tb testing.TB, body []byte) []byte {
+	tb.Helper()
+	size := len(body)
+	if size > v1.MaxProtoSize {
+		tb.Fatalf("frame size = %d, want <= %d", size, v1.MaxProtoSize)
+		return nil
+	}
+	return frameWithLength(uint32(size), body)
+}
+
 type tcpTestHandler struct {
 	opened chan network.Connection
 }
@@ -51,7 +61,7 @@ func newTCPServer(t testing.TB, handler network.ConnectionHandler, opts ...Serve
 
 func dialTCPTest(t testing.TB, address string) net.Conn {
 	t.Helper()
-	conn, err := net.Dial("tcp", address)
+	conn, err := (&net.Dialer{}).DialContext(t.Context(), "tcp", address)
 	if err != nil {
 		t.Fatalf("Dial(%q) error = %v", address, err)
 	}

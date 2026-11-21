@@ -31,46 +31,7 @@ func TestLateBindingWritePreservesReplacement(t *testing.T) {
 		{name: "cluster", env: "YOLA_REDIS_CLUSTER_INTEGRATION"},
 	} {
 		t.Run(backend.name, func(t *testing.T) {
-			var addresses []string
-			var password string
-			database := 9
-			if backend.env == "" {
-				addresses = []string{miniredis.RunT(t).Addr()}
-			} else {
-				address := os.Getenv(backend.env)
-				if address == "" {
-					t.Skip("set " + backend.env + " to a dedicated disposable instance")
-				}
-				require.NotEqual(t, "1", address, "an explicit isolated address is required")
-				addresses = strings.Split(address, ",")
-				password = os.Getenv("YOLA_REDIS_PASSWORD")
-			}
-			if backend.name == "cluster" {
-				database = 0
-			}
-			newClient := func(barrier *bindingWriteBarrier) redis.UniversalClient {
-				options := &redis.UniversalOptions{
-					Addrs:                 addresses,
-					Password:              password,
-					DB:                    database,
-					PoolSize:              1,
-					MaxRetries:            -1,
-					ContextTimeoutEnabled: true,
-				}
-				if barrier != nil {
-					options.Dialer = func(ctx context.Context, network, address string) (net.Conn, error) {
-						conn, err := (&net.Dialer{}).DialContext(ctx, network, address)
-						if err != nil {
-							return nil, err
-						}
-						return &delayedBindingConn{Conn: conn, barrier: barrier}, nil
-					}
-				}
-				if backend.name == "cluster" {
-					return redis.NewClusterClient(options.Cluster())
-				}
-				return redis.NewClient(options.Simple())
-			}
+			newClient := bindingWriteClientFactory(t, backend.env, backend.name == "cluster")
 			for _, scenario := range []struct{ method, replacement string }{
 				{method: "BindNode", replacement: "node-b"},
 				{method: "BindNode", replacement: "node-a"},
@@ -80,75 +41,124 @@ func TestLateBindingWritePreservesReplacement(t *testing.T) {
 				{method: "RenewNode", replacement: "node-b"},
 			} {
 				t.Run(scenario.method+"/"+scenario.replacement, func(t *testing.T) {
-					ctx := context.Background()
-					service := "i48-" + uuid.NewString()
-					tag := "{" + base64.RawURLEncoding.EncodeToString([]byte(service)) + "}:"
-					direct := newClient(nil)
-					t.Cleanup(func() { require.NoError(t, direct.Close()) })
-					store := locateredis.New(direct)
-					t.Cleanup(func() {
-						cleanupCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-						defer cancel()
-						keys := []string{
-							"locate:node:" + tag + base64.RawURLEncoding.EncodeToString([]byte("player")),
-							"locate:node:" + tag + base64.RawURLEncoding.EncodeToString([]byte("warmup")),
-							"locate:node:epoch:" + tag + base64.RawURLEncoding.EncodeToString([]byte("node-a")),
-							"locate:node:epoch:" + tag + base64.RawURLEncoding.EncodeToString([]byte("node-b")),
-						}
-						require.NoError(t, direct.Del(cleanupCtx, keys...).Err())
-					})
-					barrier := &bindingWriteBarrier{tag: []byte(tag), entered: make(chan struct{}), release: make(chan struct{})}
-					unblock := sync.OnceFunc(func() { close(barrier.release) })
-					oldClient := newClient(barrier)
-					t.Cleanup(func() { require.NoError(t, oldClient.Close()) })
-					oldStore := &observedBindingLocator{
-						Store:   locateredis.New(oldClient),
-						entered: make(chan context.Context, 1),
-						result:  make(chan error, 1),
-					}
-					require.NoError(t, store.RegisterNodeEpoch(ctx, service, "node-a", "old", DefaultNodeEpochTTL))
-					// 预热绑定脚本及目标 slot 连接，排除 NOSCRIPT 重试在取消后提前结束的假阳性。
-					require.NoError(t, oldStore.Store.BindNode(ctx, service, "warmup", "node-a", "old"))
-					require.NoError(t, oldStore.Store.RenewNode(ctx, service, "warmup", "node-a", "old"))
-					require.NoError(t, oldStore.Store.UnbindNode(ctx, service, "warmup", "node-a", "old"))
-					require.NoError(t, store.BindNode(ctx, service, "player", "node-a", "old"))
-					server := newTestServer(t, Stateful(oldStore))
-					publishTestIdentity(server, nodeIdentity{serviceName: service, nodeID: "node-a", epoch: "old"})
-					t.Cleanup(func() { require.NoError(t, server.Stop(context.Background())) })
-					t.Cleanup(unblock)
-					binding := testBinding("player", "conn")
-					binding.ServiceName = service
-					session := requestSession{binding: binding, server: server}
-					barrier.armed.Store(true)
-					written := make(chan error, 1)
-					go func() { written <- callSessionBinding(ctx, session, scenario.method) }()
-					writeCtx := receiveNodeValue(t, oldStore.entered)
-					receiveNodeValue(t, barrier.entered)
-
-					// 已通过本地检查并进入真实 socket Write 后，另一连接完成存储代次交接。
-					require.NoError(t, store.UnregisterNodeEpoch(ctx, service, "node-a", "old"))
-					require.NoError(t, store.RegisterNodeEpoch(ctx, service, "node-a", "new", DefaultNodeEpochTTL))
-					replacementEpoch := "new"
-					if scenario.replacement == "node-b" {
-						replacementEpoch = "other"
-						require.NoError(t, store.RegisterNodeEpoch(ctx, service, "node-b", replacementEpoch, DefaultNodeEpochTTL))
-					}
-					require.NoError(t, store.BindNode(ctx, service, "player", scenario.replacement, replacementEpoch))
-					server.lease.Load().cancel(errNodeEpochExpired)
-					receiveNodeValue(t, writeCtx.Done())
-					unblock()
-					require.ErrorIs(t, receiveNodeValue(t, oldStore.result), locate.ErrNodeEpochConflict)
-					require.Equal(t, codes.Unavailable, status.Code(receiveNodeValue(t, written)))
-					current, err := store.LocateNode(ctx, service, "player")
-					require.NoError(t, err)
-					require.Equal(t, scenario.replacement, current)
-					currentEpoch, err := store.LocateNodeEpoch(ctx, service, "node-a")
-					require.NoError(t, err)
-					require.Equal(t, "new", currentEpoch)
+					checkLateBindingWrite(t, newClient, scenario.method, scenario.replacement)
 				})
 			}
 		})
 	}
+}
+
+func bindingWriteClientFactory(t *testing.T, environment string, cluster bool) func(*bindingWriteBarrier) redis.UniversalClient {
+	t.Helper()
+	var addresses []string
+	var password string
+	database := 9
+	if environment == "" {
+		addresses = []string{miniredis.RunT(t).Addr()}
+	} else {
+		address := os.Getenv(environment)
+		if address == "" {
+			t.Skip("set " + environment + " to a dedicated disposable instance")
+		}
+		require.NotEqual(t, "1", address, "an explicit isolated address is required")
+		addresses = strings.Split(address, ",")
+		password = os.Getenv("YOLA_REDIS_PASSWORD")
+	}
+	if cluster {
+		database = 0
+	}
+	return func(barrier *bindingWriteBarrier) redis.UniversalClient {
+		options := &redis.UniversalOptions{
+			Addrs:                 addresses,
+			Password:              password,
+			DB:                    database,
+			PoolSize:              1,
+			MaxRetries:            -1,
+			ContextTimeoutEnabled: true,
+		}
+		if barrier != nil {
+			options.Dialer = func(ctx context.Context, network, address string) (net.Conn, error) {
+				conn, err := (&net.Dialer{}).DialContext(ctx, network, address)
+				if err != nil {
+					return nil, err
+				}
+				return &delayedBindingConn{Conn: conn, barrier: barrier}, nil
+			}
+		}
+		if cluster {
+			return redis.NewClusterClient(options.Cluster())
+		}
+		return redis.NewClient(options.Simple())
+	}
+}
+
+func checkLateBindingWrite(t *testing.T, newClient func(*bindingWriteBarrier) redis.UniversalClient, method, replacement string) {
+	t.Helper()
+	ctx := context.Background()
+	service := "i48-" + uuid.NewString()
+	tag := "{" + base64.RawURLEncoding.EncodeToString([]byte(service)) + "}:"
+	direct := newClient(nil)
+	t.Cleanup(func() { require.NoError(t, direct.Close()) })
+	store := locateredis.New(direct)
+	t.Cleanup(func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		keys := []string{
+			"locate:node:" + tag + base64.RawURLEncoding.EncodeToString([]byte("player")),
+			"locate:node:" + tag + base64.RawURLEncoding.EncodeToString([]byte("warmup")),
+			"locate:node:epoch:" + tag + base64.RawURLEncoding.EncodeToString([]byte("node-a")),
+			"locate:node:epoch:" + tag + base64.RawURLEncoding.EncodeToString([]byte("node-b")),
+		}
+		require.NoError(t, direct.Del(cleanupCtx, keys...).Err())
+	})
+	barrier := &bindingWriteBarrier{tag: []byte(tag), entered: make(chan struct{}), release: make(chan struct{})}
+	unblock := sync.OnceFunc(func() { close(barrier.release) })
+	oldClient := newClient(barrier)
+	t.Cleanup(func() { require.NoError(t, oldClient.Close()) })
+	oldStore := &observedBindingLocator{
+		Store:   locateredis.New(oldClient),
+		entered: make(chan context.Context, 1),
+		result:  make(chan error, 1),
+	}
+	require.NoError(t, store.RegisterNodeEpoch(ctx, service, "node-a", "old", DefaultNodeEpochTTL))
+	// 预热绑定脚本及目标 slot 连接，排除 NOSCRIPT 重试在取消后提前结束的假阳性。
+	require.NoError(t, oldStore.Store.BindNode(ctx, service, "warmup", "node-a", "old"))
+	require.NoError(t, oldStore.Store.RenewNode(ctx, service, "warmup", "node-a", "old"))
+	require.NoError(t, oldStore.Store.UnbindNode(ctx, service, "warmup", "node-a", "old"))
+	require.NoError(t, store.BindNode(ctx, service, "player", "node-a", "old"))
+	server := newTestServer(t, Stateful(oldStore))
+	publishTestIdentity(server, nodeIdentity{serviceName: service, nodeID: "node-a", epoch: "old"})
+	t.Cleanup(func() { require.NoError(t, server.Stop(context.Background())) })
+	t.Cleanup(unblock)
+	binding := testBinding("player", "conn")
+	binding.ServiceName = service
+	session := requestSession{binding: binding, server: server}
+	barrier.armed.Store(true)
+	written := make(chan error, 1)
+	go func() { written <- callSessionBinding(ctx, session, method) }()
+	writeCtx := receiveNodeValue(t, oldStore.entered)
+	receiveNodeValue(t, barrier.entered)
+
+	// 已通过本地检查并进入真实 socket Write 后，另一连接完成存储代次交接。
+	require.NoError(t, store.UnregisterNodeEpoch(ctx, service, "node-a", "old"))
+	require.NoError(t, store.RegisterNodeEpoch(ctx, service, "node-a", "new", DefaultNodeEpochTTL))
+	replacementEpoch := "new"
+	if replacement == "node-b" {
+		replacementEpoch = "other"
+		require.NoError(t, store.RegisterNodeEpoch(ctx, service, "node-b", replacementEpoch, DefaultNodeEpochTTL))
+	}
+	require.NoError(t, store.BindNode(ctx, service, "player", replacement, replacementEpoch))
+	server.lease.Load().cancel(errNodeEpochExpired)
+	receiveNodeValue(t, writeCtx.Done())
+	unblock()
+	require.ErrorIs(t, receiveNodeValue(t, oldStore.result), locate.ErrNodeEpochConflict)
+	require.Equal(t, codes.Unavailable, status.Code(receiveNodeValue(t, written)))
+	current, err := store.LocateNode(ctx, service, "player")
+	require.NoError(t, err)
+	require.Equal(t, replacement, current)
+	currentEpoch, err := store.LocateNodeEpoch(ctx, service, "node-a")
+	require.NoError(t, err)
+	require.Equal(t, "new", currentEpoch)
 }
 
 type bindingWriteBarrier struct {

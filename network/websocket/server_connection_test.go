@@ -80,7 +80,7 @@ func TestCheckOrigin(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			r := httptest.NewRequest(http.MethodGet, "https://game.example/ws", nil)
+			r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "https://game.example/ws", nil)
 			r.Header.Set("Origin", tt.origin)
 			if got := tt.s.checkOrigin(r); got != tt.want {
 				t.Fatalf("checkOrigin() = %v, want %v", got, tt.want)

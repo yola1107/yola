@@ -35,7 +35,7 @@ func TestSocketReceiverRejectsMissingDuplicateAndWrongTableMessages(t *testing.T
 
 func TestSocketReceiverExcludesWarmupFromSequence(t *testing.T) {
 	receiver := &socketReceiver{origin: time.Now(), measurements: newMeasurements(t)}
-	for sequence := range uint64(3) {
+	for sequence := range int64(3) {
 		body, err := proto.Marshal(cadencePayload(0, sequence, 0))
 		require.NoError(t, err)
 		receiver.receive(body)

@@ -31,7 +31,7 @@ func BenchmarkTCPServer(b *testing.B) {
 	slog.SetDefault(slog.New(slog.DiscardHandler))
 	b.Cleanup(func() { slog.SetDefault(logger) })
 
-	for _, count := range []int{1000, 5000, 10000} {
+	for _, count := range []int32{1000, 5000, 10000} {
 		b.Run(fmt.Sprintf("connections=%d", count), func(b *testing.B) {
 			b.StopTimer()
 			env := newTCPBenchmarkServer(b, count)
@@ -42,13 +42,13 @@ func BenchmarkTCPServer(b *testing.B) {
 				pushBytes := int64(len(marshalBenchmarkFrame(b, push)))
 				b.Run(fmt.Sprintf("request/payload=%d", payloadSize), func(b *testing.B) {
 					b.SetBytes(int64(len(requestFrame)))
-					runTCPBenchmark(b, len(env.clients), func(index int) error {
+					runTCPBenchmark(b, len(env.clients), func(index int64) error {
 						return env.clients[index].request(requestFrame)
 					})
 				})
 				b.Run(fmt.Sprintf("push/payload=%d", payloadSize), func(b *testing.B) {
 					b.SetBytes(pushBytes)
-					runTCPBenchmark(b, len(env.clients), func(index int) error {
+					runTCPBenchmark(b, len(env.clients), func(index int64) error {
 						return env.clients[index].readPush(func() error { return env.connections[index].SendProto(push) })
 					})
 				})
@@ -61,8 +61,8 @@ func BenchmarkTCPSlowConsumerBackpressure(b *testing.B) {
 	p := benchmarkProto(v1.OpPush, 4000)
 	b.ReportAllocs()
 	for b.Loop() {
-		ch := newChannel(_defaultSendQueueSize, defaultCodec())
-		for range _defaultSendQueueSize {
+		ch := newChannel(network.DefaultSendQueueSize, defaultCodec())
+		for range network.DefaultSendQueueSize {
 			if err := ch.push(p); err != nil {
 				b.Fatal(err)
 			}
@@ -133,15 +133,15 @@ type tcpBenchmarkServer struct {
 	connections []network.Connection
 }
 
-func newTCPBenchmarkServer(b *testing.B, count int) *tcpBenchmarkServer {
+func newTCPBenchmarkServer(b *testing.B, count int32) *tcpBenchmarkServer {
 	b.Helper()
 	handler := &tcpBenchmarkHandler{opened: make(chan network.Connection, count)}
 	s := newTCPServer(
 		b,
 		handler,
 		Address("127.0.0.1:0"),
-		MaxConnLimit(int32(count)),
-		MaxConnPerIP(int32(count)),
+		MaxConnLimit(count),
+		MaxConnPerIP(count),
 		HandshakeTimeout(time.Hour),
 		HeartbeatTimeout(time.Hour),
 	)
@@ -156,7 +156,7 @@ func newTCPBenchmarkServer(b *testing.B, count int) *tcpBenchmarkServer {
 		env.done <- s.Start(context.Background())
 	}()
 	for range count {
-		conn, dialErr := net.DialTimeout("tcp", endpoint.Host, 5*time.Second)
+		conn, dialErr := (&net.Dialer{Timeout: 5 * time.Second}).DialContext(b.Context(), "tcp", endpoint.Host)
 		if dialErr != nil {
 			b.Fatal(dialErr)
 		}
@@ -193,8 +193,9 @@ func (env *tcpBenchmarkServer) close(b *testing.B) {
 	}
 }
 
-func runTCPBenchmark(b *testing.B, connections int, operation func(int) error) {
-	var cursor atomic.Uint64
+func runTCPBenchmark(b *testing.B, connections int, operation func(int64) error) {
+	b.Helper()
+	var cursor atomic.Int64
 	var failed atomic.Bool
 	var firstErr error
 	var errOnce sync.Once
@@ -209,7 +210,7 @@ func runTCPBenchmark(b *testing.B, connections int, operation func(int) error) {
 	b.RunParallel(func(pb *testing.PB) {
 		local := 0
 		for pb.Next() && !failed.Load() {
-			index := int((cursor.Add(1) - 1) % uint64(connections))
+			index := (cursor.Add(1) - 1) % int64(connections)
 			var started time.Time
 			if local%128 == 0 {
 				started = time.Now()
@@ -264,7 +265,11 @@ func processRSS() uint64 {
 	if err != nil {
 		return 0
 	}
-	return pages * uint64(os.Getpagesize())
+	pageSize := os.Getpagesize()
+	if pageSize <= 0 {
+		return 0
+	}
+	return pages * uint64(pageSize)
 }
 
 func benchmarkProto(operation int32, payloadSize int) *v1.Proto {
@@ -277,7 +282,7 @@ func marshalBenchmarkFrame(b *testing.B, p *v1.Proto) []byte {
 	if err != nil {
 		b.Fatal(err)
 	}
-	return frameWithLength(uint32(len(body)), body)
+	return frameForBody(b, body)
 }
 
 func writeBenchmarkFrame(conn net.Conn, frame []byte) error {

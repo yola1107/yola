@@ -1,6 +1,9 @@
 package model
 
-import "math"
+import (
+	"math"
+	"slices"
+)
 
 const (
 	threatenedDistance = int32(6)
@@ -15,7 +18,8 @@ type moveSearch struct {
 	enemies      []int32
 	totalDiceSum int32
 	bestScore    int32
-	bestPath     []int32
+	bestPiece    int32
+	bestDice     int32
 	maxSteps     int
 }
 
@@ -54,35 +58,30 @@ func FindBestMoveSequence(b *Board, dices []int32, color int32) (int32, int32) {
 		enemies:      enemy,
 		totalDiceSum: totalDiceSum,
 		bestScore:    math.MinInt32,
+		bestPiece:    -1,
+		bestDice:     -1,
 	}
-	search.evaluate(len(dices), make([]int32, 0, len(dices)*2), make([]*Step, 0, len(dices)))
+	search.evaluate(make([]*Step, 0, len(dices)))
 
-	if len(search.bestPath) > 1 {
-		return search.bestPath[0], search.bestPath[1]
-	}
-	return -1, -1
+	return search.bestPiece, search.bestDice
 }
 
 // evaluate 遍历所有移动序列，同时计算分数，避免生成所有路径。
-func (s *moveSearch) evaluate(remainingDice int, path []int32, steps []*Step) {
-	// 剪枝 1：当前路径 + 剩余骰子 < 当前最大步数，直接回溯
-	if len(steps)+remainingDice < s.maxSteps {
+func (s *moveSearch) evaluate(steps []*Step) {
+	if len(steps) > 0 {
+		score := s.board.evaluateMoveSequence(steps, s.totalDiceSum, s.pieces, s.enemies)
+		// 优先选择步数最多的路径，同步数时保留最先取得最高分的路径。
+		if len(steps) > s.maxSteps || len(steps) == s.maxSteps && score > s.bestScore {
+			s.maxSteps = len(steps)
+			s.bestScore = score
+			s.bestPiece = steps[0].ID
+			s.bestDice = steps[0].X
+		}
+	}
+	if len(steps) == len(s.dices) {
 		return
 	}
 
-	// DFS 递归传下来的 steps 就可以直接评估
-	if len(steps) > 0 {
-		score := s.board.evaluateMoveSequence(steps, s.totalDiceSum, s.pieces, s.enemies)
-		// 1>优先选择步数最多的路径（用完更多骰子）
-		// 2>步数相同的情况下选择分数最高的路径
-		if len(steps) > s.maxSteps || score > s.bestScore && len(steps) == s.maxSteps {
-			s.maxSteps = len(steps)
-			s.bestScore = score
-			s.bestPath = append(s.bestPath[:0], path...)
-		}
-	}
-
-	// 遍历每个骰子和棋子
 	for diceIndex, dice := range s.dices {
 		if s.usedDices[diceIndex] {
 			continue
@@ -92,15 +91,10 @@ func (s *moveSearch) evaluate(remainingDice int, path []int32, steps []*Step) {
 				continue
 			}
 			s.usedDices[diceIndex] = true
-			path = append(path, pieceID, dice)
 			step := s.board.Move(pieceID, dice)
-			steps = append(steps, step)
-
-			s.evaluate(remainingDice-1, path, steps)
+			s.evaluate(append(steps, step))
 
 			s.board.backOne()
-			path = path[:len(path)-2]
-			steps = steps[:len(steps)-1]
 			s.usedDices[diceIndex] = false
 		}
 	}
@@ -108,10 +102,21 @@ func (s *moveSearch) evaluate(remainingDice int, path []int32, steps []*Step) {
 
 // evaluateMoveSequence 评估移动序列的得分函数，考虑击杀数、移动距离、特殊奖励和惩罚
 func (b *Board) evaluateMoveSequence(steps []*Step, totalDiceSum int32, ids, enemy []int32) int32 {
+	score, usedDiceSum := b.scoreMoves(steps)
+	score += b.scorePositions(ids, enemy)
+
+	// 奖励用完点数，扣除未使用点数。
+	return score + usedDiceSum - max(totalDiceSum-usedDiceSum, 0)
+}
+
+func (b *Board) scoreMoves(steps []*Step) (int32, int32) {
 	score := int32(0)
 	usedDiceSum := int32(0)
+	// 越早击杀奖励越高，从最后一步倒序累加剩余步数奖励。
+	remainingBonus := int32(0)
 
-	for i, step := range steps {
+	for _, step := range slices.Backward(steps) {
+		remainingBonus += 2
 		if step.From == step.To {
 			continue
 		}
@@ -120,7 +125,7 @@ func (b *Board) evaluateMoveSequence(steps []*Step, totalDiceSum int32, ids, ene
 
 		// 击杀奖励
 		for _, killed := range step.Killed {
-			score += StepsFromStart(killed.From, killed.Color)*2 + int32(len(steps)-i)*2 + 20
+			score += StepsFromStart(killed.From, killed.Color)*2 + remainingBonus + 20
 		}
 
 		// 出基地奖励
@@ -133,8 +138,11 @@ func (b *Board) evaluateMoveSequence(steps []*Step, totalDiceSum int32, ids, ene
 			score += 80
 		}
 	}
+	return score, usedDiceSum
+}
 
-	// 危险/威胁
+func (b *Board) scorePositions(ids, enemy []int32) int32 {
+	score := int32(0)
 	for _, id := range ids {
 		p := b.GetPieceByID(id)
 		if p == nil {
@@ -154,35 +162,28 @@ func (b *Board) evaluateMoveSequence(steps []*Step, totalDiceSum int32, ids, ene
 		stepsToEnd := (p.pos - HomeEntrances[p.color] + TotalPositions) % TotalPositions
 		score += (TotalPositions - stepsToEnd) / 5
 
-		// 危险/威胁
-		for _, eID := range enemy {
-			e := b.GetPieceByID(eID)
-			if !e.IsOnBoard() || !p.IsEnemy(e) {
-				continue
-			}
+		score += b.scoreThreats(p, enemy)
+	}
+	return score
+}
 
-			forwardDist := (e.pos - p.pos + TotalPositions) % TotalPositions  // p到e的顺时针距离
-			backwardDist := (p.pos - e.pos + TotalPositions) % TotalPositions // e到p的顺时针距离
+func (b *Board) scoreThreats(p *Piece, enemy []int32) int32 {
+	score := int32(0)
+	for _, eID := range enemy {
+		e := b.GetPieceByID(eID)
+		if !e.IsOnBoard() || !p.IsEnemy(e) {
+			continue
+		}
 
-			// 危险：敌人在我后面，可能追上来
-			if backwardDist > 0 && backwardDist <= dangerousDistance {
-				score -= (dangerousDistance - backwardDist + 1) * 2 // 越近惩罚越大
-			}
+		forwardDist := (e.pos - p.pos + TotalPositions) % TotalPositions  // p 到 e 的顺时针距离
+		backwardDist := (p.pos - e.pos + TotalPositions) % TotalPositions // e 到 p 的顺时针距离
+		if backwardDist > 0 && backwardDist <= dangerousDistance {
+			score -= (dangerousDistance - backwardDist + 1) * 2
+		}
 
-			// 威胁：我在敌人后面，可以追杀
-			if forwardDist > 0 && forwardDist <= threatenedDistance {
-				score += (threatenedDistance - forwardDist + 1) / 2 // 越近奖励越大
-			}
+		if forwardDist > 0 && forwardDist <= threatenedDistance {
+			score += (threatenedDistance - forwardDist + 1) / 2
 		}
 	}
-
-	// 奖励用完点数
-	score += usedDiceSum
-
-	// 惩罚浪费
-	if wasted := totalDiceSum - usedDiceSum; wasted > 0 {
-		score -= wasted
-	}
-
 	return score
 }

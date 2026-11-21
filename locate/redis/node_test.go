@@ -237,25 +237,7 @@ func TestNodeBindingRequiresLiveEpoch(t *testing.T) {
 func TestNodeBindingRedisIntegration(t *testing.T) {
 	for _, mode := range []string{"standalone", "cluster"} {
 		t.Run(mode, func(t *testing.T) {
-			variable := "YOLA_REDIS_INTEGRATION"
-			if mode == "cluster" {
-				variable = "YOLA_REDIS_CLUSTER_INTEGRATION"
-			}
-			address := os.Getenv(variable)
-			if address == "" {
-				t.Skipf("set %s to an explicitly provisioned disposable Redis instance", variable)
-			}
-			require.NotEqual(t, "1", address, "the integration test requires an explicit isolated address")
-			var client redis.UniversalClient
-			if mode == "cluster" {
-				client = redis.NewClusterClient(&redis.ClusterOptions{
-					Addrs:    strings.Split(address, ","),
-					Password: os.Getenv("YOLA_REDIS_PASSWORD"),
-				})
-			} else {
-				client = redis.NewClient(&redis.Options{Addr: address, Password: os.Getenv("YOLA_REDIS_PASSWORD")})
-			}
-			t.Cleanup(func() { require.NoError(t, client.Close()) })
+			client := nodeIntegrationClient(t, mode)
 			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 			pingErr := client.Ping(ctx).Err()
 			cancel()
@@ -282,6 +264,30 @@ func TestNodeBindingRedisIntegration(t *testing.T) {
 			assertNodeBindingEpochHandoff(t, locateredis.New(client), service)
 		})
 	}
+}
+
+func nodeIntegrationClient(t *testing.T, mode string) redis.UniversalClient {
+	t.Helper()
+	variable := "YOLA_REDIS_INTEGRATION"
+	if mode == "cluster" {
+		variable = "YOLA_REDIS_CLUSTER_INTEGRATION"
+	}
+	address := os.Getenv(variable)
+	if address == "" {
+		t.Skipf("set %s to an explicitly provisioned disposable Redis instance", variable)
+	}
+	require.NotEqual(t, "1", address, "the integration test requires an explicit isolated address")
+	var client redis.UniversalClient
+	if mode == "cluster" {
+		client = redis.NewClusterClient(&redis.ClusterOptions{
+			Addrs:    strings.Split(address, ","),
+			Password: os.Getenv("YOLA_REDIS_PASSWORD"),
+		})
+	} else {
+		client = redis.NewClient(&redis.Options{Addr: address, Password: os.Getenv("YOLA_REDIS_PASSWORD")})
+	}
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+	return client
 }
 
 func TestNodeKeysShareServiceHashTag(t *testing.T) {

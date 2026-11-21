@@ -1,6 +1,8 @@
 package table
 
 import (
+	"math"
+
 	"yola/test/internal/xgo"
 	v1 "yola/test/whot/api/v1"
 )
@@ -21,7 +23,7 @@ var oneDeck = []int32{
 	101, 102, 103, 104, 105, 107, 108, 110, 111, 112, 113, 114, // Circle 12
 	201, 202, 203, 204, 205, 207, 208, 210, 211, 212, 213, 214, // Triangle 12
 	301, 302, 303, 305, 307, 310, 311, 313, 314, // Cross 9
-	401, 402, 403, 405, 407, 410, 411, 413, 414, // quare 9
+	401, 402, 403, 405, 407, 410, 411, 413, 414, // Square 9
 	501, 502, 503, 504, 505, 507, 508, // Star 7
 	WhotCard, WhotCard, WhotCard, WhotCard, WhotCard, // Whot 5
 }
@@ -66,16 +68,13 @@ func IsWhotCard(card int32) bool {
 
 // GameCards 管理牌堆。
 type GameCards struct {
-	index  int
-	cards  []int32
-	bottom []int32
+	index int
+	cards []int32
 }
 
 // NewGameCards 初始化牌堆
 func NewGameCards() *GameCards {
-	cards := make([]int32, len(oneDeck))
-	copy(cards, oneDeck)
-	return &GameCards{cards: cards}
+	return &GameCards{cards: xgo.SliceCopy(oneDeck)}
 }
 
 // Shuffle 洗牌并重置索引
@@ -101,7 +100,7 @@ func (g *GameCards) GetCards() []int32 {
 
 // GetCardNum 返回剩余牌数
 func (g *GameCards) GetCardNum() int32 {
-	return int32(len(g.cards) - g.index)
+	return cardCount(len(g.cards) - g.index)
 }
 
 // IsEmpty 是否牌堆空了
@@ -117,6 +116,12 @@ func (g *GameCards) SetBottom() []int32 {
 			break
 		}
 	}
-	g.bottom = g.DispatchCards(1)
-	return g.bottom
+	return g.DispatchCards(1)
+}
+
+func cardCount(count int) int32 {
+	if count < math.MinInt32 || count > math.MaxInt32 {
+		panic("whot: card count exceeds protocol limit")
+	}
+	return int32(count)
 }

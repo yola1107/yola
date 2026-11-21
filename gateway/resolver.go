@@ -149,14 +149,12 @@ func (r *backendResolver) retry(err error) bool {
 }
 
 func resolveBackendInstances(serviceName string, instances []*registry.ServiceInstance, secure bool) (backendSnapshot, []resolver.Address, error) {
-	seen := make(map[string]struct{}, len(instances))
 	addresses := make([]resolver.Address, 0, len(instances))
 	identities := backendIdentities{
 		hostByNodeID: make(map[string]string, len(instances)),
 		nodeIDByHost: make(map[string]string, len(instances)),
 	}
 	sticky := false
-	found := false
 	for _, service := range instances {
 		if service == nil || service.Name != serviceName {
 			continue
@@ -165,17 +163,17 @@ func resolveBackendInstances(serviceName string, instances []*registry.ServiceIn
 		if err != nil {
 			return backendSnapshot{}, nil, err
 		}
-		if found && sticky != currentSticky {
+		if len(addresses) != 0 && sticky != currentSticky {
 			return backendSnapshot{}, nil, fmt.Errorf("gateway: node service %q has conflicting sticky metadata", serviceName)
 		}
-		sticky, found = currentSticky, true
-		if err := identities.add(serviceName, service.ID, host); err != nil {
+		sticky = currentSticky
+		seen, err := identities.add(serviceName, service.ID, host)
+		if err != nil {
 			return backendSnapshot{}, nil, err
 		}
-		if _, ok := seen[host]; ok {
+		if seen {
 			continue
 		}
-		seen[host] = struct{}{}
 		// Address.ServerName 优先于 TLS credentials；留空可保留显式 TLS ServerName，
 		// 未显式设置时则使用 discovery authority。
 		addresses = append(addresses, resolver.Address{
@@ -227,19 +225,24 @@ type backendIdentities struct {
 	nodeIDByHost map[string]string
 }
 
-func (i backendIdentities) add(serviceName, nodeID, host string) error {
+func (i backendIdentities) add(serviceName, nodeID, host string) (bool, error) {
+	previousNodeID, seen := i.nodeIDByHost[host]
 	if nodeID == "" {
-		return nil
+		if !seen {
+			// 无 NodeID 的地址也参与去重，后续可登记此地址的 NodeID。
+			i.nodeIDByHost[host] = ""
+		}
+		return seen, nil
 	}
 	if previousHost, exists := i.hostByNodeID[nodeID]; exists && previousHost != host {
-		return fmt.Errorf(
+		return seen, fmt.Errorf(
 			"gateway: node service %q has duplicate NodeID %q with different endpoints",
 			serviceName,
 			nodeID,
 		)
 	}
-	if previousNodeID, exists := i.nodeIDByHost[host]; exists && previousNodeID != nodeID {
-		return fmt.Errorf(
+	if previousNodeID != "" && previousNodeID != nodeID {
+		return seen, fmt.Errorf(
 			"gateway: node service %q endpoint %q belongs to multiple NodeIDs",
 			serviceName,
 			host,
@@ -247,7 +250,7 @@ func (i backendIdentities) add(serviceName, nodeID, host string) error {
 	}
 	i.hostByNodeID[nodeID] = host
 	i.nodeIDByHost[host] = nodeID
-	return nil
+	return seen, nil
 }
 
 func secureTransport(opts resolver.BuildOptions) bool {

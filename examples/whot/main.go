@@ -46,14 +46,14 @@ func main() {
 		slog.Error("create registry", "error", err)
 		return
 	}
-	defer registry.Close()
+	defer func() { _ = registry.Close() }()
 
 	redisClient, err := env.NewRedis()
 	if err != nil {
 		slog.Error("create Redis client", "error", err)
 		return
 	}
-	defer redisClient.Close()
+	defer func() { _ = redisClient.Close() }()
 
 	locator := redis.New(redisClient)
 	nodeServer, err := node.NewServer(

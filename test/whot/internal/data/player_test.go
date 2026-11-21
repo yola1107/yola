@@ -1,46 +1,58 @@
 package data
 
 import (
-	"strings"
+	"slices"
 	"testing"
 
 	"yola/test/whot/internal/biz/player"
 	"yola/test/whot/pkg/xredis"
 )
 
-func TestDecodeBaseDataRejectsCorruptUID(t *testing.T) {
-	values := validRedisValues(42)
-	values[fieldIndex(t, xredis.PlayerUIDField)] = "secret-invalid-uid"
-	_, err := decodeBaseData(42, values)
-	assertFieldError(t, err, xredis.PlayerUIDField, "secret-invalid-uid")
-}
-
-func TestDecodeBaseDataRejectsCorruptMoney(t *testing.T) {
-	values := validRedisValues(42)
-	values[fieldIndex(t, xredis.PlayerMoneyField)] = "NaN"
-	_, err := decodeBaseData(42, values)
-	assertFieldError(t, err, xredis.PlayerMoneyField, "NaN")
-}
-
-func TestDecodeBaseDataRejectsMissingOrUnexpectedValues(t *testing.T) {
+func TestDecodeBaseDataRejectsCorruptFields(t *testing.T) {
 	for _, test := range []struct {
-		name     string
-		value    any
-		truncate bool
+		name        string
+		change      map[string]any
+		truncateAt  string
+		wantMessage string
 	}{
-		{name: "nil"},
-		{name: "number", value: 7},
-		{name: "missing", truncate: true},
+		{
+			name:        "malformed UID",
+			change:      map[string]any{xredis.PlayerUIDField: "secret-invalid-uid"},
+			wantMessage: `decode Redis field "uid": invalid int64`,
+		},
+		{
+			name:        "first malformed numeric field",
+			change:      map[string]any{xredis.PlayerMoneyField: "NaN", xredis.PlayerAllTotalBoardField: "invalid-board"},
+			wantMessage: `decode Redis field "money": invalid float64`,
+		},
+		{
+			name:        "nil field",
+			change:      map[string]any{xredis.PlayerVIPField: nil},
+			wantMessage: `decode Redis field "vip": value is missing`,
+		},
+		{
+			name:        "wrong field type",
+			change:      map[string]any{xredis.PlayerVIPField: 7},
+			wantMessage: `decode Redis field "vip": unexpected value type`,
+		},
+		{
+			name:        "truncated result",
+			truncateAt:  xredis.PlayerVIPField,
+			wantMessage: `decode Redis field "vip": value is missing`,
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			values := validRedisValues(42)
-			index := fieldIndex(t, xredis.PlayerVIPField)
-			values[index] = test.value
-			if test.truncate {
-				values = values[:index]
+			for field, value := range test.change {
+				values[fieldIndex(t, field)] = value
+			}
+			if test.truncateAt != "" {
+				values = values[:fieldIndex(t, test.truncateAt)]
 			}
 			_, err := decodeBaseData(42, values)
-			assertFieldError(t, err, xredis.PlayerVIPField, "sensitive-value")
+			if err == nil || err.Error() != test.wantMessage {
+				t.Fatalf("decode error = %v, want %q", err, test.wantMessage)
+			}
 		})
 	}
 }
@@ -90,26 +102,11 @@ func validRedisValues(uid int64) []any {
 	return values
 }
 
-func fieldIndex(t *testing.T, wanted string) int {
+func fieldIndex(t *testing.T, field string) int {
 	t.Helper()
-	for index, field := range playerFields {
-		if field == wanted {
-			return index
-		}
+	index := slices.Index(playerFields, field)
+	if index < 0 {
+		t.Fatalf("field %q not found", field)
 	}
-	t.Fatalf("field %q not found", wanted)
-	return -1
-}
-
-func assertFieldError(t *testing.T, err error, field, sensitiveValue string) {
-	t.Helper()
-	if err == nil {
-		t.Fatalf("expected %q decode error", field)
-	}
-	if !strings.Contains(err.Error(), field) {
-		t.Fatalf("error %q does not identify field %q", err, field)
-	}
-	if strings.Contains(err.Error(), sensitiveValue) {
-		t.Fatalf("error leaks rejected value: %q", err)
-	}
+	return index
 }

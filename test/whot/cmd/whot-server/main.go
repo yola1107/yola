@@ -44,7 +44,7 @@ func main() {
 	)
 
 	c := config.New(config.WithSource(file.NewSource(flagconf)))
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	if err := c.Load(); err != nil {
 		panic(err)
 	}

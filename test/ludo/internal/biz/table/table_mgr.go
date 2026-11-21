@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"time"
 
+	"yola/test/internal/filelog"
 	"yola/test/internal/mailbox"
 	"yola/test/internal/timer"
 	"yola/test/internal/timer/stdlib"
@@ -38,7 +39,7 @@ type Manager struct {
 	tables    []*Table
 	mailboxes *mailbox.Group
 	timers    timer.Scheduler
-	mLog      *Log
+	logFile   *filelog.Log
 	runCtx    context.Context
 	pusher    ClientPusher
 }
@@ -56,16 +57,16 @@ func newManager(instanceID string, room *conf.Room, repo Repo, workers, queueSiz
 	if err != nil {
 		panic(fmt.Sprintf("table: create mailboxes: %v", err))
 	}
-	tableLog := newTableLog(instanceID, room.LogCache)
+	logFile := openTableLog(instanceID, room.LogCache)
 	manager := &Manager{
 		tables:    make([]*Table, tableCount),
 		mailboxes: mailboxes,
 		timers:    stdlib.New(),
-		mLog:      tableLog,
+		logFile:   logFile,
 	}
 	for index := range manager.tables {
 		tableID := int32(index + 1)
-		manager.tables[index] = newTable(tableID, room, repo, tableLog.forTable(tableID), manager)
+		manager.tables[index] = newTable(tableID, room, repo, &Log{tableID: tableID, sink: logFile}, manager)
 	}
 	return manager
 }
@@ -95,7 +96,10 @@ func (m *Manager) Close(ctx context.Context) error {
 	if err := errors.Join(timerErr, mailboxErr); err != nil {
 		return err
 	}
-	return m.mLog.Close()
+	if m.logFile == nil {
+		return nil
+	}
+	return m.logFile.Close()
 }
 
 // Enter 在指定桌内串行入座；tableID <= 0 时自动选桌，指定桌失败不换桌。
@@ -159,16 +163,9 @@ func (m *Manager) EnterRobots(ctx context.Context, players []*player.Player) ([]
 			tableIndex++
 			joined := false
 			err := m.call(ctx, target.ID, func(gameTable *Table) error {
-				if p.GetTableID() > 0 {
-					joined = true
-					return nil
-				}
-				if !gameTable.isFull() && gameTable.robotLogic.canEnter(p) {
-					var seatErr error
-					joined, seatErr = gameTable.Seat(p)
-					return seatErr
-				}
-				return nil
+				var seatErr error
+				joined, seatErr = gameTable.seatRobot(p)
+				return seatErr
 			})
 			if err != nil {
 				return entered, fmt.Errorf("enter robot %d table %d: %w", p.GetPlayerID(), target.ID, err)
@@ -185,6 +182,16 @@ func (m *Manager) EnterRobots(ctx context.Context, players []*player.Player) ([]
 	return entered, nil
 }
 
+func (t *Table) seatRobot(p *player.Player) (bool, error) {
+	if p.GetTableID() > 0 {
+		return true, nil
+	}
+	if t.isFull() || !t.robotLogic.canEnter(p) {
+		return false, nil
+	}
+	return t.Seat(p)
+}
+
 func (m *Manager) Switch(ctx context.Context, p *player.Player, gameConfig *conf.Room_Game) (int32, string, error) {
 	if p == nil {
 		return codes.PlayerInvalid, "PLAYER_INVALID", nil
@@ -199,16 +206,14 @@ func (m *Manager) Switch(ctx context.Context, p *player.Player, gameConfig *conf
 	}
 
 	code, message := codes.Success, ""
-	canSwitch := false
-	removed := false
 	err := m.CallPlayer(ctx, p, func(current *Table) error {
 		code, message = CheckRoomLimit(p, gameConfig)
-		if code != codes.Success {
-			return nil
-		}
-		canSwitch = current.canExit(p)
-		if canSwitch {
-			removed = current.RemovePlayer(p, true)
+		switch {
+		case code != codes.Success:
+		case !current.canExit(p):
+			code, message = codes.SwitchTable, "SWITCH_TABLE"
+		case !current.RemovePlayer(p, true):
+			code, message = codes.ExitTableFail, "EXIT_TABLE_FAIL"
 		}
 		return nil
 	})
@@ -217,12 +222,6 @@ func (m *Manager) Switch(ctx context.Context, p *player.Player, gameConfig *conf
 	}
 	if code != codes.Success {
 		return code, message, nil
-	}
-	if !canSwitch {
-		return codes.SwitchTable, "SWITCH_TABLE", nil
-	}
-	if !removed {
-		return codes.ExitTableFail, "EXIT_TABLE_FAIL", nil
 	}
 
 	migrationCtx, cancelMigration := context.WithTimeout(context.Background(), tableMigrationTimeout)
@@ -268,7 +267,7 @@ func (m *Manager) CallPlayer(ctx context.Context, p *player.Player, action func(
 }
 
 func (m *Manager) table(tableID int32) *Table {
-	if tableID <= 0 || tableID > int32(len(m.tables)) {
+	if tableID <= 0 || int(tableID) > len(m.tables) {
 		return nil
 	}
 	return m.tables[tableID-1]

@@ -3,6 +3,8 @@ package etcd
 import (
 	"slices"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestWithEndpointsSplitsAndTrims(t *testing.T) {
@@ -10,7 +12,7 @@ func TestWithEndpointsSplitsAndTrims(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	defer registry.Close()
+	t.Cleanup(func() { require.NoError(t, registry.Close()) })
 
 	want := []string{"127.0.0.1:2379", "127.0.0.2:2379"}
 	if got := registry.client.Endpoints(); !slices.Equal(got, want) {

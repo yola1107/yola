@@ -10,6 +10,7 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
@@ -104,37 +105,25 @@ func TestGroupAppliesPerMailboxBackpressure(t *testing.T) {
 	if err := mailbox.TryPost(func() {}); err != nil {
 		t.Fatal(err)
 	}
-	if err := mailbox.TryPost(func() {}); err != ErrFull {
-		t.Fatalf("third TryPost() error = %v, want %v", err, ErrFull)
-	}
+	require.Same(t, ErrFull, mailbox.TryPost(func() {}))
 }
 
+const postAndWait = "PostAndWait"
+
 func TestCallsCancelWorkBeforeItStarts(t *testing.T) {
-	for _, name := range []string{"Call", "PostAndWait"} {
+	for _, name := range []string{"Call", postAndWait} {
 		t.Run(name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				group := newTestGroup(t, 1, 1, 1, 1)
 				call := group.Executor(0).Call
-				if name == "PostAndWait" {
+				if name == postAndWait {
 					call = func(ctx context.Context, job func() error) error { return group.PostAndWait(ctx, 0, job) }
 				}
 				ctx, cancel := context.WithCancel(t.Context())
 				cancel()
-				if err := call(ctx, func() error { return nil }); err != context.Canceled {
-					t.Fatalf("pre-canceled call error = %v, want %v", err, context.Canceled)
-				}
+				require.Same(t, context.Canceled, call(ctx, func() error { return nil }))
 
-				started := make(chan struct{})
-				release := make(chan struct{})
-				releaseJob := sync.OnceFunc(func() { close(release) })
-				t.Cleanup(releaseJob)
-				if err := group.Executor(0).TryPost(func() {
-					close(started)
-					<-release
-				}); err != nil {
-					t.Fatal(err)
-				}
-				<-started
+				releaseJob := blockExecutor(t, group.Executor(0))
 				ctx, cancel = context.WithCancel(t.Context())
 				defer cancel()
 				actionRan := make(chan struct{})
@@ -146,17 +135,11 @@ func TestCallsCancelWorkBeforeItStarts(t *testing.T) {
 					})
 				}()
 				synctest.Wait()
-				if group.Executor(0).Stats().Free != 0 {
-					t.Fatal("call was not queued")
-				}
+				require.Zero(t, group.Executor(0).Stats().Free, "call was not queued")
 				cancel()
-				if err := <-result; !errors.Is(err, context.Canceled) {
-					t.Fatalf("queued call error = %v, want %v", err, context.Canceled)
-				}
+				require.ErrorIs(t, <-result, context.Canceled)
 				releaseJob()
-				if err := group.Stop(t.Context()); err != nil {
-					t.Fatal(err)
-				}
+				require.NoError(t, group.Stop(t.Context()))
 				select {
 				case <-actionRan:
 					t.Fatal("canceled queued action ran")
@@ -168,12 +151,12 @@ func TestCallsCancelWorkBeforeItStarts(t *testing.T) {
 }
 
 func TestExecutorCallWaitsForStartedJobAfterCancellation(t *testing.T) {
-	for _, name := range []string{"Call", "PostAndWait"} {
+	for _, name := range []string{"Call", postAndWait} {
 		t.Run(name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				group := newTestGroup(t, 1, 1, 1, 1)
 				call := group.Executor(0).Call
-				if name == "PostAndWait" {
+				if name == postAndWait {
 					call = func(ctx context.Context, job func() error) error { return group.PostAndWait(ctx, 0, job) }
 				}
 				ctx, cancel := context.WithCancel(t.Context())
@@ -269,29 +252,15 @@ func TestGroupPostWaitsForCapacityOrStop(t *testing.T) {
 	t.Run("accepted", func(t *testing.T) {
 		group := newTestGroup(t, 1, 1, 1, 1)
 
-		started := make(chan struct{})
-		release := make(chan struct{})
-		releaseJob := sync.OnceFunc(func() { close(release) })
-		t.Cleanup(releaseJob)
 		controlRan := make(chan struct{})
 		mailbox := group.Executor(0)
-		if err := mailbox.TryPost(func() {
-			close(started)
-			<-release
-		}); err != nil {
-			t.Fatal(err)
-		}
-		<-started
+		releaseJob := blockExecutor(t, mailbox)
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		if err := group.Post(ctx, 0, func() { close(controlRan) }); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, group.Post(ctx, 0, func() { close(controlRan) }))
 		cancel()
 		releaseJob()
-		if err := group.Stop(t.Context()); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, group.Stop(t.Context()))
 		select {
 		case <-controlRan:
 		default:
@@ -302,22 +271,10 @@ func TestGroupPostWaitsForCapacityOrStop(t *testing.T) {
 	t.Run("capacity", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			group := newTestGroup(t, 1, 1, 1, 1)
-			started := make(chan struct{})
-			release := make(chan struct{})
-			releaseJob := sync.OnceFunc(func() { close(release) })
-			t.Cleanup(releaseJob)
 			controlRan := make(chan struct{})
 			mailbox := group.Executor(0)
-			if err := mailbox.TryPost(func() {
-				close(started)
-				<-release
-			}); err != nil {
-				t.Fatal(err)
-			}
-			<-started
-			if err := mailbox.TryPost(func() {}); err != nil {
-				t.Fatal(err)
-			}
+			releaseJob := blockExecutor(t, mailbox)
+			require.NoError(t, mailbox.TryPost(func() {}))
 			accepted := make(chan error, 1)
 			go func() { accepted <- group.Post(t.Context(), 0, func() { close(controlRan) }) }()
 			synctest.Wait()
@@ -327,9 +284,7 @@ func TestGroupPostWaitsForCapacityOrStop(t *testing.T) {
 			default:
 			}
 			releaseJob()
-			if err := <-accepted; err != nil {
-				t.Fatalf("Post error = %v", err)
-			}
+			require.NoError(t, <-accepted)
 			<-controlRan
 		})
 	})
@@ -337,33 +292,17 @@ func TestGroupPostWaitsForCapacityOrStop(t *testing.T) {
 	t.Run("stop", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			group := newTestGroup(t, 1, 1, 1, 1)
-			started := make(chan struct{})
-			release := make(chan struct{})
-			releaseJob := sync.OnceFunc(func() { close(release) })
-			t.Cleanup(releaseJob)
 			mailbox := group.Executor(0)
-			if err := mailbox.TryPost(func() {
-				close(started)
-				<-release
-			}); err != nil {
-				t.Fatal(err)
-			}
-			<-started
-			if err := mailbox.TryPost(func() {}); err != nil {
-				t.Fatal(err)
-			}
+			releaseJob := blockExecutor(t, mailbox)
+			require.NoError(t, mailbox.TryPost(func() {}))
 			waitResult := make(chan error, 1)
 			go func() { waitResult <- group.Post(t.Context(), 0, func() {}) }()
 			synctest.Wait()
 			stopDone := make(chan error, 1)
 			go func() { stopDone <- group.Stop(t.Context()) }()
-			if err := <-waitResult; !errors.Is(err, ErrStopped) {
-				t.Fatalf("Post stop error = %v, want %v", err, ErrStopped)
-			}
+			require.ErrorIs(t, <-waitResult, ErrStopped)
 			releaseJob()
-			if err := <-stopDone; err != nil {
-				t.Fatalf("Stop error = %v", err)
-			}
+			require.NoError(t, <-stopDone)
 		})
 	})
 }
@@ -442,4 +381,18 @@ func newTestGroup(t *testing.T, mailboxCount, workerCount, queueSize, batchSize 
 		}
 	})
 	return group
+}
+
+func blockExecutor(t *testing.T, executor Executor) func() {
+	t.Helper()
+	started := make(chan struct{})
+	release := make(chan struct{})
+	unblock := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(unblock)
+	require.NoError(t, executor.TryPost(func() {
+		close(started)
+		<-release
+	}))
+	<-started
+	return unblock
 }

@@ -197,15 +197,13 @@ func (u *User) OnResultPush(data []byte) {
 
 func (u *User) stateValue() userState { return userState(u.state.Load()) }
 
+func (u *User) transition(from, to userState) bool {
+	return u.state.CompareAndSwap(int32(from), int32(to))
+}
+
 func (u *User) connect() (*websocket.Client, error) {
-	pushHandlers := map[int32]websocket.PushHandler{
-		int32(v1.GameCommand_CmdSendCardPush): u.OnSendCardPush,
-		int32(v1.GameCommand_CmdScenePush):    u.OnScenePush,
-		int32(v1.GameCommand_CmdActivePush):   u.OnActivePush,
-		int32(v1.GameCommand_CmdMovePush):     u.OnMovePush,
-		int32(v1.GameCommand_CmdResultPush):   u.OnResultPush,
-		broadcastprobe.Command:                u.onBroadcast,
-	}
+	pushHandlers := u.gamePushHandlers()
+	pushHandlers[broadcastprobe.Command] = u.onBroadcast
 	return websocket.NewClient(
 		u.runner.ctx,
 		websocket.WithEndpoint(u.gatewayURL()),
@@ -214,6 +212,16 @@ func (u *User) connect() (*websocket.Client, error) {
 		websocket.WithPushHandler(pushHandlers),
 		websocket.WithDisconnectFunc(u.OnDisconnect),
 	)
+}
+
+func (u *User) gamePushHandlers() map[int32]websocket.PushHandler {
+	return map[int32]websocket.PushHandler{
+		int32(v1.GameCommand_CmdSendCardPush): u.OnSendCardPush,
+		int32(v1.GameCommand_CmdScenePush):    u.OnScenePush,
+		int32(v1.GameCommand_CmdActivePush):   u.OnActivePush,
+		int32(v1.GameCommand_CmdMovePush):     u.OnMovePush,
+		int32(v1.GameCommand_CmdResultPush):   u.OnResultPush,
+	}
 }
 
 func (u *User) onBroadcast(payload []byte) {

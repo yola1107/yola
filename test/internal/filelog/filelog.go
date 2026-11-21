@@ -68,7 +68,7 @@ func (logger *Log) Close() error {
 
 func preparePath(path string) (string, error) {
 	path = filepath.Clean(strings.TrimSpace(path))
-	if path == "" || path == "." {
+	if path == "." {
 		return "", errors.New("filelog: path is empty")
 	}
 	if info, err := os.Lstat(path); err == nil && info.Mode()&os.ModeSymlink != 0 {

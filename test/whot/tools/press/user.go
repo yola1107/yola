@@ -2,6 +2,7 @@ package press
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strconv"
@@ -40,10 +41,10 @@ type User struct {
 
 func NewUser(id int64, repo Repo) (*User, error) {
 	if id <= 0 {
-		return nil, fmt.Errorf("user ID must be positive")
+		return nil, errors.New("user ID must be positive")
 	}
 	if repo == nil {
-		return nil, fmt.Errorf("user repository is required")
+		return nil, errors.New("user repository is required")
 	}
 	user := &User{repo: repo, id: id}
 	if err := repo.Post(user.Init); err != nil {

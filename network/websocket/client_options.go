@@ -183,7 +183,7 @@ func resolveClientOptions(opts ...ClientOption) (*clientOptions, error) {
 	if err := tlsconfig.ValidateClient(o.tlsConf); err != nil {
 		return nil, fmt.Errorf("websocket: %w", err)
 	}
-	o.tlsConf = tlsconfig.Clone(o.tlsConf)
+	o.tlsConf = o.tlsConf.Clone()
 	channelConfig := *o.channel
 	o.channel = &channelConfig
 	o.pushHandler = maps.Clone(o.pushHandler)

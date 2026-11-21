@@ -19,7 +19,8 @@ import (
 )
 
 func TestNewAppReleasesNodeAfterRegistrationFailure(t *testing.T) {
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	var config net.ListenConfig
+	listener, err := config.Listen(t.Context(), "tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	address := listener.Addr().String()
 	drainContexts := make(chan context.Context, 1)
@@ -56,7 +57,7 @@ func TestNewAppReleasesNodeAfterRegistrationFailure(t *testing.T) {
 	default:
 		t.Fatal("application cleanup did not drain Node")
 	}
-	rebound, err := net.Listen("tcp", address)
+	rebound, err := config.Listen(t.Context(), "tcp", address)
 	require.NoError(t, err, "startup failure must release the Node listener")
 	require.NoError(t, rebound.Close())
 }

@@ -84,7 +84,7 @@ func Listener(lis net.Listener) ServerOption {
 
 // TLSConfig 配置 TLS。
 func TLSConfig(c *tls.Config) ServerOption {
-	return func(s *Server) { s.config.tls = tlsconfig.Clone(c) }
+	return func(s *Server) { s.config.tls = c.Clone() }
 }
 
 // Codec 配置帧编码；两端须使用相同 codec。Marshal 不得修改输入，返回的 bytes 须保持不可变。
@@ -180,9 +180,9 @@ func (s *Server) validateConfig() error {
 
 func (c serverConfig) endpointScheme() string {
 	if c.tls != nil {
-		return "wss"
+		return _secureWebSocketScheme
 	}
-	return "ws"
+	return _webSocketScheme
 }
 
 func validPath(path string) bool {

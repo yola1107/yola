@@ -148,6 +148,7 @@ func TestReadBoundedFrame(t *testing.T) {
 }
 
 func benchmarkDecode(b *testing.B, codec encoding.Codec, body []byte) {
+	b.Helper()
 	p := &v1.Proto{}
 	b.SetBytes(int64(len(body)))
 	b.ReportAllocs()
@@ -160,6 +161,7 @@ func benchmarkDecode(b *testing.B, codec encoding.Codec, body []byte) {
 }
 
 func benchmarkEncode(b *testing.B, codec encoding.Codec, p *v1.Proto) {
+	b.Helper()
 	b.SetBytes(int64(proto.Size(p)))
 	b.ReportAllocs()
 	for b.Loop() {

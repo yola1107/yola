@@ -96,7 +96,7 @@ func StartGame(
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, discovery.Close()) })
 	store := locateredis.New(client)
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := new(net.ListenConfig).Listen(t.Context(), "tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = listener.Close() })
 	locator := &measuredLocator{Locator: store, measurements: measurements}
@@ -108,15 +108,16 @@ func StartGame(
 	require.NoError(t, err)
 	register(server)
 	probe.server = server
-	startServer(t, server, service, service+"-"+suffix, nodeReady(t, listener.Addr().String()))
+	require.NoError(t, startServer(t, server, service, service+"-"+suffix, nodeReady(t, listener.Addr().String())))
+	limit := socketPlayerLimit(t, playerCount)
 	socket := websocket.NewServer(websocket.Address("127.0.0.1:0"), websocket.Timeout(timeouts.Transport),
-		websocket.MaxConnLimit(int32(playerCount+1)), websocket.MaxConnPerIP(int32(playerCount+1)))
+		websocket.MaxConnLimit(limit), websocket.MaxConnPerIP(limit))
 	gate, err := gateway.NewServer(
 		gateway.Address("127.0.0.1:0"), gateway.Auth(benchmarkAuthenticator{}), gateway.Locator(store),
 		gateway.Discovery(discovery), gateway.Transport(socket), gateway.RPCTimeout(timeouts.Forward),
 	)
 	require.NoError(t, err)
-	startServer(t, gate, "gateway", "gateway-"+suffix, gatewayReady(gate))
+	require.NoError(t, startServer(t, gate, "gateway", "gateway-"+suffix, gatewayReady(gate)))
 	socketEndpoint, err := socket.Endpoint()
 	require.NoError(t, err)
 	probe.Endpoint = socketEndpoint.String()
@@ -141,12 +142,14 @@ func (p *GameProbe) RecordPush(uid int64, command int32, body []byte) {
 
 // ResetMeasurements 在客户端就绪后排除预热延迟；消息流校验始终覆盖完整生命周期。
 func (p *GameProbe) ResetMeasurements(t *testing.T) {
+	t.Helper()
 	p.measurements.collect(t)
 	p.recording.Store(true)
 }
 
 // ReportMeasurements 结束稳态计时；后续 Scene 校验和排空仍检查消息流与响应错误。
 func (p *GameProbe) ReportMeasurements(t *testing.T) {
+	t.Helper()
 	p.recording.Store(false)
 	p.measurements.report(t)
 }
@@ -295,11 +298,12 @@ func (c *gameCodec) Unmarshal(body []byte, value any) error {
 	delete(c.pending, frame.Seq)
 	c.mu.Unlock()
 	var err error
-	if !found {
+	switch {
+	case !found:
 		err = fmt.Errorf("response has no pending request: seq=%d command=%d", frame.Seq, frame.Cmd)
-	} else if frame.Code != 0 {
+	case frame.Code != 0:
 		err = fmt.Errorf("gateway response: command=%d code=%d", frame.Cmd, frame.Code)
-	} else if c.onResponse != nil {
+	case c.onResponse != nil:
 		err = c.onResponse(frame.Cmd, frame.Body)
 	}
 	c.probe.recordError(err)
@@ -313,9 +317,9 @@ func (c *gameCodec) Unmarshal(body []byte, value any) error {
 }
 
 func writeMessageDigest(digest hash.Hash, command int32, body []byte) {
-	var header [8]byte
-	binary.LittleEndian.PutUint32(header[:4], uint32(command))
-	binary.LittleEndian.PutUint32(header[4:], uint32(len(body)))
+	var header [12]byte
+	_, _ = binary.Encode(header[:4], binary.LittleEndian, command)
+	binary.LittleEndian.PutUint64(header[4:], uint64(len(body)))
 	// hash.Hash.Write 的契约保证不会返回错误。
 	_, _ = digest.Write(header[:])
 	_, _ = digest.Write(body)

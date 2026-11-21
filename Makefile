@@ -34,12 +34,14 @@ fmt: lint-version ## 格式化两个 module 的手写 Go 代码
 lint-config: lint-version ## 校验 lint 配置
 	$(GOLANGCI_LINT) config verify --config .golangci.yml
 
-lint: lint-version ## 检查两个 module，全部执行后返回整体结果
+lint: lint-version ## 检查两个 module 和 Wire 注入定义
 	@lint_status=0; \
 	for module_dir in . test; do \
 		printf 'Lint: %s\n' "$$module_dir"; \
 		(cd "$$module_dir" && $(GOLANGCI_LINT) run --config "$(CURDIR)/.golangci.yml" ./...) || lint_status=1; \
 	done; \
+	printf 'Lint: test (wireinject)\n'; \
+	(cd test && $(GOLANGCI_LINT) run --config ../.golangci.yml --build-tags=wireinject ./ludo/cmd/ludo-server ./whot/cmd/whot-server) || lint_status=1; \
 	exit $$lint_status
 
 lint-fix: fmt ## 格式化并自动修复两个 module 的 lint 问题
@@ -48,20 +50,19 @@ lint-fix: fmt ## 格式化并自动修复两个 module 的 lint 问题
 
 check: ## 检查协议、依赖，并对两个 module 运行静态分析和测试
 	$(BUF) lint
-	go mod tidy -diff
-	go vet ./...
-	staticcheck ./...
-	go test ./...
-	cd test && go mod tidy -diff
-	cd test && go vet ./...
-	cd test && staticcheck ./...
-	cd test && go test ./...
+	@set -e; for module_dir in . test; do \
+		printf 'Check: %s\n' "$$module_dir"; \
+		(cd "$$module_dir" && \
+			go mod tidy -diff && \
+			go vet ./... && \
+			staticcheck ./... && \
+			go test ./...); \
+	done
 	git diff --check
 	git diff --cached --check
 
 breaking: ## 按 BUF_BREAKING_AGAINST 指定的基线检查 API 兼容性
-	@test -n "$${BUF_BREAKING_AGAINST}" || (echo "BUF_BREAKING_AGAINST is required (for example: .git#ref=<tag-or-commit>)" >&2; exit 2)
-	$(BUF) breaking --against "$${BUF_BREAKING_AGAINST}"
+	$(BUF) breaking --against "$${BUF_BREAKING_AGAINST:?请指定比较基线，例如 .git#ref=HEAD}"
 
 race: ## 对两个 module 运行竞态检测测试
 	go test -race ./...

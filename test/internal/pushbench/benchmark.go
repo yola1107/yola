@@ -22,10 +22,7 @@ import (
 // Redis 必须是可丢弃专用实例；随机 service 隔离每个子基准的 binding 和 epoch。
 func Run(b *testing.B, game string, newFanout func(Pusher, int) func(int)) {
 	b.Helper()
-	address := os.Getenv("YOLA_REDIS_INTEGRATION")
-	if address == "" {
-		b.Skip("set YOLA_REDIS_INTEGRATION to a disposable Redis instance")
-	}
+	address := benchmarkRedisAddress(b)
 	logger := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil)))
 	b.Cleanup(func() { slog.SetDefault(logger) })
@@ -36,22 +33,15 @@ func Run(b *testing.B, game string, newFanout func(Pusher, int) func(int)) {
 				pusher, received := newPipeline(b, address, game+"-"+rand.Text(), tableCount*4, delay, measurements)
 				fanout := newFanout(pusher, tableCount)
 				workers := min(tableCount, 16)
-				group, err := mailbox.NewGroup(tableCount, workers, 128, 64)
-				require.NoError(b, err)
-				require.NoError(b, group.Start())
-				b.Cleanup(func() {
-					ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-					defer cancel()
-					require.NoError(b, group.Stop(ctx))
-				})
-				var next atomic.Uint64
+				group := benchmarkMailboxes(b, tableCount, workers)
+				var next atomic.Int64
 				// 闭环请求并发固定为 8 × GOMAXPROCS，使共享 worker 的排队成本可见。
 				b.SetParallelism(8)
 				b.ReportAllocs()
 				b.ResetTimer()
 				b.RunParallel(func(pb *testing.PB) {
 					for pb.Next() {
-						index := int((next.Add(1) - 1) % uint64(tableCount))
+						index := int((next.Add(1) - 1) % int64(tableCount))
 						submitted := time.Now()
 						err := group.Executor(index).Call(context.Background(), func() error {
 							measurements.record("mailbox_wait", submitted, nil)
@@ -67,8 +57,30 @@ func Run(b *testing.B, game string, newFanout func(Pusher, int) func(int)) {
 				b.Logf("I45 setup: tables=%d players=%d workers=%d concurrency=%d queue=128 batch=64 gateway_delay=%s",
 					tableCount, tableCount*4, workers, runtime.GOMAXPROCS(0)*8, delay)
 				measurements.report(b)
-				require.Equal(b, uint64(b.N)*4, received.Load(), "every fanout must deliver four pushes")
+				require.Equal(b, int64(b.N)*4, received.Load(), "every fanout must deliver four pushes")
 			})
 		}
 	}
+}
+
+func benchmarkRedisAddress(tb testing.TB) string {
+	tb.Helper()
+	address := os.Getenv("YOLA_REDIS_INTEGRATION")
+	if address == "" {
+		tb.Skip("set YOLA_REDIS_INTEGRATION to a disposable Redis instance")
+	}
+	return address
+}
+
+func benchmarkMailboxes(b *testing.B, tableCount, workers int) *mailbox.Group {
+	b.Helper()
+	group, err := mailbox.NewGroup(tableCount, workers, 128, 64)
+	require.NoError(b, err)
+	require.NoError(b, group.Start())
+	b.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		require.NoError(b, group.Stop(ctx))
+	})
+	return group
 }

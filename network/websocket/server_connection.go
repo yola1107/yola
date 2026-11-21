@@ -122,7 +122,7 @@ func (s *Server) readWebSocketMessages(connectionCtx context.Context, ch *Channe
 			code := status.Code(err)
 			slog.WarnContext(connectionCtx, "[websocket] handler failed",
 				"conn_id", ch.ConnID(),
-				"code", int32(code),
+				"code", int64(code),
 				"status", code.String(),
 				"error", err,
 			)

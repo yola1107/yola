@@ -31,7 +31,7 @@ func (m *Manager) RemoveIfSame(p *Player) bool {
 
 func (m *Manager) All() []*Player {
 	var result []*Player
-	m.players.Range(func(_, value interface{}) bool {
+	m.players.Range(func(_, value any) bool {
 		result = append(result, value.(*Player))
 		return true
 	})
@@ -39,10 +39,9 @@ func (m *Manager) All() []*Player {
 }
 
 func (m *Manager) Counts() (all, offline int64) {
-	m.players.Range(func(_, value interface{}) bool {
+	m.players.Range(func(_, value any) bool {
 		all++
-		p := value.(*Player)
-		if p != nil && p.IsOffline() {
+		if value.(*Player).IsOffline() {
 			offline++
 		}
 		return true

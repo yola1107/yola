@@ -13,8 +13,8 @@ type gatewayConfig struct {
 	grpcListen      string
 	tcpListen       string
 	wsListen        string
-	wsMaxConns      int
-	wsMaxConnsPerIP int
+	wsMaxConns      int32
+	wsMaxConnsPerIP int32
 	logLevel        string
 	rpcTimeout      time.Duration
 	advertiseHost   string
@@ -31,12 +31,13 @@ const defaultRemoteHost = "127.0.0.1"
 
 func parseConfig() (*gatewayConfig, error) {
 	cfg := new(gatewayConfig)
+	var maxConns, maxConnsPerIP int
 	flag.StringVar(&cfg.id, "id", "gateway-1", "Kratos instance ID")
 	flag.StringVar(&cfg.grpcListen, "grpc-listen", "0.0.0.0:9010", "internal gRPC listen address")
 	flag.StringVar(&cfg.tcpListen, "tcp-listen", "0.0.0.0:3101", "client TCP listen address")
 	flag.StringVar(&cfg.wsListen, "ws-listen", "0.0.0.0:3102", "client WebSocket listen address")
-	flag.IntVar(&cfg.wsMaxConns, "ws-max-connections", websocket.DefaultMaxConnLimit, "maximum concurrent WebSocket connections")
-	flag.IntVar(&cfg.wsMaxConnsPerIP, "ws-max-connections-per-ip", websocket.DefaultMaxConnPerIP, "maximum concurrent WebSocket connections per IP")
+	flag.IntVar(&maxConns, "ws-max-connections", websocket.DefaultMaxConnLimit, "maximum concurrent WebSocket connections")
+	flag.IntVar(&maxConnsPerIP, "ws-max-connections-per-ip", websocket.DefaultMaxConnPerIP, "maximum concurrent WebSocket connections per IP")
 	flag.StringVar(&cfg.logLevel, "log-level", "info", "log level: debug, info, warn, or error")
 	flag.DurationVar(&cfg.rpcTimeout, "rpc-timeout", 3*time.Second, "WebSocket handler and internal RPC timeout")
 	flag.StringVar(&cfg.advertiseHost, "advertise-host", "127.0.0.1", "gRPC advertise host")
@@ -47,21 +48,16 @@ func parseConfig() (*gatewayConfig, error) {
 	flag.StringVar(&cfg.etcdEndpoints, "etcd-endpoints", defaultRemoteHost+":2379", "comma-separated etcd endpoints")
 	flag.StringVar(&cfg.etcdPrefix, "etcd-prefix", "/yola/test", "etcd registry prefix")
 	flag.Parse()
-	if err := cfg.validate(); err != nil {
-		return nil, err
+	if maxConns <= 0 || maxConns > 1<<31-1 || maxConnsPerIP <= 0 || maxConnsPerIP > 1<<31-1 {
+		return nil, errors.New("websocket connection limits must be within [1, 2147483647]")
 	}
-	return cfg, nil
-}
-
-func (cfg *gatewayConfig) validate() error {
-	if cfg.wsMaxConns <= 0 || cfg.wsMaxConns > 1<<31-1 || cfg.wsMaxConnsPerIP <= 0 || cfg.wsMaxConnsPerIP > 1<<31-1 {
-		return errors.New("websocket connection limits must be within [1, 2147483647]")
-	}
+	cfg.wsMaxConns = int32(maxConns)
+	cfg.wsMaxConnsPerIP = int32(maxConnsPerIP)
 	if cfg.rpcTimeout <= 0 {
-		return errors.New("rpc timeout must be positive")
+		return nil, errors.New("rpc timeout must be positive")
 	}
 	if cfg.redisDB < 0 || cfg.redisDB > 15 {
-		return errors.New("redis database must be within [0, 15]")
+		return nil, errors.New("redis database must be within [0, 15]")
 	}
-	return nil
+	return cfg, nil
 }

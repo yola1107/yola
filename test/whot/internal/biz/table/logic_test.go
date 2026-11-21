@@ -42,12 +42,8 @@ func TestChooseBestCardPreservesCandidateOrderOnTie(t *testing.T) {
 }
 
 func TestRoundRunsReadyPlayResultAndReturnsToWait(t *testing.T) {
-	room := &conf.Room{
-		Table:    &conf.Room_Table{TableNum: 1, ChairNum: 2},
-		Game:     &conf.Room_Game{MaxMoney: -1, BaseMoney: 1},
-		Robot:    &conf.Room_Robot{},
-		LogCache: &conf.Room_LogCache{},
-	}
+	room := testRoomConfig()
+	room.Table.ChairNum = 2
 	timers := new(tableTimerStub)
 	manager, gameTable := newRoundTestTable(t, room, timers)
 	players := []*player.Player{
@@ -60,18 +56,14 @@ func TestRoundRunsReadyPlayResultAndReturnsToWait(t *testing.T) {
 		}
 	}
 	assertWhotStage(t, gameTable, StReady)
-	if !fireTableTimer(t, manager, timers, gameTable.stage.TimerID()) {
-		t.Fatal("ready timer is missing")
-	}
+	fireStageTimer(t, manager, timers, gameTable)
 	assertWhotStage(t, gameTable, StSendCard)
 	for _, p := range players {
 		if !p.IsGaming() || len(p.GetCards()) != 5 {
 			t.Fatalf("player %d game state: gaming=%v cards=%v", p.GetPlayerID(), p.IsGaming(), p.GetCards())
 		}
 	}
-	if !fireTableTimer(t, manager, timers, gameTable.stage.TimerID()) {
-		t.Fatal("send-card timer is missing")
-	}
+	fireStageTimer(t, manager, timers, gameTable)
 	assertWhotStage(t, gameTable, StPlaying)
 
 	active := gameTable.GetActivePlayer()
@@ -92,23 +84,22 @@ func TestRoundRunsReadyPlayResultAndReturnsToWait(t *testing.T) {
 		t.Fatal("valid final-card action was rejected")
 	}
 	assertWhotStage(t, gameTable, StWaitEnd)
-	if !fireTableTimer(t, manager, timers, gameTable.stage.TimerID()) {
-		t.Fatal("result timer is missing")
-	}
+	fireStageTimer(t, manager, timers, gameTable)
 	assertWhotStage(t, gameTable, StEnd)
-	if !fireTableTimer(t, manager, timers, gameTable.stage.TimerID()) {
-		t.Fatal("end timer is missing")
-	}
+	fireStageTimer(t, manager, timers, gameTable)
 	assertWhotStage(t, gameTable, StWait)
 }
 
-func TestTableIgnoresExpiredStageTimerAfterStageChanged(t *testing.T) {
-	room := &conf.Room{
-		Table:    &conf.Room_Table{TableNum: 1, ChairNum: 2},
-		Game:     &conf.Room_Game{MaxMoney: -1, BaseMoney: 1},
-		Robot:    &conf.Room_Robot{},
-		LogCache: &conf.Room_LogCache{},
+func fireStageTimer(t *testing.T, manager *Manager, timers *tableTimerStub, gameTable *Table) {
+	t.Helper()
+	if !fireTableTimer(t, manager, timers, gameTable.stage.TimerID()) {
+		t.Fatalf("%s timer is missing", gameTable.stage.State())
 	}
+}
+
+func TestTableIgnoresExpiredStageTimerAfterStageChanged(t *testing.T) {
+	room := testRoomConfig()
+	room.Table.ChairNum = 2
 	timers := new(tableTimerStub)
 	manager, gameTable := newRoundTestTable(t, room, timers)
 

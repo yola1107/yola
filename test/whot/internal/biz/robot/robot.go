@@ -134,7 +134,7 @@ func (m *Manager) release() {
 	}
 
 	m.free.Range(func(k, v any) bool {
-		p := v.(*player.Player)
+		p, _ := v.(*player.Player)
 		if p.GetTableID() > 0 {
 			return true
 		}
@@ -181,7 +181,7 @@ func (m *Manager) login(ctx context.Context) {
 	}
 }
 
-// Reset 重置机器人状态（比如金额）
+// reset 将机器人余额调整到可入桌的范围。
 func (m *Manager) reset(p *player.Player) {
 	minMoney := max(m.rc.Robot.MinMoney, m.rc.Game.MinMoney)
 	maxMoney := m.rc.Robot.MaxMoney

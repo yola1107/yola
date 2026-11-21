@@ -5,31 +5,14 @@ import (
 
 	"yola/registry/etcd"
 	"yola/test/internal/xredis"
-	"yola/test/whot/internal/biz"
 	"yola/test/whot/internal/conf"
 
 	"github.com/google/wire"
 	"github.com/redis/go-redis/v9"
 )
 
-// ProviderSet wires Redis-backed Whot data access.
-var ProviderSet = wire.NewSet(NewRedisClient, NewRegistry, NewData, NewPlayerRepo)
-
-type playerRepo struct {
-	data *Data
-}
-
-func NewPlayerRepo(data *Data) biz.PlayerRepo {
-	return &playerRepo{data: data}
-}
-
-type Data struct {
-	redis redis.UniversalClient
-}
-
-func NewData(client redis.UniversalClient) *Data {
-	return &Data{redis: client}
-}
+// ProviderSet 装配 Whot 的数据访问与外部依赖。
+var ProviderSet = wire.NewSet(NewRedisClient, NewRegistry, NewPlayerRepo)
 
 func NewRedisClient(config *conf.Data) (redis.UniversalClient, func(), error) {
 	client, err := xredis.NewClient(

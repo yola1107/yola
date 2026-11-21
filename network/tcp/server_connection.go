@@ -83,11 +83,11 @@ func (s *Server) serveTCP(baseCtx context.Context, conn net.Conn, connID string)
 		"local_addr", conn.LocalAddr().String(),
 		"remote_addr", rAddr,
 	)
-	ch := newChannel(_defaultSendQueueSize, s.config.codec)
+	ch := newChannel(network.DefaultSendQueueSize, s.config.codec)
 	rr := bufio.NewReaderSize(conn, _defaultIOBufferSize)
 	wr := bufio.NewWriterSize(conn, _defaultIOBufferSize)
 	defer ch.close()
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	clientConn := tcpConnection{
 		remoteAddr: rAddr,
 		conn:       conn,
@@ -155,12 +155,9 @@ func (s *Server) readTCPMessages(ctx context.Context, clientConn tcpConnection, 
 		defer dispatcher.Stop()
 	}
 	for {
-		if err := clientConn.conn.SetReadDeadline(deadline); err != nil {
-			return err
-		}
-		message := &v1.Proto{}
-		if err := readFrame(reader, s.config.codec, message); err != nil {
-			return err
+		message, readErr := s.readTCPMessage(clientConn.conn, reader, deadline)
+		if readErr != nil {
+			return readErr
 		}
 		if message.Op == v1.OpHeartbeat {
 			deadline = time.Now().Add(s.config.heartbeatTimeout)
@@ -177,7 +174,7 @@ func (s *Server) readTCPMessages(ctx context.Context, clientConn tcpConnection, 
 			code := status.Code(err)
 			slog.WarnContext(ctx, "[tcp] handler failed",
 				"conn_id", ch.connID,
-				"code", int32(code),
+				"code", int64(code),
 				"status", code.String(),
 				"error", err,
 			)
@@ -189,10 +186,21 @@ func (s *Server) readTCPMessages(ctx context.Context, clientConn tcpConnection, 
 	}
 }
 
+func (s *Server) readTCPMessage(conn net.Conn, reader *bufio.Reader, deadline time.Time) (*v1.Proto, error) {
+	if err := conn.SetReadDeadline(deadline); err != nil {
+		return nil, err
+	}
+	message := &v1.Proto{}
+	if err := readFrame(reader, s.config.codec, message); err != nil {
+		return nil, err
+	}
+	return message, nil
+}
+
 func (s *Server) dispatchTCP(conn net.Conn, wr *bufio.Writer, ch *channel) {
 	var err error
 	defer func() { ch.finishWriter(err) }()
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	for {
 		event, ready := ch.next()
 		if !ready {
@@ -229,7 +237,7 @@ func (s *Server) trackConnection(conn net.Conn) bool {
 	// 生命周期锁保证准入先于停机；serveTCP 添加 writer 时，连接仍计入在途数量。
 	s.lifecycleMu.Lock()
 	defer s.lifecycleMu.Unlock()
-	if s.stopped || int32(len(s.conns)) >= s.config.maxConnLimit ||
+	if s.stopped || len(s.conns) >= int(s.config.maxConnLimit) ||
 		s.connectionsPerIP[remoteIP] >= s.config.maxConnPerIP {
 		return false
 	}

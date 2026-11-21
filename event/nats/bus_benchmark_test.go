@@ -162,6 +162,7 @@ func measureSubscriptionBacklog(b *testing.B, url string, capacity, payloadSize 
 }
 
 func benchmarkURL(t testing.TB) string {
+	t.Helper()
 	if url := os.Getenv("YOLA_NATS_URL"); url != "" {
 		return url
 	}

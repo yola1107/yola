@@ -22,17 +22,11 @@ func NewService(usecase *biz.Usecase) *Service {
 	return &Service{usecase: usecase}
 }
 
-// RegisterNode installs command, push, and disconnect adapters for this service.
+// RegisterNode 注册命令，并接入推送和断线处理。
 func (s *Service) RegisterNode(server *node.Server) {
 	v1.RegisterGameServer(server, s)
 	s.usecase.SetClientPusher(server)
-	server.OnDisconnect(s.disconnect)
-}
-
-func (s *Service) Drain(ctx context.Context) error {
-	return s.usecase.Drain(ctx)
-}
-
-func (s *Service) disconnect(ctx context.Context, sess node.Session) error {
-	return s.usecase.Disconnect(ctx, sess)
+	server.OnDisconnect(func(ctx context.Context, sess node.Session) error {
+		return s.usecase.Disconnect(ctx, sess)
+	})
 }

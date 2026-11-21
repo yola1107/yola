@@ -27,69 +27,74 @@ func TestLoginWaitsForEntryAndKeepsCleanupBudget(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
-				uc, _ := newTestUsecase(t, 1, 4)
-				originalSession := &recordingSession{uid: "41"}
-				login(t, uc, originalSession, 41)
-				seated := uc.pm.GetByID(41)
-				release := make(chan struct{})
-				blockDone := make(chan error, 1)
-				go func() {
-					blockDone <- uc.tm.CallPlayer(t.Context(), seated, func(*table.Table) error {
-						<-release
-						return nil
-					})
-				}()
-				synctest.Wait()
-				uid := int64(42)
-				if tc.reconnect {
-					uid = 41
-				}
-				sess := &cleanupContextSession{recordingSession: recordingSession{uid: strconv.FormatInt(uid, 10)}}
-				var reply *v1.LoginRsp
-				var loginErr error
-				var loginElapsed time.Duration
-				loginDone := make(chan struct{})
-				go func() {
-					started := time.Now()
-					reply, loginErr = uc.Login(t.Context(), sess, uid, "valid", 1)
-					loginElapsed = time.Since(started)
-					close(loginDone)
-				}()
-				synctest.Wait()
-				if tc.timeout {
-					<-loginDone
-				} else {
-					time.Sleep(3 * time.Second)
-				}
-				close(release)
-				require.NoError(t, <-blockDone)
-				<-loginDone
-				require.NoError(t, uc.tm.Close(context.Background()))
-				if !tc.timeout {
-					require.NoError(t, loginErr)
-					require.Equal(t, codes.Success, reply.Code)
-					require.Same(t, sess, uc.pm.GetByID(uid).GetSession())
-					return
-				}
-				require.ErrorIs(t, loginErr, context.DeadlineExceeded)
-				require.Equal(t, 5*time.Second, loginElapsed)
-				require.Nil(t, reply)
-				if tc.reconnect {
-					binds, unbinds := sess.counts()
-					require.Zero(t, binds, "a queued reconnect must not change ownership before its table action starts")
-					require.Zero(t, unbinds)
-					require.Same(t, originalSession, seated.GetSession())
-					return
-				}
-				require.NoError(t, sess.cleanupErr)
-				require.Equal(t, 2*time.Second, sess.cleanupBudget)
-				_, unbinds := sess.counts()
-				require.Equal(t, 1, unbinds)
-				require.Empty(t, sess.pushes)
-				require.Nil(t, uc.pm.GetByID(uid))
+				testLoginEntryTiming(t, tc.reconnect, tc.timeout)
 			})
 		})
 	}
+}
+
+func testLoginEntryTiming(t *testing.T, reconnect, timeout bool) {
+	t.Helper()
+	uc, _ := newTestUsecase(t, 1, 4)
+	originalSession := &recordingSession{uid: "41"}
+	login(t, uc, originalSession, 41)
+	seated := uc.pm.GetByID(41)
+	release := make(chan struct{})
+	blockDone := make(chan error, 1)
+	go func() {
+		blockDone <- uc.tm.CallPlayer(t.Context(), seated, func(*table.Table) error {
+			<-release
+			return nil
+		})
+	}()
+	synctest.Wait()
+	uid := int64(42)
+	if reconnect {
+		uid = 41
+	}
+	sess := &cleanupContextSession{recordingSession: recordingSession{uid: strconv.FormatInt(uid, 10)}}
+	var reply *v1.LoginRsp
+	var loginErr error
+	var loginElapsed time.Duration
+	loginDone := make(chan struct{})
+	go func() {
+		started := time.Now()
+		reply, loginErr = uc.Login(t.Context(), sess, uid, "valid", 1)
+		loginElapsed = time.Since(started)
+		close(loginDone)
+	}()
+	synctest.Wait()
+	if timeout {
+		<-loginDone
+	} else {
+		time.Sleep(3 * time.Second)
+	}
+	close(release)
+	require.NoError(t, <-blockDone)
+	<-loginDone
+	require.NoError(t, uc.tm.Close(context.Background()))
+	if !timeout {
+		require.NoError(t, loginErr)
+		require.Equal(t, codes.Success, reply.Code)
+		require.Same(t, sess, uc.pm.GetByID(uid).GetSession())
+		return
+	}
+	require.ErrorIs(t, loginErr, context.DeadlineExceeded)
+	require.Equal(t, 5*time.Second, loginElapsed)
+	require.Nil(t, reply)
+	if reconnect {
+		binds, unbinds := sess.counts()
+		require.Zero(t, binds, "a queued reconnect must not change ownership before its table action starts")
+		require.Zero(t, unbinds)
+		require.Same(t, originalSession, seated.GetSession())
+		return
+	}
+	require.NoError(t, sess.cleanupErr)
+	require.Equal(t, 2*time.Second, sess.cleanupBudget)
+	_, unbinds := sess.counts()
+	require.Equal(t, 1, unbinds)
+	require.Empty(t, sess.pushes)
+	require.Nil(t, uc.pm.GetByID(uid))
 }
 
 type cleanupContextSession struct {

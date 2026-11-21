@@ -76,7 +76,7 @@ func (r *RobotLogic) CanEnter(p *player.Player) bool {
 		reservedTables = max(1, cfg.MinPlayCount/cfg.TableMaxCount)
 	}
 
-	userCount, robotCount, _, _ := r.mTable.Counter()
+	userCount, robotCount := r.mTable.playerCounts()
 	switch {
 	case robotCount >= cfg.TableMaxCount:
 		return false
@@ -98,7 +98,7 @@ func (r *RobotLogic) CanExit(p *player.Player) bool {
 	if p == nil || r.mTable == nil || r.ExitTooShort() {
 		return false
 	}
-	userCount, robotCount, _, _ := r.mTable.Counter()
+	userCount, robotCount := r.mTable.playerCounts()
 	money := p.GetAllMoney()
 	switch {
 	case userCount == 0, robotCount > cfg.TableMaxCount:
@@ -118,11 +118,11 @@ func (r *RobotLogic) OnMessage(p *player.Player, cmd v1.GameCommand, msg proto.M
 	case v1.GameCommand_CmdActivePush:
 		r.ActivePlayer(p, msg)
 	case v1.GameCommand_CmdResultPush:
-		r.onExit(p, msg)
+		r.onExit(p)
 	}
 }
 
-func (r *RobotLogic) onExit(p *player.Player, _ proto.Message) {
+func (r *RobotLogic) onExit(p *player.Player) {
 	if !r.mTable.canExitRobot(p) {
 		return
 	}
@@ -166,7 +166,10 @@ func (r *RobotLogic) ActivePlayer(p *player.Player, msg proto.Message) {
 		slog.Error("robot action selection failed", "player", p.Desc(), "table", r.mTable.Desc())
 		return
 	}
+	r.scheduleAction(p, req)
+}
 
+func (r *RobotLogic) scheduleAction(p *player.Player, req *v1.PlayerActionReq) {
 	delay := time.Duration(xgo.RandInt(1000, int(r.mTable.stage.Remaining().Milliseconds()*3/4))) * time.Millisecond
 	uid := p.GetPlayerID()
 	chair := p.GetChairID()
@@ -271,12 +274,7 @@ func evaluateCardScoreV2(card int32, currSuit v1.SUIT, currNum int32, hand []int
 	cardSuit := v1.SUIT(Suit(card))
 	cardNumber := Number(card)
 
-	numCount := make(map[int32]int)
-	suitCount := make(map[v1.SUIT]int)
-	for _, handCard := range hand {
-		numCount[Number(handCard)]++
-		suitCount[v1.SUIT(Suit(handCard))]++
-	}
+	numberCount, suitCount, canChain := countMatchingCards(hand, card)
 
 	score := 0
 
@@ -287,27 +285,10 @@ func evaluateCardScoreV2(card int32, currSuit v1.SUIT, currNum int32, hand []int
 		score += 10
 	}
 
-	score -= (3 - numCount[cardNumber]) * 4
-	score -= (2 - suitCount[cardSuit]) * 3
+	score -= (3 - numberCount) * 4
+	score -= (2 - suitCount) * 3
 
-	switch cardNumber {
-	case pickTwoCardNumber:
-		if opponentHandSize > safeOpponentHandSize {
-			score += 10
-		} else {
-			score -= 5
-		}
-	case suspendCardNumber:
-		score += 5
-	case marketCardNumber:
-		score += 12
-	case whotCardNumber:
-		if opponentHandSize > 1 {
-			score += 10
-		} else {
-			score -= 10
-		}
-	}
+	score += cardEffectScore(cardNumber, opponentHandSize)
 
 	// 强化对手只剩1张牌时的权重
 	if opponentHandSize == 1 {
@@ -324,31 +305,57 @@ func evaluateCardScoreV2(card int32, currSuit v1.SUIT, currNum int32, hand []int
 		}
 	}
 
-	if canChainCard(card, hand) {
+	if canChain {
 		score += 5
 	}
 
 	// 手牌少时强化牌型价值
 	if len(hand) <= shortHandLimit {
-		score -= (3 - numCount[cardNumber]) * 6
-		score -= (2 - suitCount[cardSuit]) * 5
+		score -= (3 - numberCount) * 6
+		score -= (2 - suitCount) * 5
 	}
 
 	return score
 }
 
-func canChainCard(card int32, hand []int32) bool {
-	cardSuit := Suit(card)
-	cardNumber := Number(card)
-	for _, handCard := range hand {
-		if handCard == card {
-			continue
+func cardEffectScore(number int32, opponentHandSize int) int {
+	switch number {
+	case pickTwoCardNumber:
+		if opponentHandSize > safeOpponentHandSize {
+			return 10
 		}
-		if Suit(handCard) == cardSuit || Number(handCard) == cardNumber {
-			return true
+		return -5
+	case suspendCardNumber:
+		return 5
+	case marketCardNumber:
+		return 12
+	case whotCardNumber:
+		if opponentHandSize > 1 {
+			return 10
+		}
+		return -10
+	default:
+		return 0
+	}
+}
+
+func countMatchingCards(hand []int32, card int32) (sameNumber, sameSuit int, canChain bool) {
+	number, suit := Number(card), Suit(card)
+	for _, other := range hand {
+		matchesNumber := Number(other) == number
+		matchesSuit := Suit(other) == suit
+		if matchesNumber {
+			sameNumber++
+		}
+		if matchesSuit {
+			sameSuit++
+		}
+		// 相同牌计入点数和花色，但只有不同牌可以连出。
+		if other != card && (matchesNumber || matchesSuit) {
+			canChain = true
 		}
 	}
-	return false
+	return sameNumber, sameSuit, canChain
 }
 
 func (t *Table) GetMinOpponentHandSize(p *player.Player) int {
@@ -360,9 +367,7 @@ func (t *Table) GetMinOpponentHandSize(p *player.Player) int {
 		if v == nil || !v.IsGaming() || v.GetChairID() == p.GetChairID() {
 			continue
 		}
-		if len(v.GetCards()) < opponentHandSize {
-			opponentHandSize = len(v.GetCards())
-		}
+		opponentHandSize = min(opponentHandSize, len(v.GetCards()))
 	}
 	return opponentHandSize
 }

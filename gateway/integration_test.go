@@ -107,7 +107,7 @@ func TestDistributedGatewaysKeepNodeOwnershipAndIndependentSender(t *testing.T) 
 			ordinaryDirectory := newOrdinaryDirectory()
 			discovery := newDirectory()
 			sessions := make(chan distributedSession, 2)
-			calls := map[string]*atomic.Int32{"node-a": {}, "node-b": {}}
+			var forwardCalls atomic.Int32
 			stopNode := make(map[string]func())
 			endpoints := make(map[string]string)
 			for _, id := range []string{"node-a", "node-b"} {
@@ -121,7 +121,7 @@ func TestDistributedGatewaysKeepNodeOwnershipAndIndependentSender(t *testing.T) 
 						return []byte(id), nil
 					})
 					server.RegisterRawHandler(2, func(context.Context, []byte) ([]byte, error) {
-						calls[id].Add(1)
+						forwardCalls.Add(1)
 						return []byte(id), nil
 					})
 				}, node.Stateful(store), node.Registration(newDirectory()))
@@ -166,17 +166,13 @@ func TestDistributedGatewaysKeepNodeOwnershipAndIndependentSender(t *testing.T) 
 			require.NoError(t, err)
 			require.Empty(t, nodeRecords, "Node 目录不能发现普通业务 RPC")
 
-			survivorID := "node-a"
-			if ownerID == survivorID {
-				survivorID = "node-b"
-			}
-			survivorCalls := calls[survivorID].Load()
+			callsBeforeStop := forwardCalls.Load()
 			stopNode[ownerID]()
 			_, code, err := current.Request(t.Context(), 2, &emptypb.Empty{})
 			require.NoError(t, err)
 			// 发现摘除与 epoch 释放独立传播；两种结果都须拒绝改投其他 Node。
 			require.Contains(t, []int32{int32(codes.Unavailable), int32(codes.Aborted)}, code)
-			require.Equal(t, survivorCalls, calls[survivorID].Load())
+			require.Equal(t, callsBeforeStop, forwardCalls.Load(), "归属 Node 退出后，请求不能转发到其他 Node")
 			boundID, err = store.LocateNode(t.Context(), serviceName, "player-a")
 			require.NoError(t, err)
 			require.Equal(t, ownerID, boundID)

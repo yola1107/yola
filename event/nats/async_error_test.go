@@ -200,6 +200,10 @@ type transportErrorHandler struct {
 	reports chan transportError
 }
 
+func (transportErrorHandler) Enabled(_ context.Context, level slog.Level) bool {
+	return level >= slog.LevelError
+}
+
 func (h transportErrorHandler) Handle(_ context.Context, record slog.Record) error {
 	if record.Message != "event transport error" {
 		return nil

@@ -1,5 +1,7 @@
 package zapslog
 
+import "math"
+
 const formatConsole = "console"
 
 // defaultConfig 返回默认配置
@@ -15,8 +17,6 @@ func defaultConfig() *Log {
 		MaxBackups: 7,
 		MaxAge:     7,
 		Compress:   true,
-		File:       false,
-		ErrorFile:  false,
 	}
 }
 
@@ -57,8 +57,8 @@ func WithAppName(name string) Option {
 // WithMaxSize 设置单文件最大大小（MB）
 func WithMaxSize(size int) Option {
 	return func(c *Log) {
-		if size >= 0 {
-			c.MaxSize = int32(size)
+		if value, ok := nonNegativeInt32(size); ok {
+			c.MaxSize = value
 		}
 	}
 }
@@ -66,8 +66,8 @@ func WithMaxSize(size int) Option {
 // WithMaxBackups 设置保留文件数
 func WithMaxBackups(count int) Option {
 	return func(c *Log) {
-		if count >= 0 {
-			c.MaxBackups = int32(count)
+		if value, ok := nonNegativeInt32(count); ok {
+			c.MaxBackups = value
 		}
 	}
 }
@@ -75,10 +75,17 @@ func WithMaxBackups(count int) Option {
 // WithMaxAge 设置保留天数
 func WithMaxAge(days int) Option {
 	return func(c *Log) {
-		if days >= 0 {
-			c.MaxAge = int32(days)
+		if value, ok := nonNegativeInt32(days); ok {
+			c.MaxAge = value
 		}
 	}
+}
+
+func nonNegativeInt32(value int) (int32, bool) {
+	if value < 0 || value > math.MaxInt32 {
+		return 0, false
+	}
+	return int32(value), true
 }
 
 // WithCompress 设置是否压缩

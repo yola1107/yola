@@ -1,6 +1,7 @@
 package press
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"sort"
@@ -96,23 +97,11 @@ func validatePressKeys(c config.Config) error {
 
 func validatePress(file *configFile) (Press, error) {
 	if file.LoadTest == nil {
-		return Press{}, fmt.Errorf("validate config: loadTest is required")
+		return Press{}, errors.New("validate config: loadTest is required")
 	}
 	press := withPressDefaults(file.LoadTest.Press)
-	if press.URL == "" {
-		return Press{}, fmt.Errorf("validate config: loadTest.press.url is required")
-	}
-	if press.Num <= 0 || len(press.Batch) != 2 || press.Batch[0] <= 0 || press.Batch[1] < press.Batch[0] {
-		return Press{}, fmt.Errorf("validate config: loadTest.press num and batch are invalid")
-	}
-	if press.Interval <= 0 || press.StartID <= 0 {
-		return Press{}, fmt.Errorf("validate config: loadTest.press interval and startID must be positive")
-	}
-	if press.UIDCount < int64(press.Num) || press.UIDCount > math.MaxInt64-press.StartID+1 {
-		return Press{}, fmt.Errorf("validate config: loadTest.press uidCount must reserve a valid non-overlapping UID range")
-	}
-	if press.Concurrency <= 0 || press.ActionConcurrency <= 0 {
-		return Press{}, fmt.Errorf("validate config: loadTest.press concurrency must be positive")
+	if err := validateLoad(press); err != nil {
+		return Press{}, err
 	}
 	money := pressure.MoneyRange{Min: press.MinMoney, Max: press.MaxMoney}
 	if _, err := pressure.Token(money); err != nil {
@@ -129,9 +118,28 @@ func validatePress(file *configFile) (Press, error) {
 	return press, nil
 }
 
+func validateLoad(press Press) error {
+	if press.URL == "" {
+		return errors.New("validate config: loadTest.press.url is required")
+	}
+	if press.Num <= 0 || len(press.Batch) != 2 || press.Batch[0] <= 0 || press.Batch[1] < press.Batch[0] {
+		return errors.New("validate config: loadTest.press num and batch are invalid")
+	}
+	if press.Interval <= 0 || press.StartID <= 0 {
+		return errors.New("validate config: loadTest.press interval and startID must be positive")
+	}
+	if press.UIDCount < int64(press.Num) || press.UIDCount > math.MaxInt64-press.StartID+1 {
+		return errors.New("validate config: loadTest.press uidCount must reserve a valid non-overlapping UID range")
+	}
+	if press.Concurrency <= 0 || press.ActionConcurrency <= 0 {
+		return errors.New("validate config: loadTest.press concurrency must be positive")
+	}
+	return nil
+}
+
 func validatePressScenario(press Press) error {
 	if press.LogoutRate < 0 || press.LogoutRate > 1 || press.OfflineRate < 0 || press.OfflineRate > 1 {
-		return fmt.Errorf("validate config: loadTest.press rates must be within [0,1]")
+		return errors.New("validate config: loadTest.press rates must be within [0,1]")
 	}
 	switch press.Scenario {
 	case scenarioConnect, scenarioPlay:
@@ -140,10 +148,10 @@ func validatePressScenario(press Press) error {
 		}
 	case scenarioReconnectChurn:
 		if press.LogoutRate == 0 && press.OfflineRate == 0 {
-			return fmt.Errorf("validate config: reconnect-churn scenario requires a churn rate")
+			return errors.New("validate config: reconnect-churn scenario requires a churn rate")
 		}
 		if press.UIDCount <= int64(press.Num) {
-			return fmt.Errorf("validate config: reconnect-churn scenario requires replacement UIDs")
+			return errors.New("validate config: reconnect-churn scenario requires replacement UIDs")
 		}
 	default:
 		return fmt.Errorf("validate config: loadTest.press scenario %q is invalid", press.Scenario)
@@ -164,7 +172,7 @@ func withPressDefaults(press Press) Press {
 func validateCapacity(press Press) error {
 	gateways := gatewayURLs(press.URL)
 	if len(gateways) == 0 || press.GatewayLimit <= 0 || press.GatewayPerIPLimit <= 0 {
-		return fmt.Errorf("validate config: Gateway capacity must be positive")
+		return errors.New("validate config: Gateway capacity must be positive")
 	}
 	target := int64(press.Num)
 	instances := int64(len(gateways))

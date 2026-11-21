@@ -157,7 +157,7 @@ func resolveClientOptions(opts ...ClientOption) (*clientOptions, error) {
 	if err := tlsconfig.ValidateClient(o.tlsConf); err != nil {
 		return nil, fmt.Errorf("tcp: %w", err)
 	}
-	o.tlsConf = tlsconfig.Clone(o.tlsConf)
+	o.tlsConf = o.tlsConf.Clone()
 	o.pushHandlers = maps.Clone(o.pushHandlers)
 	return o, nil
 }

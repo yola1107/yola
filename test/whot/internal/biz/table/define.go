@@ -1,6 +1,7 @@
 package table
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -122,10 +123,10 @@ func (s *SettleObj) GetResult() *v1.ResultPush {
 // Settle 执行结算
 func (s *SettleObj) Settle() error {
 	if s.Winner == nil || len(s.Users) == 0 {
-		return fmt.Errorf("invalid settle input: winner or users missing")
+		return errors.New("invalid settle input: winner or users missing")
 	}
 	if s.BaseScore < 0 || s.TaxRate < 0 || s.TaxRate > 1 {
-		return fmt.Errorf("invalid baseScore or taxRate")
+		return errors.New("invalid baseScore or taxRate")
 	}
 
 	winID := s.Winner.GetPlayerID()

@@ -25,9 +25,15 @@ type Player struct {
 	sessionVersion  uint64
 	nodeBindingLost bool
 	isOffline       bool
-	gameData        *GameData
 	baseData        *BaseData
 	exiting         atomic.Bool
+
+	tableID   atomic.Int32
+	chairID   atomic.Int32
+	status    Status
+	idleCount int32
+	bet       float64
+	cards     []int32
 }
 
 type Raw struct {
@@ -41,7 +47,6 @@ func New(raw *Raw) *Player {
 	return &Player{
 		isRobot:  raw.IsRobot,
 		session:  raw.Session,
-		gameData: &GameData{},
 		baseData: raw.BaseData,
 	}
 }

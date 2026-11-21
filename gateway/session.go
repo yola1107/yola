@@ -234,16 +234,16 @@ func (s *session) sendIfCurrent(expected locate.GateBinding, msg *v1.Proto) (boo
 	return true, s.conn.SendProto(msg)
 }
 
-func (s *session) sendIfAuthenticated(msg *network.PreparedProto) (bool, error) {
+func (s *session) sendIfAuthenticated(msg *network.PreparedProto) error {
 	s.bindingMu.Lock()
 	defer s.bindingMu.Unlock()
 	if !s.leaseValidLocked(time.Now()) {
-		return false, nil
+		return nil
 	}
 	if conn, ok := s.conn.(network.PreparedConnection); ok {
-		return true, conn.SendPrepared(msg)
+		return conn.SendPrepared(msg)
 	}
-	return true, s.conn.SendProto(msg.Message())
+	return s.conn.SendProto(msg.Message())
 }
 
 // leaseValidLocked 要求调用方持有 bindingMu。

@@ -73,7 +73,7 @@ func (t *Table) tryEnterReady() {
 		slog.Debug("table has enough ready players",
 			"table", t.Desc(),
 			"ready_players", len(players),
-			"maximum_players", t.maxPlayers,
+			"maximum_players", len(t.seats),
 			"next_stage", StReady.String(),
 		)
 	}

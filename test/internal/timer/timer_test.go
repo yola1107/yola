@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"strings"
 	"sync/atomic"
@@ -16,6 +15,8 @@ import (
 	timerheap "yola/test/internal/timer/heap"
 	"yola/test/internal/timer/stdlib"
 	"yola/test/internal/timer/wheel"
+
+	"github.com/stretchr/testify/require"
 )
 
 type schedulerConstructor func(*testing.T) timer.Scheduler
@@ -58,22 +59,27 @@ func TestSchedulers(t *testing.T) {
 }
 
 func TestSchedulersStopOnContextCancellation(t *testing.T) {
-	constructors := []func() (timer.Scheduler, error){
-		func() (timer.Scheduler, error) { return stdlib.New(), nil },
-		func() (timer.Scheduler, error) { return timerheap.New() },
-		func() (timer.Scheduler, error) { return wheel.New(wheel.WithTick(time.Millisecond)) },
-	}
-	for _, constructor := range constructors {
-		scheduler, err := constructor()
-		if err != nil {
-			t.Fatal(err)
-		}
-		ctx, cancel := context.WithCancel(context.Background())
-		if err = scheduler.Start(ctx); err != nil {
-			t.Fatal(err)
-		}
-		cancel()
-		stopScheduler(t, scheduler)
+	for name, newScheduler := range map[string]func() (timer.Scheduler, error){
+		"stdlib": func() (timer.Scheduler, error) { return stdlib.New(), nil },
+		"heap":   func() (timer.Scheduler, error) { return timerheap.New() },
+		"wheel":  func() (timer.Scheduler, error) { return wheel.New(wheel.WithTick(time.Millisecond)) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			scheduler, err := newScheduler()
+			require.NoError(t, err)
+			t.Cleanup(func() { stopScheduler(t, scheduler) })
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			require.NoError(t, scheduler.Start(ctx))
+			_, err = scheduler.Once(time.Hour, func() {})
+			require.NoError(t, err)
+			require.Equal(t, 1, scheduler.Monitor().Total)
+
+			cancel()
+			require.Eventually(t, func() bool { return scheduler.Monitor().Total == 0 }, time.Second, time.Millisecond)
+			_, err = scheduler.Once(time.Hour, func() {})
+			require.ErrorIs(t, err, timer.ErrStopped)
+		})
 	}
 }
 
@@ -124,14 +130,10 @@ func TestSchedulersSkipRejectedPeriodicOccurrence(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			executor := new(rejectingExecutor)
 			scheduler, err := constructor(executor)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			var executed atomic.Int32
 			id, err := scheduler.ForeverNow(10*time.Millisecond, func() { executed.Add(1) })
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			startScheduler(t, scheduler)
 			waitFor(t, time.Second, func() bool { return executor.calls.Load() >= 3 })
 			if got := executed.Load(); got != 0 {
@@ -182,14 +184,10 @@ func TestSchedulersCancelSubmittedCallback(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			executor := &holdingExecutor{jobs: make(chan func(), 1)}
 			scheduler, err := constructor(executor)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			var executed atomic.Bool
 			id, err := scheduler.Once(0, func() { executed.Store(true) })
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			startScheduler(t, scheduler)
 			var job func()
 			select {
@@ -302,6 +300,7 @@ func TestHeapSchedulerWithWorkerPool(t *testing.T) {
 }
 
 func testSchedulerLifecycle(t *testing.T, newScheduler schedulerConstructor) {
+	t.Helper()
 	scheduler := newScheduler(t)
 	var nilContext context.Context // Context 零值为 nil，用于验证显式拒绝逻辑。
 	if err := scheduler.Start(nilContext); err == nil {
@@ -323,6 +322,7 @@ func testSchedulerLifecycle(t *testing.T, newScheduler schedulerConstructor) {
 }
 
 func testSchedulerOnce(t *testing.T, newScheduler schedulerConstructor) {
+	t.Helper()
 	scheduler := newScheduler(t)
 	executed := make(chan struct{})
 	id, err := scheduler.Once(0, func() { close(executed) })
@@ -339,6 +339,7 @@ func testSchedulerOnce(t *testing.T, newScheduler schedulerConstructor) {
 }
 
 func testSchedulerPanic(t *testing.T, newScheduler schedulerConstructor) {
+	t.Helper()
 	scheduler := newScheduler(t)
 	panicked := make(chan struct{})
 	continued := make(chan struct{})
@@ -358,6 +359,7 @@ func testSchedulerPanic(t *testing.T, newScheduler schedulerConstructor) {
 }
 
 func testSchedulerPeriodicPanic(t *testing.T, newScheduler schedulerConstructor) {
+	t.Helper()
 	scheduler := newScheduler(t)
 	var calls atomic.Int32
 	continued := make(chan struct{})
@@ -381,6 +383,7 @@ func testSchedulerPeriodicPanic(t *testing.T, newScheduler schedulerConstructor)
 }
 
 func testSchedulerCancel(t *testing.T, newScheduler schedulerConstructor) {
+	t.Helper()
 	scheduler := newScheduler(t)
 	var executed atomic.Bool
 	id, err := scheduler.Once(20*time.Millisecond, func() { executed.Store(true) })
@@ -399,6 +402,7 @@ func testSchedulerCancel(t *testing.T, newScheduler schedulerConstructor) {
 }
 
 func testSchedulerCancelAll(t *testing.T, newScheduler schedulerConstructor) {
+	t.Helper()
 	scheduler := newScheduler(t)
 	firstID, err := scheduler.Once(time.Hour, func() {})
 	if err != nil {
@@ -420,6 +424,7 @@ func testSchedulerCancelAll(t *testing.T, newScheduler schedulerConstructor) {
 }
 
 func testSchedulerForeverModes(t *testing.T, newScheduler schedulerConstructor) {
+	t.Helper()
 	scheduler := newScheduler(t)
 	immediate := make(chan struct{})
 	delayed := make(chan struct{})
@@ -446,6 +451,7 @@ func testSchedulerForeverModes(t *testing.T, newScheduler schedulerConstructor) 
 }
 
 func testSchedulerPeriodic(t *testing.T, newScheduler schedulerConstructor) {
+	t.Helper()
 	scheduler := newScheduler(t)
 	var active, maximum, count atomic.Int32
 	twice := make(chan struct{})
@@ -476,6 +482,7 @@ func testSchedulerPeriodic(t *testing.T, newScheduler schedulerConstructor) {
 }
 
 func testSchedulerStop(t *testing.T, newScheduler schedulerConstructor) {
+	t.Helper()
 	scheduler := newScheduler(t)
 	started := make(chan struct{})
 	release := make(chan struct{})
@@ -499,6 +506,7 @@ func testSchedulerStop(t *testing.T, newScheduler schedulerConstructor) {
 }
 
 func testSchedulerValidation(t *testing.T, newScheduler schedulerConstructor) {
+	t.Helper()
 	scheduler := newScheduler(t)
 	if _, err := scheduler.Once(-time.Second, func() {}); err == nil {
 		t.Fatal("Once accepted negative delay")
@@ -542,7 +550,7 @@ type rejectOnceExecutor struct {
 
 func (executor *rejectOnceExecutor) Submit(job func()) error {
 	if executor.calls.Add(1) == 1 {
-		return fmt.Errorf("reject first callback")
+		return errors.New("reject first callback")
 	}
 	go job()
 	return nil
@@ -554,7 +562,7 @@ type rejectingExecutor struct {
 
 func (executor *rejectingExecutor) Submit(func()) error {
 	executor.calls.Add(1)
-	return fmt.Errorf("reject callback")
+	return errors.New("reject callback")
 }
 
 type holdingExecutor struct {

@@ -76,7 +76,7 @@ func verifyBrokerPayloadLimits(t *testing.T, address string) {
 	require.NoError(t, err)
 	require.Equal(t, "nats", endpoint.Scheme, "raw protocol probe requires the isolated plaintext broker")
 	require.Nil(t, endpoint.User, "raw protocol probe does not accept credentials")
-	conn, err := net.DialTimeout("tcp", endpoint.Host, time.Second)
+	conn, err := (&net.Dialer{Timeout: time.Second}).DialContext(context.Background(), "tcp", endpoint.Host)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, conn.Close()) })
 	require.NoError(t, conn.SetDeadline(time.Now().Add(time.Second)))

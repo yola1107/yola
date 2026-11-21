@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"yola/internal/contextwait"
 	"yola/test/internal/timer"
 )
 
@@ -24,8 +25,7 @@ type state uint8
 const (
 	stateNew state = iota
 	stateRunning
-	stateStopping
-	stateStopped
+	stateClosed
 )
 
 // Option configures a Scheduler.
@@ -51,15 +51,13 @@ type Scheduler struct {
 	executor timer.Executor
 	logger   *slog.Logger
 
-	mu      sync.Mutex
-	state   state
-	queue   taskHeap
-	tasks   map[timer.TaskID]*taskEntry
-	wakeup  chan struct{}
-	stop    chan struct{}
-	done    chan struct{}
-	stopOne sync.Once
-	doneOne sync.Once
+	mu     sync.Mutex
+	state  state
+	queue  taskHeap
+	tasks  map[timer.TaskID]*taskEntry
+	wakeup chan struct{}
+	stop   chan struct{}
+	done   chan struct{}
 
 	nextID    atomic.Int64
 	running   atomic.Int32
@@ -131,17 +129,10 @@ func (s *Scheduler) Stop(ctx context.Context) error {
 		return nil
 	default:
 	}
-	select {
-	case <-s.done:
-		return nil
-	case <-ctx.Done():
-		select {
-		case <-s.done:
-			return nil
-		default:
-			return fmt.Errorf("stop heap timer: %w", ctx.Err())
-		}
+	if err := contextwait.Done(ctx, s.done); err != nil {
+		return fmt.Errorf("stop heap timer: %w", err)
 	}
+	return nil
 }
 
 // Once registers a one-shot callback.
@@ -205,13 +196,12 @@ func (s *Scheduler) schedule(delay, interval time.Duration, repeated bool, callb
 		id:       timer.TaskID(s.nextID.Add(1)),
 		execAt:   time.Now().Add(delay),
 		interval: interval,
-		repeated: repeated,
 		callback: callback,
 		index:    -1,
 	}
 
 	s.mu.Lock()
-	if s.state == stateStopping || s.state == stateStopped {
+	if s.state == stateClosed {
 		s.mu.Unlock()
 		return 0, timer.ErrStopped
 	}
@@ -243,21 +233,23 @@ func (s *Scheduler) run(ctx context.Context) {
 
 		select {
 		case <-timerC:
+			continue
 		case <-s.wakeup:
-			if scheduled && !wakeTimer.Stop() {
-				select {
-				case <-wakeTimer.C:
-				default:
-				}
+			if !scheduled || wakeTimer.Stop() {
+				continue
 			}
+			select {
+			case <-wakeTimer.C:
+			default:
+			}
+			continue
 		case <-ctx.Done():
 			s.requestStop()
-			s.completeStop()
-			return
 		case <-s.stop:
-			s.completeStop()
-			return
 		}
+		s.callbacks.Wait()
+		close(s.done)
+		return
 	}
 }
 
@@ -269,7 +261,8 @@ func (s *Scheduler) popExpired(now time.Time) []*taskEntry {
 	}
 	var expired []*taskEntry
 	for len(s.queue) > 0 && !s.queue[0].execAt.After(now) {
-		expired = append(expired, heap.Pop(&s.queue).(*taskEntry))
+		expired = append(expired, s.queue[0])
+		heap.Pop(&s.queue)
 	}
 	return expired
 }
@@ -289,8 +282,7 @@ func (s *Scheduler) nextDelay(now time.Time) (time.Duration, bool) {
 
 func (s *Scheduler) dispatch(entry *taskEntry) {
 	s.mu.Lock()
-	current, ok := s.tasks[entry.id]
-	if s.state != stateRunning || !ok || current != entry || entry.canceled.Load() {
+	if s.state != stateRunning || s.tasks[entry.id] != entry || entry.canceled.Load() {
 		s.mu.Unlock()
 		return
 	}
@@ -324,13 +316,12 @@ func (s *Scheduler) handleRejected(entry *taskEntry, submitErr error) {
 	s.logger.Warn("timer executor rejected callback", "task_id", entry.id, "error", submitErr)
 
 	s.mu.Lock()
-	current, ok := s.tasks[entry.id]
-	if !ok || current != entry || entry.canceled.Load() || s.state != stateRunning {
+	if s.tasks[entry.id] != entry || entry.canceled.Load() || s.state != stateRunning {
 		s.mu.Unlock()
 		return
 	}
-	if entry.repeated {
-		entry.execAt = nextExecution(entry.execAt, entry.interval, time.Now())
+	if entry.interval > 0 {
+		entry.execAt = timer.NextExecution(entry.execAt, entry.interval, time.Now())
 	} else {
 		entry.execAt = time.Now().Add(executorRetryDelay)
 	}
@@ -342,41 +333,31 @@ func (s *Scheduler) handleRejected(entry *taskEntry, submitErr error) {
 func (s *Scheduler) finish(entry *taskEntry) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	current, ok := s.tasks[entry.id]
-	if !ok || current != entry || entry.canceled.Load() || s.state != stateRunning {
+	if s.tasks[entry.id] != entry || entry.canceled.Load() || s.state != stateRunning {
 		return
 	}
-	if !entry.repeated {
+	if entry.interval == 0 {
 		delete(s.tasks, entry.id)
 		return
 	}
-	entry.execAt = nextExecution(entry.execAt, entry.interval, time.Now())
+	entry.execAt = timer.NextExecution(entry.execAt, entry.interval, time.Now())
 	heap.Push(&s.queue, entry)
 	s.notify()
 }
 
 func (s *Scheduler) requestStop() {
 	s.mu.Lock()
-	switch s.state {
-	case stateNew:
-		s.state = stateStopped
-		s.cancelAllLocked()
-		s.stopOne.Do(func() { close(s.stop) })
-		s.doneOne.Do(func() { close(s.done) })
-	case stateRunning:
-		s.state = stateStopping
-		s.cancelAllLocked()
-		s.stopOne.Do(func() { close(s.stop) })
+	defer s.mu.Unlock()
+	if s.state == stateClosed {
+		return
 	}
-	s.mu.Unlock()
-}
-
-func (s *Scheduler) completeStop() {
-	s.callbacks.Wait()
-	s.mu.Lock()
-	s.state = stateStopped
-	s.mu.Unlock()
-	s.doneOne.Do(func() { close(s.done) })
+	started := s.state == stateRunning
+	s.state = stateClosed
+	s.cancelAllLocked()
+	close(s.stop)
+	if !started {
+		close(s.done)
+	}
 }
 
 func (s *Scheduler) cancelAllLocked() {
@@ -393,13 +374,4 @@ func (s *Scheduler) notify() {
 	case s.wakeup <- struct{}{}:
 	default:
 	}
-}
-
-func nextExecution(previous time.Time, interval time.Duration, now time.Time) time.Time {
-	next := previous.Add(interval)
-	if next.After(now) {
-		return next
-	}
-	missed := int64(now.Sub(next)/interval) + 1
-	return next.Add(time.Duration(missed) * interval)
 }

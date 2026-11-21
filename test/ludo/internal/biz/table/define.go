@@ -22,33 +22,27 @@ const (
 
 const fastModeMoveTimeoutSeconds = 5
 
-var stageTimeouts = map[StageID]int64{
-	StWait:     0,
-	StReady:    0,
-	StSendCard: 3,
-	StDice:     7,
-	StMove:     7,
-	StResult:   3,
-}
-
-var stageNames = map[StageID]string{
-	StWait:     "StWait",
-	StReady:    "StReady",
-	StSendCard: "StSendCard",
-	StDice:     "StDice",
-	StMove:     "StMove",
-	StResult:   "StResult",
+var stages = map[StageID]struct {
+	name    string
+	timeout int64
+}{
+	StWait:     {name: "StWait"},
+	StReady:    {name: "StReady"},
+	StSendCard: {name: "StSendCard", timeout: 3},
+	StDice:     {name: "StDice", timeout: 7},
+	StMove:     {name: "StMove", timeout: 7},
+	StResult:   {name: "StResult", timeout: 3},
 }
 
 func (s StageID) String() string {
-	if name, ok := stageNames[s]; ok {
-		return name
+	if stage, ok := stages[s]; ok {
+		return stage.name
 	}
 	return fmt.Sprintf("StageID(%d)", s)
 }
 
 func (s StageID) Timeout() int64 {
-	timeout, ok := stageTimeouts[s]
+	stage, ok := stages[s]
 	if !ok {
 		slog.Warn("unknown stage", "stage", int32(s), "fallback_timeout_seconds", 0)
 		return 0
@@ -56,7 +50,7 @@ func (s StageID) Timeout() int64 {
 	if conf.FastMode && (s == StDice || s == StMove) {
 		return fastModeMoveTimeoutSeconds
 	}
-	return timeout
+	return stage.timeout
 }
 
 // Stage 封装当前阶段及其定时信息。

@@ -1,18 +1,14 @@
 package xgo
 
-import "math/rand/v2"
-
 func SliceCopy[T any](values []T) []T {
-	if values == nil {
-		return nil
-	}
 	return append([]T(nil), values...)
 }
 
 func SliceShuffle[T any](values []T) {
-	rand.Shuffle(len(values), func(i, j int) {
+	for i := len(values) - 1; i > 0; i-- {
+		j := RandIntInclusive(0, i)
 		values[i], values[j] = values[j], values[i]
-	})
+	}
 }
 
 func SliceSubtract[T comparable](values, removed []T) []T {

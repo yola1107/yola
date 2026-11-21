@@ -15,6 +15,7 @@ import (
 	"yola/network"
 
 	"github.com/gorilla/websocket"
+	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -327,23 +328,14 @@ func TestNewClientWaitsForAuthenticationResult(t *testing.T) {
 			client, err := NewClient(ctx, WithEndpoint(endpoint), WithToken("invalid-token"),
 				WithServiceName("game"), WithTimeout(test.timeout),
 				WithPushHandler(map[int32]PushHandler{1: func(body []byte) { pushed <- body }}))
-			if !errors.Is(err, test.wantErr) {
-				t.Fatalf("NewClient() error = %v, want %v", err, test.wantErr)
-			}
-			if (client == nil) != (err != nil) {
-				t.Fatalf("NewClient() client = %v, error = %v", client, err)
-			}
+			require.ErrorIs(t, err, test.wantErr)
+			require.Equal(t, err != nil, client == nil, "NewClient() client = %v, error = %v", client, err)
 			if client != nil {
 				defer client.Close()
 			}
-			if got := test.handler.opened.Load(); got != 1 {
-				t.Fatalf("authentication connections = %d, want 1", got)
-			}
+			require.Equal(t, int32(1), test.handler.opened.Load())
 			if test.wantPush {
-				body := waitWebSocketValue(t, pushed)
-				if string(body) != "before-auth-reply" {
-					t.Fatalf("push body = %q", body)
-				}
+				require.Equal(t, "before-auth-reply", string(waitWebSocketValue(t, pushed)))
 			}
 		})
 	}

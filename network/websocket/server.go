@@ -205,7 +205,7 @@ func (s *Server) prepare() error {
 func (s *Server) listenAndEndpoint() error {
 	created := false
 	if s.lis == nil {
-		lis, err := net.Listen(s.config.network, s.config.address)
+		lis, err := (&net.ListenConfig{}).Listen(context.Background(), s.config.network, s.config.address)
 		if err != nil {
 			return err
 		}

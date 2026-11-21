@@ -43,7 +43,7 @@ func TestConstructionHasNoListenerOrEpochSideEffects(t *testing.T) {
 	require.NoError(t, listener.Close())
 	store := newMemoryNodeStore()
 	server := newTestServer(t, Address(address), Stateful(store))
-	rebound, err := net.Listen("tcp", address)
+	rebound, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", address)
 	require.NoError(t, err)
 	require.NoError(t, rebound.Close())
 	_, err = store.LocateNodeEpoch(context.Background(), "game", "node-a")
@@ -668,7 +668,7 @@ func assertNodeAddressReusable(t *testing.T, record *registry.ServiceInstance) {
 	t.Helper()
 	endpoint, err := url.Parse(record.Endpoints[0])
 	require.NoError(t, err)
-	listener, err := net.Listen("tcp", endpoint.Host)
+	listener, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", endpoint.Host)
 	require.NoError(t, err)
 	require.NoError(t, listener.Close())
 }

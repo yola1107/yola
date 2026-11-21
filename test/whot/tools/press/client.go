@@ -2,6 +2,7 @@ package press
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -102,7 +103,7 @@ func (r *Runner) Start() error {
 
 	interval := time.Duration(r.conf.Press.Interval) * time.Millisecond
 	if interval <= 0 {
-		return fmt.Errorf("press interval must be positive")
+		return errors.New("press interval must be positive")
 	}
 	r.background.Add(1)
 	go func() {
@@ -118,7 +119,8 @@ func (r *Runner) Stop() {
 	r.stop.Do(func() {
 		r.stopRuntime()
 		r.users.Range(func(key, value any) bool {
-			value.(*User).Release()
+			user, _ := value.(*User)
+			user.Release()
 			r.users.Delete(key)
 			return true
 		})
@@ -166,8 +168,8 @@ func (r *Runner) Load() {
 }
 
 func (r *Runner) Release() {
-	r.users.Range(func(key, value interface{}) bool {
-		user := value.(*User)
+	r.users.Range(func(key, value any) bool {
+		user, _ := value.(*User)
 		if !user.IsFree() {
 			return true
 		}

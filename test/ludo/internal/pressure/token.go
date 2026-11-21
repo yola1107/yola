@@ -32,17 +32,16 @@ func ParseToken(token string) (MoneyRange, bool, error) {
 	if !found {
 		return MoneyRange{}, true, errors.New("pressure token money range is missing")
 	}
-	money := MoneyRange{}
-	var err error
-	money.Min, err = strconv.ParseFloat(minimum, 64)
+	minMoney, err := strconv.ParseFloat(minimum, 64)
 	if err != nil {
 		return MoneyRange{}, true, errors.New("pressure token minimum money is invalid")
 	}
-	money.Max, err = strconv.ParseFloat(maximum, 64)
+	maxMoney, err := strconv.ParseFloat(maximum, 64)
 	if err != nil {
 		return MoneyRange{}, true, errors.New("pressure token maximum money is invalid")
 	}
-	if err = money.validate(); err != nil {
+	money := MoneyRange{Min: minMoney, Max: maxMoney}
+	if err := money.validate(); err != nil {
 		return MoneyRange{}, true, err
 	}
 	return money, true, nil

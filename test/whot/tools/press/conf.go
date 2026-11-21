@@ -1,6 +1,7 @@
 package press
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/go-kratos/kratos/v3/config"
@@ -48,20 +49,20 @@ func LoadConfig(path string) (config.Config, *Bootstrap, error) {
 
 func validatePress(bootstrap *Bootstrap) error {
 	if bootstrap.LoadTest == nil {
-		return fmt.Errorf("validate config: loadTest is required")
+		return errors.New("validate config: loadTest is required")
 	}
 	press := bootstrap.LoadTest.Press
 	if press.URL == "" {
-		return fmt.Errorf("validate config: loadTest.press.url is required")
+		return errors.New("validate config: loadTest.press.url is required")
 	}
 	if press.Num <= 0 || len(press.Batch) != 2 || press.Batch[0] <= 0 || press.Batch[1] < press.Batch[0] {
-		return fmt.Errorf("validate config: loadTest.press num and batch are invalid")
+		return errors.New("validate config: loadTest.press num and batch are invalid")
 	}
 	if press.Interval <= 0 || press.StartID <= 0 {
-		return fmt.Errorf("validate config: loadTest.press interval and startID must be positive")
+		return errors.New("validate config: loadTest.press interval and startID must be positive")
 	}
 	if press.LogoutRate < 0 || press.LogoutRate > 1 || press.OfflineRate < 0 || press.OfflineRate > 1 {
-		return fmt.Errorf("validate config: loadTest.press rates must be within [0,1]")
+		return errors.New("validate config: loadTest.press rates must be within [0,1]")
 	}
 	return nil
 }

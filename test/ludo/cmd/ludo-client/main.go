@@ -37,7 +37,7 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	runner := press.NewRunner(config)
 	if err := runner.Start(); err != nil {

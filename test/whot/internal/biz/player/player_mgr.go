@@ -1,8 +1,6 @@
 package player
 
-import (
-	"sync"
-)
+import "sync"
 
 type Monitor struct {
 	Num     int64
@@ -13,23 +11,19 @@ type Manager struct {
 	players sync.Map // key: playerID, value: *Player
 }
 
-func NewManager() *Manager {
-	return &Manager{}
-}
-
 func (m *Manager) AddIfAbsent(p *Player) (*Player, bool) {
 	if p == nil {
 		return nil, false
 	}
 	current, loaded := m.players.LoadOrStore(p.GetPlayerID(), p)
-	return current.(*Player), !loaded
+	actual, _ := current.(*Player)
+	return actual, !loaded
 }
 
 func (m *Manager) GetByID(id int64) *Player {
-	if p, ok := m.players.Load(id); ok {
-		return p.(*Player)
-	}
-	return nil
+	value, _ := m.players.Load(id)
+	p, _ := value.(*Player)
+	return p
 }
 
 func (m *Manager) RemoveIfSame(p *Player) bool {
@@ -38,8 +32,9 @@ func (m *Manager) RemoveIfSame(p *Player) bool {
 
 func (m *Manager) All() []*Player {
 	var result []*Player
-	m.players.Range(func(_, value interface{}) bool {
-		result = append(result, value.(*Player))
+	m.players.Range(func(_, value any) bool {
+		p, _ := value.(*Player)
+		result = append(result, p)
 		return true
 	})
 	return result
@@ -47,9 +42,9 @@ func (m *Manager) All() []*Player {
 
 func (m *Manager) Monitor() Monitor {
 	var all, offline int64
-	m.players.Range(func(_, value interface{}) bool {
+	m.players.Range(func(_, value any) bool {
 		all++
-		p := value.(*Player)
+		p, _ := value.(*Player)
 		if p != nil && p.IsOffline() {
 			offline++
 		}

@@ -113,8 +113,3 @@ func (p *Player) CancelExit() {
 		p.exiting.Store(false)
 	}
 }
-
-func (p *Player) GetIP() string {
-	// Yola Session deliberately exposes authenticated identity, not transport peer details.
-	return ""
-}

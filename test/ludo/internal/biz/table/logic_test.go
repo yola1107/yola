@@ -12,6 +12,8 @@ import (
 	"yola/test/ludo/internal/conf"
 	"yola/test/ludo/internal/model"
 	"yola/test/ludo/pkg/codes"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestMoveTimeoutAdvancesTurn(t *testing.T) {
@@ -95,87 +97,83 @@ func TestRoundRunsDiceMoveResultAndStartsNextRound(t *testing.T) {
 		player.New(&player.Raw{ID: 1, BaseData: &player.BaseData{UID: 1, Money: 500}}),
 		player.New(&player.Raw{ID: 2, BaseData: &player.BaseData{UID: 2, Money: 500}}),
 	}
-	if err := tables.call(context.Background(), 1, func(gameTable *Table) error {
+	require.NoError(t, tables.call(context.Background(), 1, func(gameTable *Table) error {
 		for _, p := range players {
 			if !seatForTest(gameTable, p) || !gameTable.Ready(p, true) {
 				return fmt.Errorf("ready player %d", p.GetPlayerID())
 			}
 		}
 		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
+	}))
 	assertTableStage(t, tables, StReady)
 	fireTableStage(t, tables)
 	assertTableStage(t, tables, StSendCard)
-	for _, p := range players {
-		if money := p.GetBaseData().Money; money != 400 {
-			t.Fatalf("player %d money = %.0f, want 400", p.GetPlayerID(), money)
-		}
-	}
+	assertPlayerMoney(t, players, 400)
 	fireTableStage(t, tables)
 	assertTableStage(t, tables, StDice)
 	var fastTimerID int64
-	if err := tables.call(context.Background(), 1, func(gameTable *Table) error {
-		active := gameTable.activePlayer()
-		if active == nil {
-			return fmt.Errorf("active player is missing")
-		}
-		diceRsp := gameTable.RollDice(active, false)
-		if diceRsp == nil {
-			return fmt.Errorf("dice request failed")
-		}
-		moveDice := diceRsp.Dice
-		if gameTable.stage.State() != StMove {
-			active = gameTable.activePlayer()
-			moveDice = 1
-			active.AddDice(moveDice)
-			gameTable.allowPlayerToMove(active)
-		}
-		moves := gameTable.board.CalcAllMovable(active.GetColor(), []int32{moveDice})
-		if len(moves) == 0 {
-			return fmt.Errorf("active player has no move for dice %d", moveDice)
-		}
-		moveRsp := gameTable.MovePiece(active, &v1.MoveReq{
-			UserId:    active.GetPlayerID(),
-			PieceId:   moves[0][0],
-			DiceValue: moveDice,
-		}, false)
-		if moveRsp == nil {
-			return fmt.Errorf("move request failed")
-		}
-		fastTimerID = gameTable.fastTimerID
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if !fireTableTimer(t, tables, fastTimerID) {
-		t.Fatalf("fast result timer %d is missing", fastTimerID)
-	}
-	if err := tables.call(context.Background(), 1, func(*Table) error { return nil }); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, tables.call(context.Background(), 1, func(gameTable *Table) error {
+		var moveErr error
+		fastTimerID, moveErr = playRoundMove(gameTable)
+		return moveErr
+	}))
+	require.True(t, fireTableTimer(t, tables, fastTimerID), "fast result timer %d", fastTimerID)
+	require.NoError(t, tables.call(context.Background(), 1, func(*Table) error { return nil }))
 	assertTableStage(t, tables, StResult)
-	for _, p := range players {
-		if money := p.GetAllMoney(); money != 500 {
-			t.Fatalf("timeout refund for player %d = %.0f, want 500", p.GetPlayerID(), money)
-		}
-	}
+	assertPlayerMoney(t, players, 500)
 	fireTableStage(t, tables)
 	assertTableStage(t, tables, StWait)
-	if err := tables.call(context.Background(), 1, func(gameTable *Table) error {
+	require.NoError(t, tables.call(context.Background(), 1, func(gameTable *Table) error {
 		for _, p := range players {
 			if !gameTable.Ready(p, true) {
 				return fmt.Errorf("ready player %d for next round", p.GetPlayerID())
 			}
 		}
 		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
+	}))
 	assertTableStage(t, tables, StReady)
 	fireTableStage(t, tables)
 	assertTableStage(t, tables, StSendCard)
+}
+
+func assertPlayerMoney(t *testing.T, players []*player.Player, want float64) {
+	t.Helper()
+	for _, p := range players {
+		if money := p.GetAllMoney(); money != want {
+			t.Fatalf("player %d money = %.0f, want %.0f", p.GetPlayerID(), money, want)
+		}
+	}
+}
+
+func playRoundMove(gameTable *Table) (int64, error) {
+	active := gameTable.activePlayer()
+	if active == nil {
+		return 0, errors.New("active player is missing")
+	}
+	diceRsp := gameTable.RollDice(active, false)
+	if diceRsp == nil {
+		return 0, errors.New("dice request failed")
+	}
+	moveDice := diceRsp.Dice
+	if gameTable.stage.State() != StMove {
+		active = gameTable.activePlayer()
+		moveDice = 1
+		active.AddDice(moveDice)
+		gameTable.allowPlayerToMove(active)
+	}
+	moves := gameTable.board.CalcAllMovable(active.GetColor(), []int32{moveDice})
+	if len(moves) == 0 {
+		return 0, fmt.Errorf("active player has no move for dice %d", moveDice)
+	}
+	moveRsp := gameTable.MovePiece(active, &v1.MoveReq{
+		UserId:    active.GetPlayerID(),
+		PieceId:   moves[0][0],
+		DiceValue: moveDice,
+	}, false)
+	if moveRsp == nil {
+		return 0, errors.New("move request failed")
+	}
+	return gameTable.fastTimerID, nil
 }
 
 func TestSettleGamePaysWinnerAndBuildsResult(t *testing.T) {
@@ -291,7 +289,7 @@ func TestRobotTimerIgnoresPlayerAfterTableExit(t *testing.T) {
 	var robotTimerID int64
 	if err := tables.call(context.Background(), 1, func(gameTable *Table) error {
 		if !seatForTest(gameTable, robot) {
-			return fmt.Errorf("seat robot")
+			return errors.New("seat robot")
 		}
 		robot.SetGaming()
 		gameTable.activeChair = robot.GetChairID()
@@ -304,7 +302,7 @@ func TestRobotTimerIgnoresPlayerAfterTableExit(t *testing.T) {
 		gameTable.stage.Set(StWait, time.Second, 0)
 		exited, exitErr := gameTable.Exit(robot, codes.Success, "logout")
 		if exitErr != nil || !exited {
-			return fmt.Errorf("exit robot")
+			return errors.New("exit robot")
 		}
 		return nil
 	}); err != nil {
@@ -315,7 +313,7 @@ func TestRobotTimerIgnoresPlayerAfterTableExit(t *testing.T) {
 	}
 	if err := tables.call(context.Background(), 1, func(gameTable *Table) error {
 		if gameTable.playerAt(0) != nil || robot.GetTableID() != player.TableIDDetached {
-			return fmt.Errorf("robot timer changed exited player route")
+			return errors.New("robot timer changed exited player route")
 		}
 		return nil
 	}); err != nil {
@@ -343,7 +341,7 @@ func TestRobotTimerIgnoresStaleStageToken(t *testing.T) {
 	var robotTimerID int64
 	if err := tables.call(context.Background(), 1, func(gameTable *Table) error {
 		if !seatForTest(gameTable, robot) {
-			return fmt.Errorf("seat robot")
+			return errors.New("seat robot")
 		}
 		robot.SetGaming()
 		robot.SetColor(0)

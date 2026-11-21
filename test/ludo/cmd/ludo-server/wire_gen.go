@@ -32,8 +32,7 @@ func wireApp(instanceID string, serverConfig *conf.Server, dataConfig *conf.Data
 		cleanup()
 		return nil, nil, err
 	}
-	dataData := data.NewData(universalClient)
-	playerRepo := data.NewPlayerRepo(dataData)
+	playerRepo := data.NewPlayerRepo(universalClient)
 	usecase, cleanup3, err := biz.NewUsecase(instanceID, playerRepo, room)
 	if err != nil {
 		cleanup2()
@@ -41,7 +40,7 @@ func wireApp(instanceID string, serverConfig *conf.Server, dataConfig *conf.Data
 		return nil, nil, err
 	}
 	serviceService := service.NewService(usecase)
-	nodeServer, err := server.NewNodeServer(universalClient, registry, serviceService, serverConfig, dataConfig)
+	nodeServer, err := server.NewNodeServer(universalClient, registry, serviceService, usecase, serverConfig, dataConfig)
 	if err != nil {
 		cleanup3()
 		cleanup2()

@@ -7,10 +7,10 @@ import (
 	"fmt"
 	"net"
 	"net/url"
-	"reflect"
 	"time"
 
 	"yola/internal/grpcendpoint"
+	"yola/internal/nilcheck"
 	"yola/internal/tlsconfig"
 	"yola/locate"
 
@@ -164,7 +164,7 @@ func ServerTLS(config *tls.Config) Option {
 		if err := tlsconfig.ValidateServer(config); err != nil {
 			return fmt.Errorf("node: %w", err)
 		}
-		o.grpcOptions = append(o.grpcOptions, grpc.TLSConfig(tlsconfig.Clone(config)))
+		o.grpcOptions = append(o.grpcOptions, grpc.TLSConfig(config.Clone()))
 		o.serverTLS = true
 		return nil
 	}
@@ -190,7 +190,7 @@ func ClientMiddleware(m ...middleware.Middleware) Option {
 // 未配置 Stateful 时保持无状态。
 func Stateful(store Store) Option {
 	return func(o *options) error {
-		if isNil(store) {
+		if nilcheck.IsNil(store) {
 			return errors.New("node: stateful store is required")
 		}
 		o.stateful = store
@@ -202,7 +202,7 @@ func Stateful(store Store) Option {
 // directory 不能为 nil（含带类型 nil）。
 func GateDirectory(directory GateLookup) Option {
 	return func(o *options) error {
-		if isNil(directory) {
+		if nilcheck.IsNil(directory) {
 			return errors.New("node: gate directory is required")
 		}
 		o.gateDirectory = directory
@@ -219,7 +219,7 @@ func ClientTLS(config *tls.Config) Option {
 		if err := tlsconfig.ValidateClient(config); err != nil {
 			return fmt.Errorf("node: gRPC %w", err)
 		}
-		o.clientTLS = tlsconfig.Clone(config)
+		o.clientTLS = config.Clone()
 		return nil
 	}
 }
@@ -264,18 +264,5 @@ func Drain(fn DrainFunc) Option {
 	return func(o *options) error {
 		o.drain = fn
 		return nil
-	}
-}
-
-func isNil(value any) bool {
-	if value == nil {
-		return true
-	}
-	reflected := reflect.ValueOf(value)
-	switch reflected.Kind() {
-	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
-		return reflected.IsNil()
-	default:
-		return false
 	}
 }

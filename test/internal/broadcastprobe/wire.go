@@ -2,6 +2,7 @@ package broadcastprobe
 
 import (
 	"encoding/binary"
+	"math"
 	"time"
 )
 
@@ -21,9 +22,9 @@ func Decode(payload []byte) (time.Time, bool) {
 	if len(payload) != PayloadBytes {
 		return time.Time{}, false
 	}
-	nanoseconds := int64(binary.LittleEndian.Uint64(payload))
-	if nanoseconds <= 0 {
+	nanoseconds := binary.LittleEndian.Uint64(payload)
+	if nanoseconds == 0 || nanoseconds > math.MaxInt64 {
 		return time.Time{}, false
 	}
-	return time.Unix(0, nanoseconds), true
+	return time.Unix(0, int64(nanoseconds)), true
 }

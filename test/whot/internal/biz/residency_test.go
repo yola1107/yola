@@ -30,7 +30,7 @@ func TestRenewConflictStopsResidentPlayer(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				repo := new(usecaseRepoStub)
-				uc, cleanup, err := NewUsecase(repo, whotDrainTestRoom())
+				uc, cleanup, err := NewUsecase(repo, whotTestRoom())
 				require.NoError(t, err)
 				t.Cleanup(cleanup)
 				pusher := new(residencyPusher)
@@ -83,7 +83,7 @@ func TestTransientRenewalFailureRetainsPlayer(t *testing.T) {
 		t.Run(code.String(), func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				repo := new(usecaseRepoStub)
-				uc, cleanup, err := NewUsecase(repo, whotDrainTestRoom())
+				uc, cleanup, err := NewUsecase(repo, whotTestRoom())
 				require.NoError(t, err)
 				t.Cleanup(cleanup)
 				sess := &residencySession{
@@ -108,7 +108,7 @@ func TestTransientRenewalFailureRetainsPlayer(t *testing.T) {
 func TestDelayedRenewConflictPreservesReconnectedPlayer(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		repo := new(usecaseRepoStub)
-		uc, cleanup, err := NewUsecase(repo, whotDrainTestRoom())
+		uc, cleanup, err := NewUsecase(repo, whotTestRoom())
 		require.NoError(t, err)
 		release := make(chan struct{})
 		resume := sync.OnceFunc(func() { close(release) })
@@ -155,7 +155,7 @@ func TestDelayedRenewConflictPreservesReconnectedPlayer(t *testing.T) {
 func TestQueuedBindingLossDoesNotOrphanReconnect(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		repo := new(usecaseRepoStub)
-		uc, cleanup, err := NewUsecase(repo, whotDrainTestRoom())
+		uc, cleanup, err := NewUsecase(repo, whotTestRoom())
 		require.NoError(t, err)
 		t.Cleanup(cleanup)
 		sess := &residencySession{
@@ -217,7 +217,7 @@ func TestQueuedBindingLossDoesNotOrphanReconnect(t *testing.T) {
 
 func TestResidencyFollowsReconnectAndStopsAfterLogout(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		uc, cleanup, err := NewUsecase(new(usecaseRepoStub), whotDrainTestRoom())
+		uc, cleanup, err := NewUsecase(new(usecaseRepoStub), whotTestRoom())
 		require.NoError(t, err)
 		t.Cleanup(cleanup)
 		first := &residencySession{connectionSession: connectionSession{uid: "42", bindingToken: "first"}}
@@ -227,6 +227,8 @@ func TestResidencyFollowsReconnectAndStopsAfterLogout(t *testing.T) {
 		synctest.Wait()
 		time.Sleep(2 * time.Minute)
 		synctest.Wait()
+		require.Equal(t, int64(1), first.renews.Load())
+		require.Equal(t, int64(1), first.binds.Load())
 
 		current := &residencySession{connectionSession: connectionSession{uid: "42", bindingToken: "current"}}
 		reply, err = uc.Login(t.Context(), current, 42, "valid")
@@ -248,7 +250,7 @@ func TestResidencyFollowsReconnectAndStopsAfterLogout(t *testing.T) {
 
 func TestDrainCancelsAndWaitsForNodeRenewal(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		uc, cleanup, err := NewUsecase(new(usecaseRepoStub), whotDrainTestRoom())
+		uc, cleanup, err := NewUsecase(new(usecaseRepoStub), whotTestRoom())
 		require.NoError(t, err)
 		release := make(chan struct{})
 		unblock := sync.OnceFunc(func() { close(release) })
@@ -291,25 +293,6 @@ func TestDrainCancelsAndWaitsForNodeRenewal(t *testing.T) {
 		time.Sleep(2 * time.Minute)
 		synctest.Wait()
 		require.Equal(t, int64(1), sess.renews.Load())
-	})
-}
-
-func TestResidentPlayerRenewsNodeWithoutRebinding(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		uc, cleanup, err := NewUsecase(new(usecaseRepoStub), whotDrainTestRoom())
-		require.NoError(t, err)
-		t.Cleanup(cleanup)
-		sess := &residencySession{connectionSession: connectionSession{uid: "42", bindingToken: "resident"}}
-		reply, err := uc.Login(t.Context(), sess, 42, "valid")
-		require.NoError(t, err)
-		require.Equal(t, codes.Success, reply.Code)
-		synctest.Wait()
-
-		time.Sleep(2 * time.Minute)
-		synctest.Wait()
-
-		require.Equal(t, int64(1), sess.renews.Load())
-		require.Equal(t, int64(1), sess.binds.Load())
 	})
 }
 

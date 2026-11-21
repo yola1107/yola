@@ -20,12 +20,3 @@ func TestValidateServer(t *testing.T) {
 		return nil, nil
 	}}))
 }
-
-func TestCloneReturnsIndependentConfiguration(t *testing.T) {
-	config := &tls.Config{MinVersion: tls.VersionTLS12}
-	cloned := Clone(config)
-	require.NotSame(t, config, cloned)
-	config.MinVersion = tls.VersionTLS13
-	require.Equal(t, uint16(tls.VersionTLS12), cloned.MinVersion)
-	require.Nil(t, Clone(nil))
-}

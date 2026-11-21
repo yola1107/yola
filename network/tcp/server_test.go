@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"yola/network"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestServerStopRespectsContextWhileAcceptIsBlocked(t *testing.T) {
@@ -86,25 +88,15 @@ func TestEndpointUsesConfiguredListener(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			lis, err := net.Listen("tcp", "127.0.0.1:0")
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			options := append([]ServerOption{Listener(lis)}, test.options...)
 			s := NewServer(options...)
 			endpoint, err := s.Endpoint()
-			if err != nil {
-				t.Fatalf("Endpoint() error = %v", err)
-			}
+			require.NoError(t, err)
 			want := test.scheme + "://" + lis.Addr().String()
-			if endpoint.String() != want {
-				t.Fatalf("Endpoint() = %s, want %s", endpoint, want)
-			}
-			if s.lis != lis {
-				t.Fatal("Endpoint replaced the configured listener")
-			}
-			if err := s.Stop(context.Background()); err != nil {
-				t.Fatalf("Stop() error = %v", err)
-			}
+			require.Equal(t, want, endpoint.String())
+			require.Same(t, lis, s.lis, "Endpoint replaced the configured listener")
+			require.NoError(t, s.Stop(context.Background()))
 		})
 	}
 }
@@ -128,7 +120,7 @@ func TestServerCanPrepareAfterListenFailure(t *testing.T) {
 	if err = s.Stop(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	rebound, err := net.Listen("tcp", address)
+	rebound, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", address)
 	if err != nil {
 		t.Fatalf("listener remained open after Stop: %v", err)
 	}
@@ -149,7 +141,7 @@ func TestEndpointRejectsInvalidConfigurationBeforeBinding(t *testing.T) {
 		t.Fatalf("Endpoint() error = %v, want invalid codec", err)
 	}
 
-	rebound, err := net.Listen("tcp", address)
+	rebound, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", address)
 	if err != nil {
 		t.Fatalf("invalid configuration bound the listener: %v", err)
 	}
@@ -173,7 +165,7 @@ func TestStoppedServerDoesNotOpenEndpoint(t *testing.T) {
 	if _, err = s.Endpoint(); err == nil || err.Error() != "tcp: server is stopped" {
 		t.Fatalf("Endpoint() error = %v, want stopped", err)
 	}
-	rebound, err := net.Listen("tcp", address)
+	rebound, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", address)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -238,7 +230,7 @@ func TestServerRejectsInvalidConfiguration(t *testing.T) {
 			server: newTCPServer(
 				t,
 				tcpTestHandler{},
-				TLSConfig(&tls.Config{InsecureSkipVerify: true}),
+				TLSConfig(&tls.Config{InsecureSkipVerify: true}), // #nosec G402 -- 验证配置入口会拒绝关闭证书校验。
 			),
 			want: "tcp: TLS certificate verification must be enabled",
 		},

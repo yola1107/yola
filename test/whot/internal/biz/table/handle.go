@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 
 	"yola/test/internal/xgo"
 	v1 "yola/test/whot/api/v1"
@@ -49,12 +50,28 @@ func (t *Table) OnReadyReq(p *player.Player, ready bool) bool {
 	return true
 }
 
-func (t *Table) OnChatReq(p *player.Player, in *v1.ChatReq) bool {
+func (t *Table) OnChatReq(p *player.Player, in *v1.ChatReq) *v1.ChatRsp {
 	if p == nil || in == nil {
-		return false
+		return nil
 	}
-	t.broadcastChatRsp(p, in)
-	return true
+	uid := p.GetPlayerID()
+	reply := &v1.ChatRsp{
+		UserID: legacyChatUID(uid),
+		OpType: in.OpType,
+		FaceID: in.FaceID,
+		Msg:    in.Msg,
+	}
+	t.SendPacketToAllExcept(v1.GameCommand_CmdChatPush, reply, uid)
+	return reply
+}
+
+// legacyChatUID 保留旧聊天协议截取 UID 低 32 位的行为。
+func legacyChatUID(uid int64) int32 {
+	low := int32(uid & math.MaxInt32)
+	if uid&(int64(1)<<31) != 0 {
+		low |= math.MinInt32
+	}
+	return low
 }
 
 func (t *Table) OnHosting(p *player.Player, hosting bool) bool {
@@ -83,10 +100,7 @@ func (t *Table) OnOffline(p *player.Player) {
 }
 
 func (t *Table) OnPlayerActionReq(p *player.Player, in *v1.PlayerActionReq, timeout bool) bool {
-	if p == nil || !p.IsGaming() || len(t.GetGamers()) <= 1 || p.GetChairID() != t.active {
-		return false
-	}
-	if s := t.stage.State(); s != StPlaying {
+	if !t.isCurrentGamer(p) || t.stage.State() != StPlaying {
 		return false
 	}
 
@@ -120,20 +134,29 @@ func (t *Table) OnPlayerActionReq(p *player.Player, in *v1.PlayerActionReq, time
 		t.onSkipTurn(p, timeout)
 
 	case v1.ACTION_DECLARE_SUIT:
-		if t.pending == nil || t.pending.Effect != v1.CARD_EFFECT_WHOT || !IsWhotCard(t.currCard) {
-			slog.Error("reject declare suit", "request", t.describePlayerAction(p, in, timeout))
-			return false
-		}
-		if suit := in.DeclareSuit; suit < v1.SUIT_CIRCLE || suit > v1.SUIT_START {
-			slog.Error("reject invalid suit", "request", t.describePlayerAction(p, in, timeout))
-			return false
-		}
-		t.onDeclareSuit(p, in.DeclareSuit, timeout)
+		return t.handleDeclareSuit(p, in, timeout)
 
 	default:
 		slog.Warn("unknown player action", "request", t.describePlayerAction(p, in, timeout))
 		return false
 	}
+	return true
+}
+
+func (t *Table) isCurrentGamer(p *player.Player) bool {
+	return p != nil && p.IsGaming() && len(t.GetGamers()) > 1 && p.GetChairID() == t.active
+}
+
+func (t *Table) handleDeclareSuit(p *player.Player, in *v1.PlayerActionReq, timeout bool) bool {
+	if t.pending == nil || t.pending.Effect != v1.CARD_EFFECT_WHOT || !IsWhotCard(t.currCard) {
+		slog.Error("reject declare suit", "request", t.describePlayerAction(p, in, timeout))
+		return false
+	}
+	if suit := in.DeclareSuit; suit < v1.SUIT_CIRCLE || suit > v1.SUIT_START {
+		slog.Error("reject invalid suit", "request", t.describePlayerAction(p, in, timeout))
+		return false
+	}
+	t.onDeclareSuit(p, in.DeclareSuit, timeout)
 	return true
 }
 

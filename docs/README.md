@@ -72,7 +72,7 @@ Redis 保存连接定位与 Node 绑定，etcd 提供 Node 注册与发现；需
 | `make check` | 检查根协议与依赖，对两个 module 运行静态分析和测试，检查 Git 空白 |
 | `make fmt` | 校验工具版本，按配置格式化两个 module，会修改代码 |
 | `make lint-config` | 校验工具版本与 lint 配置 |
-| `make lint` | 校验工具版本，依次检查两个 module；任一失败时，全部检查结束后返回失败 |
+| `make lint` | 检查两个 module 的默认构建，再以 `wireinject` 标签检查 Ludo 和 Whot 的注入包。各项执行完后汇总退出状态 |
 | `make lint-fix` | 先执行 `make fmt`，再对两个 module 运行可自动修复的 lint 规则，会修改代码 |
 | `make race` | 对两个 module 运行竞态检测测试 |
 | `make breaking BUF_BREAKING_AGAINST='.git#ref=<tag-or-commit>'` | 检查根 API 相对指定版本的兼容性；替换为实际 tag 或 commit |

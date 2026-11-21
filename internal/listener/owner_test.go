@@ -50,7 +50,7 @@ func TestOwnerBindsLazilyAndReleasesAddress(t *testing.T) {
 	require.NoError(t, owner.Close())
 	require.NoError(t, owner.Close())
 
-	rebound, err := net.Listen("tcp", address)
+	rebound, err := new(net.ListenConfig).Listen(t.Context(), "tcp", address)
 	require.NoError(t, err)
 	require.NoError(t, rebound.Close())
 }

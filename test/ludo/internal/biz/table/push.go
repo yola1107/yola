@@ -51,22 +51,17 @@ func (t *Table) sendPacket(p *player.Player, cmd v1.GameCommand, msg proto.Messa
 }
 
 func (t *Table) sendToAll(cmd v1.GameCommand, msg proto.Message) {
-	var disconnectedPlayers []*player.Player
-	for _, recipient := range t.seats {
-		if recipient == nil {
-			continue
-		}
-		if err := t.sendPacket(recipient, cmd, msg); errors.Is(err, ErrPlayerDisconnected) {
-			disconnectedPlayers = append(disconnectedPlayers, recipient)
-		}
-	}
-	t.offlinePlayers(disconnectedPlayers)
+	t.broadcastPacket(cmd, msg, nil)
 }
 
 func (t *Table) sendToAllExcept(cmd v1.GameCommand, msg proto.Message, excludedUID int64) {
+	t.broadcastPacket(cmd, msg, &excludedUID)
+}
+
+func (t *Table) broadcastPacket(cmd v1.GameCommand, msg proto.Message, excludedUID *int64) {
 	var disconnectedPlayers []*player.Player
 	for _, recipient := range t.seats {
-		if recipient == nil || recipient.GetPlayerID() == excludedUID {
+		if recipient == nil || excludedUID != nil && recipient.GetPlayerID() == *excludedUID {
 			continue
 		}
 		if err := t.sendPacket(recipient, cmd, msg); errors.Is(err, ErrPlayerDisconnected) {
@@ -122,7 +117,6 @@ func (t *Table) sendUserInfo(src, dst *player.Player) error {
 		AvatarUrl: src.GetAvatarURL(),
 		Vip:       src.GetVipGrade(),
 		Status:    int32(src.GetStatus()),
-		Ip:        src.GetIP(),
 	})
 }
 
@@ -241,12 +235,15 @@ func (t *Table) getDiceList(p *player.Player) []*v1.Dice {
 	if p.GetChairID() != t.activeChair {
 		list = p.GetLastDiceSlot()
 	}
+	return diceMessages(list)
+}
 
-	var dices []*v1.Dice
-	if len(list) > 0 {
-		dices = make([]*v1.Dice, 0, len(list))
+func diceMessages(slots []player.DiceSlot) []*v1.Dice {
+	if len(slots) == 0 {
+		return nil
 	}
-	for _, v := range list {
+	dices := make([]*v1.Dice, 0, len(slots))
+	for _, v := range slots {
 		dices = append(dices, &v1.Dice{
 			Value: v.Value,
 			Used:  v.Used,
@@ -272,7 +269,7 @@ func (t *Table) broadcastActivePlayerPush() {
 			movablePaths = xgo.ToJSON(t.board.CalcAllMovable(active.GetColor(), active.UnusedDice()))
 		}
 		if fileLogEnabled {
-			t.mLog.activePush(active, push.CanAction, "", movablePaths)
+			t.mLog.activePush(active, push.CanAction, movablePaths)
 		}
 		if debugEnabled {
 			slog.Debug("push active player",
@@ -287,7 +284,7 @@ func (t *Table) broadcastActivePlayerPush() {
 
 func (t *Table) getCanAction(p *player.Player) v1.ACTION_TYPE {
 	if p == nil || !p.IsGaming() || p.GetChairID() != t.activeChair || p.IsFinish() {
-		return 0
+		return v1.ACTION_TYPE_AcVoid
 	}
 	switch t.stage.State() {
 	case StDice:
@@ -295,25 +292,13 @@ func (t *Table) getCanAction(p *player.Player) v1.ACTION_TYPE {
 	case StMove:
 		return v1.ACTION_TYPE_AcMove
 	default:
-		return 0
+		return v1.ACTION_TYPE_AcVoid
 	}
 }
 
 func (t *Table) diceResponse(p *player.Player, dice int32) *v1.DiceRsp {
-	slots := p.GetDiceSlot()
-	var diceList []*v1.Dice
-	if len(slots) > 0 {
-		diceList = make([]*v1.Dice, 0, len(slots))
-	}
-	for _, v := range slots {
-		diceList = append(diceList, &v1.Dice{
-			Value: v.Value,
-			Used:  v.Used,
-		})
-	}
+	diceList := diceMessages(p.GetDiceSlot())
 	return &v1.DiceRsp{
-		Code:     0,
-		Msg:      "",
 		Uid:      p.GetPlayerID(),
 		Dice:     dice,
 		DiceList: diceList,
@@ -341,8 +326,6 @@ func (t *Table) moveResponse(p *player.Player, dice int32, step *model.Step) *v1
 	}
 
 	return &v1.MoveRsp{
-		Code:      0,
-		Msg:       "",
 		DiceValue: dice,
 		Move:      move,
 		Killed:    killed,

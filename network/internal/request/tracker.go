@@ -32,17 +32,25 @@ func (t *Tracker) Resolve(response *v1.Proto) bool {
 	if !ok {
 		return false
 	}
-	pending.(*Pending).done <- outcome{body: response.Body, code: response.Code}
+	pendingEntry(pending).done <- outcome{body: response.Body, code: response.Code}
 	return true
 }
 
 func (t *Tracker) Fail(err error) {
 	t.pending.Range(func(seq, pending any) bool {
 		if t.pending.CompareAndDelete(seq, pending) {
-			pending.(*Pending).done <- outcome{err: err}
+			pendingEntry(pending).done <- outcome{err: err}
 		}
 		return true
 	})
+}
+
+func pendingEntry(value any) *Pending {
+	pending, ok := value.(*Pending)
+	if !ok {
+		panic("network: request tracker entry must be a *Pending")
+	}
+	return pending
 }
 
 func (t *Tracker) nextSequence() int32 {
@@ -64,16 +72,16 @@ func (p *Pending) Cancel() {
 }
 
 func (p *Pending) Wait(ctx context.Context) ([]byte, int32, error) {
+	var result outcome
 	select {
-	case result := <-p.done:
-		return result.body, result.code, result.err
+	case result = <-p.done:
 	case <-ctx.Done():
 		if p.tracker.pending.CompareAndDelete(p.seq, p) {
 			return nil, 0, ctx.Err()
 		}
-		result := <-p.done
-		return result.body, result.code, result.err
+		result = <-p.done
 	}
+	return result.body, result.code, result.err
 }
 
 type outcome struct {

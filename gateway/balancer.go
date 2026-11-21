@@ -77,8 +77,12 @@ func (p *backendPicker) Pick(info balancer.PickInfo) (balancer.PickResult, error
 	if err != nil {
 		return balancer.PickResult{}, err
 	}
+	subConn, ok := node.(*backendSubConn)
+	if !ok {
+		panic("gateway: WRR selection must return a *backendSubConn")
+	}
 	return balancer.PickResult{
-		SubConn: node.(*backendSubConn).subConn,
+		SubConn: subConn.subConn,
 		Done: func(di balancer.DoneInfo) {
 			done(info.Ctx, selector.DoneInfo{Err: di.Err})
 		},

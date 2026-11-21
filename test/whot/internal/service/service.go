@@ -27,13 +27,7 @@ func NewService(uc *biz.Usecase) *Service {
 func (s *Service) RegisterNode(server *node.Server) {
 	v1.RegisterGameServer(server, s)
 	s.uc.SetClientPusher(server)
-	server.OnDisconnect(s.disconnect)
-}
-
-func (s *Service) Drain(ctx context.Context) error {
-	return s.uc.Drain(ctx)
-}
-
-func (s *Service) disconnect(ctx context.Context, sess node.Session) error {
-	return s.uc.Disconnect(ctx, sess)
+	server.OnDisconnect(func(ctx context.Context, sess node.Session) error {
+		return s.uc.Disconnect(ctx, sess)
+	})
 }

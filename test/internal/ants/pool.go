@@ -10,6 +10,8 @@ import (
 	"sync"
 	"time"
 
+	"yola/internal/contextwait"
+
 	antslib "github.com/panjf2000/ants/v2"
 )
 
@@ -74,8 +76,7 @@ type state uint8
 const (
 	stateNew state = iota
 	stateRunning
-	stateStopping
-	stateStopped
+	stateClosed
 )
 
 // Pool limits and reuses goroutines for asynchronous work.
@@ -153,7 +154,8 @@ func (p *Pool) Start(ctx context.Context) error {
 	go func() {
 		select {
 		case <-ctx.Done():
-			_ = p.Stop(context.Background())
+			p.shutdown()
+			<-p.done
 		case <-p.done:
 		}
 	}()
@@ -171,17 +173,10 @@ func (p *Pool) Stop(ctx context.Context) error {
 		return p.stopErr
 	default:
 	}
-	select {
-	case <-p.done:
-		return p.stopErr
-	case <-ctx.Done():
-		select {
-		case <-p.done:
-			return p.stopErr
-		default:
-			return fmt.Errorf("stop ants worker pool: %w", ctx.Err())
-		}
+	if err := contextwait.Done(ctx, p.done); err != nil {
+		return fmt.Errorf("stop ants worker pool: %w", err)
 	}
+	return p.stopErr
 }
 
 // Submit queues task for execution.
@@ -190,18 +185,18 @@ func (p *Pool) Submit(task func()) error {
 		return errors.New("ants worker pool task is nil")
 	}
 	p.mu.Lock()
-	current := p.state
 	pool := p.pool
-	if current == stateRunning {
+	switch p.state {
+	case stateRunning:
 		p.submitWG.Add(1)
-	}
-	p.mu.Unlock()
-	switch current {
 	case stateNew:
+		p.mu.Unlock()
 		return ErrNotStarted
-	case stateStopping, stateStopped:
+	case stateClosed:
+		p.mu.Unlock()
 		return ErrClosed
 	}
+	p.mu.Unlock()
 	defer p.submitWG.Done()
 
 	err := pool.Submit(func() {
@@ -230,12 +225,12 @@ func (p *Pool) Submit(task func()) error {
 // Monitor returns current pool utilization.
 func (p *Pool) Monitor() Monitor {
 	p.mu.Lock()
-	pool := p.pool
-	running := p.state == stateRunning
-	p.mu.Unlock()
-	if !running || pool == nil {
+	if p.state != stateRunning {
+		p.mu.Unlock()
 		return Monitor{}
 	}
+	pool := p.pool
+	p.mu.Unlock()
 	return Monitor{
 		Capacity: pool.Cap(),
 		Running:  pool.Running(),
@@ -247,14 +242,13 @@ func (p *Pool) Monitor() Monitor {
 func (p *Pool) shutdown() {
 	p.stopOnce.Do(func() {
 		p.mu.Lock()
-		if p.state == stateNew {
-			p.state = stateStopped
+		p.state = stateClosed
+		pool := p.pool
+		if pool == nil {
 			close(p.done)
 			p.mu.Unlock()
 			return
 		}
-		p.state = stateStopping
-		pool := p.pool
 		p.mu.Unlock()
 
 		go func() {
@@ -263,9 +257,6 @@ func (p *Pool) shutdown() {
 			if err != nil && !errors.Is(err, antslib.ErrPoolClosed) {
 				p.stopErr = fmt.Errorf("release ants worker pool: %w", err)
 			}
-			p.mu.Lock()
-			p.state = stateStopped
-			p.mu.Unlock()
 			close(p.done)
 		}()
 	})

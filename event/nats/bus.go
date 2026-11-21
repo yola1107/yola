@@ -259,23 +259,7 @@ func (b *Bus) failRegistration(registered *subscription, cause error) error {
 }
 
 func connect(ctx context.Context, o options) (*natsgo.Conn, error) {
-	connectOptions := []natsgo.Option{
-		natsgo.Timeout(timeoutFor(ctx, o.timeout)),
-		natsgo.ReconnectBufSize(-1),
-		natsgo.ErrorHandler(func(_ *natsgo.Conn, sub *natsgo.Subscription, err error) {
-			attrs := []slog.Attr{slog.Any("error", err)}
-			if sub != nil {
-				attrs = append(attrs, slog.String("topic", sub.Subject))
-			}
-			slog.LogAttrs(ctx, slog.LevelError, "event transport error", attrs...)
-		}),
-	}
-	if o.username != "" || o.password != "" {
-		connectOptions = append(connectOptions, natsgo.UserInfo(o.username, o.password))
-	}
-	if o.tls != nil {
-		connectOptions = append(connectOptions, natsgo.Secure(o.tls))
-	}
+	connectOptions := connectionOptions(ctx, o)
 	type result struct {
 		conn *natsgo.Conn
 		err  error
@@ -309,6 +293,27 @@ func connect(ctx context.Context, o options) (*natsgo.Conn, error) {
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
+}
+
+func connectionOptions(ctx context.Context, o options) []natsgo.Option {
+	connectOptions := []natsgo.Option{
+		natsgo.Timeout(timeoutFor(ctx, o.timeout)),
+		natsgo.ReconnectBufSize(-1),
+		natsgo.ErrorHandler(func(_ *natsgo.Conn, sub *natsgo.Subscription, err error) {
+			attrs := []slog.Attr{slog.Any("error", err)}
+			if sub != nil {
+				attrs = append(attrs, slog.String("topic", sub.Subject))
+			}
+			slog.LogAttrs(ctx, slog.LevelError, "event transport error", attrs...)
+		}),
+	}
+	if o.username != "" || o.password != "" {
+		connectOptions = append(connectOptions, natsgo.UserInfo(o.username, o.password))
+	}
+	if o.tls != nil {
+		connectOptions = append(connectOptions, natsgo.Secure(o.tls))
+	}
+	return connectOptions
 }
 
 func contextError(ctx context.Context) error {

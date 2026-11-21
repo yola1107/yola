@@ -77,10 +77,9 @@ func (s *Server) push(binding locate.GateBinding, msg *protocolv1.Proto) error {
 	if !matched {
 		return errBindingChanged
 	}
-	if err == nil {
-		return nil
-	}
 	switch {
+	case err == nil:
+		return nil
 	case errors.Is(err, network.ErrFrameTooLarge):
 		return network.ErrFrameTooLarge
 	case errors.Is(err, network.ErrSendQueueFull):

@@ -13,6 +13,7 @@ import (
 
 	clusterv1 "yola/api/cluster/v1"
 	protocolv1 "yola/api/protocol/v1"
+	"yola/network"
 	"yola/network/tcp"
 	"yola/network/websocket"
 
@@ -24,10 +25,6 @@ import (
 	"google.golang.org/protobuf/types/known/emptypb"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 )
-
-type gatewayRequestClient interface {
-	Request(context.Context, int32, proto.Message) ([]byte, int32, error)
-}
 
 func TestDefaultHeartbeatSurvivesExtendedForward(t *testing.T) {
 	for _, transportName := range []string{"tcp", "websocket"} {
@@ -260,22 +257,7 @@ func checkHeartbeatDuringForward(t *testing.T, transportName string, pingInterva
 	grpcListener, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	heartbeats := make(chan struct{}, 4)
-	observeHeartbeat := func(next middleware.Handler) middleware.Handler {
-		return func(ctx context.Context, req any) (any, error) {
-			reply, handleErr := next(ctx, req)
-			if message, ok := reply.(*protocolv1.Proto); handleErr == nil && ok && message.Op == protocolv1.OpHeartbeatReply {
-				select {
-				case <-started:
-					select {
-					case heartbeats <- struct{}{}:
-					default:
-					}
-				default:
-				}
-			}
-			return reply, handleErr
-		}
-	}
+	observeHeartbeat := observeHeartbeatReplies(started, heartbeats)
 	var transport ClientTransport
 	if transportName == "tcp" {
 		transport = tcp.NewServer(tcp.Listener(listener), tcp.Middleware(observeHeartbeat), tcp.Timeout(handlerTimeout))
@@ -288,10 +270,7 @@ func checkHeartbeatDuringForward(t *testing.T, transportName string, pingInterva
 	)
 	startTestApp(t, gate)
 	disconnected := make(chan struct{})
-	var client interface {
-		gatewayRequestClient
-		Close()
-	}
+	var client lifecycleClient
 	if transportName == "tcp" {
 		client, err = tcp.NewClient(context.Background(),
 			tcp.WithAddress(listener.Addr().String()), tcp.WithServiceName("game"), tcp.WithToken("synthetic-token"),
@@ -327,6 +306,26 @@ func checkHeartbeatDuringForward(t *testing.T, transportName string, pingInterva
 	}
 	client.Close()
 	require.Error(t, receiveWithin(t, requestDone))
+}
+
+func observeHeartbeatReplies(started <-chan struct{}, heartbeats chan<- struct{}) middleware.Middleware {
+	return func(next middleware.Handler) middleware.Handler {
+		return func(ctx context.Context, req any) (any, error) {
+			reply, handleErr := next(ctx, req)
+			if message, ok := reply.(*protocolv1.Proto); handleErr == nil && ok && message.Op == protocolv1.OpHeartbeatReply {
+				select {
+				case <-started:
+				default:
+					return reply, handleErr
+				}
+				select {
+				case heartbeats <- struct{}{}:
+				default:
+				}
+			}
+			return reply, handleErr
+		}
+	}
 }
 
 type blockedForwardNode struct {
@@ -370,16 +369,11 @@ func newHeartbeatWirePeer(t *testing.T, transportName string, backend clusterv1.
 	var send func([]byte) error
 	var read func() ([]byte, error)
 	if transportName == "tcp" {
-		conn, dialErr := net.Dial("tcp", listener.Addr().String())
+		conn, dialErr := (&net.Dialer{}).DialContext(t.Context(), "tcp", listener.Addr().String())
 		require.NoError(t, dialErr)
 		t.Cleanup(func() { require.NoError(t, conn.Close()) })
 		require.NoError(t, conn.SetDeadline(time.Now().Add(3*time.Second)))
-		send = func(body []byte) error {
-			frame := binary.LittleEndian.AppendUint32(nil, uint32(len(body)))
-			frame = append(frame, body...)
-			_, writeErr := conn.Write(frame)
-			return writeErr
-		}
+		send = func(body []byte) error { return sendTCPTestFrame(conn, body) }
 		read = func() ([]byte, error) {
 			var header [4]byte
 			if _, readErr := io.ReadFull(conn, header[:]); readErr != nil {
@@ -425,6 +419,17 @@ func newHeartbeatWirePeer(t *testing.T, transportName string, backend clusterv1.
 	}
 }
 
+func sendTCPTestFrame(conn net.Conn, body []byte) error {
+	size := len(body)
+	if size > protocolv1.MaxProtoSize {
+		return network.ErrFrameTooLarge
+	}
+	frame := binary.LittleEndian.AppendUint32(nil, uint32(size))
+	frame = append(frame, body...)
+	_, err := conn.Write(frame)
+	return err
+}
+
 type pipelineNode struct {
 	clusterv1.UnimplementedNodeServer
 	called   chan int32
@@ -458,7 +463,7 @@ func (*pipelineNode) Disconnect(context.Context, *clusterv1.DisconnectRequest) (
 	return &emptypb.Empty{}, nil
 }
 
-func assertGatewayRequests(ctx context.Context, t *testing.T, client gatewayRequestClient, pushes <-chan []byte, commands ...int32) {
+func assertGatewayRequests(ctx context.Context, t *testing.T, client lifecycleClient, pushes <-chan []byte, commands ...int32) {
 	t.Helper()
 	request := wrapperspb.String("request")
 	body, err := proto.Marshal(request)

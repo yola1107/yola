@@ -122,62 +122,72 @@ func TestLocatorRedisRequestBudget(t *testing.T) {
 				}
 				require.NotEqual(t, "1", address, "an explicit isolated address is required")
 			}
-			for _, name := range []string{
-				"Ping", "BindGate", "LocateGate", "RenewGateLease", "UnbindGate", "BindNode", "RenewNode", "LocateNode", "UnbindNode",
-				"RegisterNodeEpoch", "RenewNodeEpoch", "LocateNodeEpoch", "UnregisterNodeEpoch",
-			} {
-				t.Run(name, func(t *testing.T) {
-					store, binding, replies := newDelayedRedisLocator(t, address, password)
-					replies.armed.Store(true)
-					ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-					defer cancel()
-					started := time.Now()
-					err := locatorOperations(store, binding)[name](ctx)
-					require.ErrorIs(t, err, context.DeadlineExceeded)
-					var timeout net.Error
-					require.ErrorAs(t, err, &timeout, "the original network error must remain available")
-					require.True(t, timeout.Timeout())
-					require.Less(t, time.Since(started), time.Second, "caller budget must override the 2s socket timeout")
-				})
+			checkRedisOperationDeadlines(t, address, password)
+			checkRedisWriteAfterCancel(t, address, password)
+		})
+	}
+}
+
+func checkRedisOperationDeadlines(t *testing.T, address, password string) {
+	t.Helper()
+	for _, name := range []string{
+		"Ping", "BindGate", "LocateGate", "RenewGateLease", "UnbindGate", "BindNode", "RenewNode", "LocateNode", "UnbindNode",
+		"RegisterNodeEpoch", "RenewNodeEpoch", "LocateNodeEpoch", "UnregisterNodeEpoch",
+	} {
+		t.Run(name, func(t *testing.T) {
+			store, binding, replies := newDelayedRedisLocator(t, address, password)
+			replies.armed.Store(true)
+			ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+			defer cancel()
+			started := time.Now()
+			err := locatorOperations(store, binding)[name](ctx)
+			require.ErrorIs(t, err, context.DeadlineExceeded)
+			var timeout net.Error
+			require.ErrorAs(t, err, &timeout, "the original network error must remain available")
+			require.True(t, timeout.Timeout())
+			require.Less(t, time.Since(started), time.Second, "caller budget must override the 2s socket timeout")
+		})
+	}
+}
+
+func checkRedisWriteAfterCancel(t *testing.T, address, password string) {
+	t.Helper()
+	for _, result := range []struct {
+		name  string
+		epoch string
+		want  error
+	}{
+		{name: "successful write after cancel", epoch: "epoch"},
+		{name: "fencing after cancel", epoch: "stale", want: locate.ErrNodeEpochConflict},
+	} {
+		t.Run(result.name, func(t *testing.T) {
+			store, binding, replies := newDelayedRedisLocator(t, address, password)
+			replies.armed.Store(true)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			done := make(chan error, 1)
+			go func() { done <- store.BindNode(ctx, binding.ServiceName, binding.UID, "node", result.epoch) }()
+			select {
+			case <-replies.entered:
+			case <-time.After(time.Second):
+				t.Fatal("Redis reply did not reach the barrier")
 			}
-			for _, result := range []struct {
-				name  string
-				epoch string
-				want  error
-			}{
-				{name: "successful write after cancel", epoch: "epoch"},
-				{name: "fencing after cancel", epoch: "stale", want: locate.ErrNodeEpochConflict},
-			} {
-				t.Run(result.name, func(t *testing.T) {
-					store, binding, replies := newDelayedRedisLocator(t, address, password)
-					replies.armed.Store(true)
-					ctx, cancel := context.WithCancel(context.Background())
-					defer cancel()
-					done := make(chan error, 1)
-					go func() { done <- store.BindNode(ctx, binding.ServiceName, binding.UID, "node", result.epoch) }()
-					select {
-					case <-replies.entered:
-					case <-time.After(time.Second):
-						t.Fatal("Redis reply did not reach the barrier")
-					}
-					cancel()
-					select {
-					case err := <-done:
-						t.Fatalf("in-flight I/O returned before the reply was released: %v", err)
-					case <-time.After(20 * time.Millisecond):
-					}
-					replies.unblock()
-					select {
-					case err := <-done:
-						if result.want == nil {
-							require.NoError(t, err)
-						} else {
-							require.Same(t, result.want, err)
-						}
-					case <-time.After(time.Second):
-						t.Fatal("operation did not finish after releasing the reply")
-					}
-				})
+			cancel()
+			select {
+			case err := <-done:
+				t.Fatalf("in-flight I/O returned before the reply was released: %v", err)
+			case <-time.After(20 * time.Millisecond):
+			}
+			replies.unblock()
+			select {
+			case err := <-done:
+				if result.want != nil {
+					require.Same(t, result.want, err)
+					return
+				}
+				require.NoError(t, err)
+			case <-time.After(time.Second):
+				t.Fatal("operation did not finish after releasing the reply")
 			}
 		})
 	}
@@ -321,14 +331,16 @@ func (b *redisReplyBarrier) dial(ctx context.Context, network, address string) (
 		return nil, err
 	}
 	client, proxy := net.Pipe()
+	closePair := func() {
+		_ = proxy.Close()
+		_ = upstream.Close()
+	}
 	b.wait.Go(func() {
-		defer upstream.Close()
-		defer proxy.Close()
+		defer closePair()
 		_, _ = io.Copy(upstream, proxy)
 	})
 	b.wait.Go(func() {
-		defer upstream.Close()
-		defer proxy.Close()
+		defer closePair()
 		_, _ = io.Copy(heldRedisReply{Conn: proxy, barrier: b}, upstream)
 	})
 	return client, nil

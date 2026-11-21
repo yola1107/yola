@@ -425,7 +425,7 @@ func (r *lifecycleRegistrar) instance() *registry.ServiceInstance {
 }
 
 func tcpAddressReusable(address string) bool {
-	listener, err := net.Listen("tcp", address)
+	listener, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", address)
 	if err != nil {
 		return false
 	}

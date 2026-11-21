@@ -55,25 +55,20 @@ type broadcaster struct {
 	completed     atomic.Uint64
 	queueDropped  atomic.Uint64
 	sendDropped   atomic.Uint64
-	lastFanout    atomic.Uint64
-	maxFanout     atomic.Uint64
+	lastFanout    atomic.Int64
+	maxFanout     atomic.Int64
 }
 
 type broadcastRun struct {
 	ctx       context.Context
 	cancel    context.CancelFunc
 	pushes    chan *v1.Proto
-	batches   chan fanoutBatch
+	batches   chan []*session
 	batchDone chan struct{}
 	sessions  []*session
 	prepared  network.PreparedProto
 	done      chan struct{}
 	wg        sync.WaitGroup
-}
-
-type fanoutBatch struct {
-	message  *network.PreparedProto
-	sessions []*session
 }
 
 func newBroadcaster(sessions *sessionRegistry, workers, queueCapacity int) *broadcaster {
@@ -95,7 +90,7 @@ func (b *broadcaster) start() error {
 		ctx:       ctx,
 		cancel:    cancel,
 		pushes:    make(chan *v1.Proto, b.queueCapacity),
-		batches:   make(chan fanoutBatch, b.workers),
+		batches:   make(chan []*session, b.workers),
 		batchDone: make(chan struct{}, b.workers),
 		done:      make(chan struct{}),
 	}
@@ -176,7 +171,6 @@ func (b *broadcaster) coordinate(running *broadcastRun) {
 func (b *broadcaster) fanout(running *broadcastRun, message *v1.Proto) bool {
 	running.prepared.Reset(message)
 	sessions := b.sessions.snapshot(running.sessions)
-	running.sessions = sessions
 	batchCount := min(b.workers, len(sessions))
 	if batchCount == 0 {
 		return true
@@ -186,10 +180,7 @@ func (b *broadcaster) fanout(running *broadcastRun, message *v1.Proto) bool {
 	for offset := 0; offset < len(sessions); offset += batchSize {
 		end := min(offset+batchSize, len(sessions))
 		select {
-		case running.batches <- fanoutBatch{
-			message:  &running.prepared,
-			sessions: sessions[offset:end],
-		}:
+		case running.batches <- sessions[offset:end]:
 			started++
 		case <-running.ctx.Done():
 			return false
@@ -213,20 +204,20 @@ func (b *broadcaster) fanoutWorker(running *broadcastRun) {
 		select {
 		case <-running.ctx.Done():
 			return
-		case batch := <-running.batches:
-			b.sendBatch(running.ctx, batch)
+		case sessions := <-running.batches:
+			b.sendBatch(running.ctx, &running.prepared, sessions)
 			running.batchDone <- struct{}{}
 		}
 	}
 }
 
-func (b *broadcaster) sendBatch(ctx context.Context, batch fanoutBatch) {
-	for _, sess := range batch.sessions {
+func (b *broadcaster) sendBatch(ctx context.Context, message *network.PreparedProto, sessions []*session) {
+	for _, sess := range sessions {
 		if ctx.Err() != nil {
 			return
 		}
-		matched, err := sess.sendIfAuthenticated(batch.message)
-		if !matched || err == nil {
+		err := sess.sendIfAuthenticated(message)
+		if err == nil {
 			continue
 		}
 		reason := "connection_error"
@@ -243,15 +234,13 @@ func (b *broadcaster) finishRun(running *broadcastRun) {
 	running.cancel()
 	running.wg.Wait()
 	b.mu.Lock()
-	if b.active == running {
-		b.active = nil
-	}
+	b.active = nil
 	close(running.done)
 	b.mu.Unlock()
 }
 
 func (b *broadcaster) recordCompleted(duration time.Duration) {
-	nanoseconds := uint64(duration)
+	nanoseconds := int64(duration)
 	b.lastFanout.Store(nanoseconds)
 	if nanoseconds > b.maxFanout.Load() {
 		b.maxFanout.Store(nanoseconds)

@@ -11,7 +11,6 @@ import (
 
 	v1 "yola/api/cluster/v1"
 	"yola/internal/clusterroute"
-	"yola/internal/tlsconfig"
 	"yola/locate"
 
 	"github.com/go-kratos/kratos/v3/registry"
@@ -62,7 +61,7 @@ type backendState struct {
 }
 
 func newBackends(discovery registry.Discovery, tlsConfig *tls.Config, connectTimeout time.Duration, locator locate.NodeLocator) *backends {
-	tlsConfig = tlsconfig.Clone(tlsConfig)
+	tlsConfig = tlsConfig.Clone()
 	ctx, cancel := context.WithCancel(context.Background())
 	return &backends{
 		discovery:      discovery,

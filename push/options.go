@@ -44,7 +44,7 @@ func ClientTLS(config *tls.Config) Option {
 		if err := tlsconfig.ValidateClient(config); err != nil {
 			return fmt.Errorf("push: gRPC %w", err)
 		}
-		o.tlsConfig = tlsconfig.Clone(config)
+		o.tlsConfig = config.Clone()
 		return nil
 	}
 }

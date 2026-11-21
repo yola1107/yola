@@ -10,7 +10,6 @@ import (
 	v1 "yola/api/cluster/v1"
 	"yola/internal/clusterroute"
 	"yola/internal/grpcendpoint"
-	"yola/internal/tlsconfig"
 	"yola/locate"
 
 	"github.com/go-kratos/kratos/v3/middleware"
@@ -58,7 +57,7 @@ func New(tlsConfig *tls.Config, middlewares ...middleware.Middleware) *Client {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Client{
 		idle:        _idleTimeout,
-		tlsConfig:   tlsconfig.Clone(tlsConfig),
+		tlsConfig:   tlsConfig.Clone(),
 		middlewares: append([]middleware.Middleware(nil), middlewares...),
 		ctx:         ctx,
 		cancel:      cancel,

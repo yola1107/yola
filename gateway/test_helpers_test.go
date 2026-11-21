@@ -186,6 +186,7 @@ func receiveWithin[T any](t *testing.T, values <-chan T) T {
 }
 
 func authMessage(t *testing.T) *protocolv1.Proto {
+	t.Helper()
 	return authMessageForService(t, "game")
 }
 

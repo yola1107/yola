@@ -67,7 +67,7 @@ func Listener(lis net.Listener) ServerOption {
 
 // TLSConfig 使用 c 配置 TLS。
 func TLSConfig(c *tls.Config) ServerOption {
-	return func(s *Server) { s.config.tls = tlsconfig.Clone(c) }
+	return func(s *Server) { s.config.tls = c.Clone() }
 }
 
 // Codec 配置帧编码；两端须使用相同 codec。Marshal 不得修改输入，返回的 bytes 须保持不可变。

@@ -429,11 +429,7 @@ func TestSendStatsConcurrentReadSendAndClose(t *testing.T) {
 				if i == 100 {
 					reached.Do(func() { close(middle) })
 				}
-				err := conn.SendProto(&v1.Proto{Op: v1.OpPush, Body: []byte("stats")})
-				if err != nil {
-					assert.True(t, errors.Is(err, network.ErrSendQueueFull) || errors.Is(err, network.ErrConnectionClosed))
-				}
-				assert.GreaterOrEqual(t, conn.SendStats().PendingPayloadBytes, int64(0))
+				assertConcurrentSendStats(t, conn)
 			}
 		})
 	}
@@ -441,6 +437,13 @@ func TestSendStatsConcurrentReadSendAndClose(t *testing.T) {
 	ch.close()
 	waitTCPValue(t, done)
 	require.Equal(t, int64(conn.SendStats().QueueDepth*5), conn.SendStats().PendingPayloadBytes)
+}
+
+func assertConcurrentSendStats(t *testing.T, conn tcpConnection) {
+	t.Helper()
+	err := conn.SendProto(&v1.Proto{Op: v1.OpPush, Body: []byte("stats")})
+	assert.True(t, err == nil || errors.Is(err, network.ErrSendQueueFull) || errors.Is(err, network.ErrConnectionClosed))
+	assert.GreaterOrEqual(t, conn.SendStats().PendingPayloadBytes, int64(0))
 }
 
 type writeStartedConn struct {

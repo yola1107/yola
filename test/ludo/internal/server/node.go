@@ -5,6 +5,7 @@ import (
 
 	locateredis "yola/locate/redis"
 	"yola/node"
+	"yola/test/ludo/internal/biz"
 	"yola/test/ludo/internal/conf"
 	"yola/test/ludo/internal/service"
 
@@ -16,6 +17,7 @@ func NewNodeServer(
 	redisClient redis.UniversalClient,
 	registrar registry.Registrar,
 	game *service.Service,
+	usecase *biz.Usecase,
 	serverConfig *conf.Server,
 	dataConfig *conf.Data,
 ) (*node.Server, error) {
@@ -35,7 +37,7 @@ func NewNodeServer(
 		node.HandlerTimeout(timeout),
 		node.Stateful(locator),
 		node.GateDirectory(locator),
-		node.Drain(game.Drain),
+		node.Drain(usecase.Drain),
 	}
 	if network := config.GetNetwork(); network != "" {
 		options = append(options, node.Network(network))

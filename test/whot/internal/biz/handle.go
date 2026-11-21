@@ -27,8 +27,8 @@ func (uc *Usecase) SetClientPusher(pusher table.ClientPusher) {
 }
 
 func (uc *Usecase) Disconnect(ctx context.Context, sess player.Session) error {
-	uid, err := SessionUID(sess)
-	if err != nil {
+	uid, valid := sessionUID(sess)
+	if !valid {
 		return nil
 	}
 	p := uc.pm.GetByID(uid)
@@ -39,6 +39,7 @@ func (uc *Usecase) Disconnect(ctx context.Context, sess player.Session) error {
 	if !p.MarkOffline(bindingToken) {
 		return nil
 	}
+	var err error
 	for range 2 {
 		if p.GetTableID() <= 0 {
 			return nil
@@ -158,10 +159,10 @@ func (uc *Usecase) Chat(ctx context.Context, uid int64, req *v1.ChatReq) (*v1.Ch
 	}
 	var reply *v1.ChatRsp
 	err = uc.callPlayer(ctx, p, func(gameTable *table.Table) error {
-		if !gameTable.OnChatReq(p, req) {
+		reply = gameTable.OnChatReq(p, req)
+		if reply == nil {
 			return ErrChatRejected
 		}
-		reply = &v1.ChatRsp{UserID: int32(uid), OpType: req.OpType, FaceID: req.FaceID, Msg: req.Msg}
 		return nil
 	})
 	return reply, err
@@ -225,12 +226,13 @@ func (uc *Usecase) PlayerAction(ctx context.Context, uid int64, req *v1.PlayerAc
 }
 
 func (uc *Usecase) CreateRobot(raw *player.Raw) (*player.Player, error) {
+	avatar := fmt.Sprintf("avatar_%d", raw.ID)
 	base := &player.BaseData{
 		UID:       raw.ID,
 		VIP:       0,
 		NickName:  fmt.Sprintf("robot_%d", raw.ID),
-		Avatar:    fmt.Sprintf("avatar_%d", raw.ID),
-		AvatarURL: fmt.Sprintf("avatar_%d", raw.ID),
+		Avatar:    avatar,
+		AvatarURL: avatar,
 		Money:     xgo.RandFloat(uc.rc.Game.MinMoney, uc.rc.Game.MaxMoney),
 	}
 	raw.BaseData = base
@@ -357,12 +359,13 @@ func (uc *Usecase) createPlayer(ctx context.Context, raw *player.Raw) (*player.P
 	base, err := uc.repo.LoadPlayer(ctx, raw.ID)
 	switch {
 	case errors.Is(err, ErrPlayerNotFound):
+		avatar := fmt.Sprintf("avatar_%d", raw.ID%15)
 		base = &player.BaseData{
 			UID:       raw.ID,
 			VIP:       0,
 			NickName:  fmt.Sprintf("user_%d", raw.ID),
-			Avatar:    fmt.Sprintf("avatar_%d", raw.ID%15),
-			AvatarURL: fmt.Sprintf("avatar_%d", raw.ID%15),
+			Avatar:    avatar,
+			AvatarURL: avatar,
 			Money:     float64(int64(xgo.RandFloat(uc.rc.Game.MinMoney, uc.rc.Game.MaxMoney))),
 		}
 	case err != nil:
@@ -471,7 +474,7 @@ func (uc *Usecase) finalizePlayer(p *player.Player) {
 
 func mapTableCallError(err error) error {
 	if errors.Is(err, table.ErrTableNotFound) || errors.Is(err, table.ErrPlayerRouteChanged) {
-		return fmt.Errorf("%w: %v", ErrInvalidPlayerState, err)
+		return fmt.Errorf("%w: %s", ErrInvalidPlayerState, fmt.Sprint(err))
 	}
 	return err
 }

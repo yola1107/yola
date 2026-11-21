@@ -51,6 +51,10 @@ func (s *Server) Start(ctx context.Context) error {
 	if err != nil {
 		return s.stopAfterFailure(ctx, errors.Join(context.Cause(s.fatalCtx), err), s.cleanupTimeout)
 	}
+	return s.waitServing(ctx, serveResult)
+}
+
+func (s *Server) waitServing(ctx context.Context, serveResult <-chan error) error {
 	registrationDone := s.registrationDone()
 	for {
 		select {
@@ -63,21 +67,25 @@ func (s *Server) Start(ctx context.Context) error {
 		case <-s.fatalCtx.Done():
 			return s.stopAfterFailure(ctx, context.Cause(s.fatalCtx), s.shutdownTimeout)
 		case serveErr := <-serveResult:
-			if fatalErr := context.Cause(s.fatalCtx); fatalErr != nil {
-				return s.stopAfterFailure(ctx, fatalErr, s.shutdownTimeout)
-			}
-			if !s.requests.isClosed() {
-				if serveErr == nil {
-					serveErr = errors.New("node: gRPC server stopped unexpectedly")
-				}
-				return s.stopAfterFailure(ctx, serveErr, s.shutdownTimeout)
-			}
-			if errors.Is(serveErr, grpc.ErrServerStopped) {
-				return nil
-			}
-			return serveErr
+			return s.finishServing(ctx, serveErr)
 		}
 	}
+}
+
+func (s *Server) finishServing(ctx context.Context, serveErr error) error {
+	if fatalErr := context.Cause(s.fatalCtx); fatalErr != nil {
+		return s.stopAfterFailure(ctx, fatalErr, s.shutdownTimeout)
+	}
+	if !s.requests.isClosed() {
+		if serveErr == nil {
+			serveErr = errors.New("node: gRPC server stopped unexpectedly")
+		}
+		return s.stopAfterFailure(ctx, serveErr, s.shutdownTimeout)
+	}
+	if errors.Is(serveErr, grpc.ErrServerStopped) {
+		return nil
+	}
+	return serveErr
 }
 
 // Stop 只触发一次回收；调用者超时不改变回收进程和其他调用者的等待结果。
@@ -112,6 +120,27 @@ func (s *Server) start(ctx, serveCtx context.Context) (<-chan error, error) {
 	if err != nil {
 		return nil, err
 	}
+	lease, err := s.startEpoch(ctx, app)
+	if err != nil {
+		return nil, err
+	}
+	if err = s.startupError(ctx); err != nil {
+		return nil, err
+	}
+	serveResult, err := s.startGRPC(ctx, serveCtx)
+	if err != nil {
+		return nil, err
+	}
+	if err = s.startupError(ctx); err != nil {
+		return nil, err
+	}
+	if err = s.registerAndOpen(ctx, s.registrationRecord(app, endpoint), lease); err != nil {
+		return nil, err
+	}
+	return serveResult, nil
+}
+
+func (s *Server) startEpoch(ctx context.Context, app kratos.AppInfo) (*epochLease, error) {
 	identity, lease, err := s.claimNodeIdentity(ctx, app)
 	// 即使申请迟到，固定凭据也交给唯一回收 owner。
 	s.lease.Store(lease)
@@ -129,48 +158,38 @@ func (s *Server) start(ctx, serveCtx context.Context) (<-chan error, error) {
 			err = ctx.Err()
 		}
 	}
-	if err == nil {
-		err = lease.valid()
-	}
 	if err != nil {
-		return nil, err
-	}
-	if err = s.startupError(ctx); err != nil {
-		return nil, err
-	}
-	serveResult, err := s.startGRPC(ctx, serveCtx)
-	if err != nil {
-		return nil, err
-	}
-	if err = s.startupError(ctx); err != nil {
-		return nil, err
-	}
-	record := s.registrationRecord(app, endpoint)
-	if err = s.registrar.Register(ctx, record); err != nil {
-		return nil, err
-	}
-	s.lifecycleMu.Lock()
-	defer s.lifecycleMu.Unlock()
-	s.registration = record
-	if s.requests.isClosed() {
-		return nil, errNodeStopped
-	}
-	if err = ctx.Err(); err != nil {
 		return nil, err
 	}
 	if err = lease.valid(); err != nil {
 		return nil, err
 	}
+	return lease, nil
+}
+
+func (s *Server) registerAndOpen(ctx context.Context, record *registry.ServiceInstance, lease *epochLease) error {
+	if err := s.registrar.Register(ctx, record); err != nil {
+		return err
+	}
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+	s.registration = record
+	if err := s.startupError(ctx); err != nil {
+		return err
+	}
+	if err := lease.valid(); err != nil {
+		return err
+	}
 	select {
 	case <-s.registrationDone():
-		return nil, errRegistrationLost
+		return errRegistrationLost
 	default:
 	}
 	s.state = _stStarted
 	s.deliveries.open()
 	s.requests.open()
 	s.healthServer.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
-	return serveResult, nil
+	return nil
 }
 
 func (s *Server) startGRPC(ctx, serveCtx context.Context) (<-chan error, error) {
@@ -199,13 +218,14 @@ func (s *Server) registrationDone() <-chan struct{} {
 func (s *Server) startCleanup(base context.Context, timeout time.Duration) {
 	s.beginStopping()
 	s.cleanupOnce.Do(func() {
+		cleanupBase := base
 		s.lifecycleMu.Lock()
 		if s.lifecycleCtx != nil {
-			base := s.lifecycleCtx
+			cleanupBase = s.lifecycleCtx
 		}
 		s.lifecycleMu.Unlock()
 		go func() {
-			s.cleanupErr = s.cleanup(base, timeout)
+			s.cleanupErr = s.cleanup(cleanupBase, timeout)
 			close(s.cleanupDone)
 		}()
 	})
@@ -230,15 +250,8 @@ func (s *Server) cleanup(base context.Context, timeout time.Duration) error {
 	requestErr := s.requests.stopAndWait(ctx)
 	var drainErr error
 	var lateDrain <-chan error
-	if requestErr == nil && s.drain != nil {
-		result := make(chan error, 1)
-		go func() { result <- s.drain(ctx) }()
-		select {
-		case drainErr = <-result:
-		case <-ctx.Done():
-			drainErr = ctx.Err()
-			lateDrain = result
-		}
+	if requestErr == nil {
+		lateDrain, drainErr = s.runDrain(ctx)
 	}
 	// Drain 停止绑定与推送生产者后，再关闭副作用准入。
 	deliveryErr := s.deliveries.stopAndWait(ctx)
@@ -276,6 +289,20 @@ func (s *Server) cleanup(base context.Context, timeout time.Duration) error {
 		cleanupErr = errors.Join(cleanupErr, <-lateDrain)
 	}
 	return cleanupErr
+}
+
+func (s *Server) runDrain(ctx context.Context) (<-chan error, error) {
+	if s.drain == nil {
+		return nil, nil
+	}
+	result := make(chan error, 1)
+	go func() { result <- s.drain(ctx) }()
+	select {
+	case err := <-result:
+		return nil, err
+	case <-ctx.Done():
+		return result, ctx.Err()
+	}
 }
 
 func (s *Server) startupError(ctx context.Context) error {

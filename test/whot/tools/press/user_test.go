@@ -150,7 +150,8 @@ func TestFailedPressRequestDoesNotIncrementCommandCount(t *testing.T) {
 }
 
 func TestRunnerStartRejectsUnavailableGatewayAndStopsRuntime(t *testing.T) {
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	var listenConfig net.ListenConfig
+	listener, err := listenConfig.Listen(t.Context(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}

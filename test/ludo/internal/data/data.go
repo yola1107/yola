@@ -12,23 +12,15 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// ProviderSet wires Redis-backed Ludo data access.
-var ProviderSet = wire.NewSet(NewRedisClient, NewRegistry, NewData, NewPlayerRepo)
+// ProviderSet 装配 Redis 客户端、Node 注册中心和玩家仓储。
+var ProviderSet = wire.NewSet(NewRedisClient, NewRegistry, NewPlayerRepo)
 
 type playerRepo struct {
-	data *Data
-}
-
-func NewPlayerRepo(data *Data) biz.PlayerRepo {
-	return &playerRepo{data: data}
-}
-
-type Data struct {
 	redis redis.UniversalClient
 }
 
-func NewData(client redis.UniversalClient) *Data {
-	return &Data{redis: client}
+func NewPlayerRepo(client redis.UniversalClient) biz.PlayerRepo {
+	return &playerRepo{redis: client}
 }
 
 func NewRedisClient(config *conf.Data) (redis.UniversalClient, func(), error) {

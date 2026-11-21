@@ -30,14 +30,7 @@ func BenchmarkSubscriptionCapacity(b *testing.B) {
 	if url == "" || runtime.GOOS != "linux" {
 		b.Skip("requires Linux and a dedicated external YOLA_NATS_URL")
 	}
-	for _, test := range []struct {
-		name          string
-		payload       int
-		capacity      int
-		subscriptions int
-		overflow      int
-		closeQueued   bool
-	}{
+	for _, test := range []capacityScenario{
 		{name: "small", payload: 256, capacity: 256, subscriptions: 1},
 		{name: "default", payload: 64 << 10, capacity: 256, subscriptions: 1, overflow: 64},
 		{name: "four", payload: 64 << 10, capacity: 256, subscriptions: 4, overflow: 64},
@@ -46,117 +39,143 @@ func BenchmarkSubscriptionCapacity(b *testing.B) {
 		{name: "close_oversized", payload: 1 << 20, capacity: 256, subscriptions: 1, overflow: 64, closeQueued: true},
 	} {
 		b.Run(test.name, func(b *testing.B) {
-			require.Equal(b, 1, b.N, "run each capacity case in a fresh process with -benchtime=1x")
-			b.StopTimer()
-			bus := newTestBus(b, url, WithQueueCapacity(test.capacity))
-			require.GreaterOrEqual(b, bus.conn.MaxPayload(), int64(test.payload))
-			publish := startCapacityPublisher(b)
-			topic := natsgo.NewInbox()
-			started := make(chan struct{}, test.subscriptions)
-			release := make(chan struct{})
-			unblock := sync.OnceFunc(func() { close(release) })
-			b.Cleanup(unblock)
-			var durationsMu sync.Mutex
-			durations := make([]time.Duration, 0, test.capacity*test.subscriptions)
-			subs := make([]event.SubscriptionStatsProvider, test.subscriptions)
-			for i := range subs {
-				sub, err := bus.Subscribe(context.Background(), topic, func(ctx context.Context, received event.Event) {
-					if len(received.Payload) == 1 {
-						started <- struct{}{}
-						select {
-						case <-release:
-						case <-ctx.Done():
-						}
-						return
-					}
-					// 固定 2ms 的协作 handler 是诊断模型，不代表业务 SLO。
-					began := time.Now()
-					timer := time.NewTimer(2 * time.Millisecond)
-					defer timer.Stop()
-					select {
-					case <-timer.C:
-					case <-ctx.Done():
-					}
-					duration := time.Since(began)
-					durationsMu.Lock()
-					durations = append(durations, duration)
-					durationsMu.Unlock()
-				})
-				require.NoError(b, err)
-				observer, ok := sub.(event.SubscriptionStatsProvider)
-				require.True(b, ok)
-				subs[i] = observer
-			}
-			publish(topic, 1, 1)
-			for range subs {
-				select {
-				case <-started:
-				case <-time.After(5 * time.Second):
-					b.Fatal("primer did not reach every handler")
-				}
-			}
-			runtime.GC()
-			peakRSS := reportCapacityMemory(b, "base")
-			b.StartTimer()
-			fillSubscriptionBacklog(b, subs, test.capacity, test.overflow, func(count int) {
-				publish(topic, test.payload, count)
-			})
-			b.StopTimer()
-			runtime.GC()
-			peakRSS = max(peakRSS, reportCapacityMemory(b, "full"))
-			b.ReportMetric(float64(test.capacity*test.payload*test.subscriptions), "queued-payload-B")
-			b.ReportMetric(float64(test.overflow*test.subscriptions), "queue-dropped")
-			b.ReportMetric(float64(bus.conn.MaxPayload()), "broker-max-B")
-			b.ReportMetric(float64(test.subscriptions), "subscriptions")
-			began := time.Now()
-			if !test.closeQueued {
-				unblock()
-				require.Eventually(b, func() bool {
-					return subscriptionBacklogDrained(subs, test.payload, test.capacity)
-				}, 10*time.Second, time.Millisecond)
-				b.ReportMetric(float64(time.Since(began).Microseconds()), "drain-us")
-			}
-			closeBegan := time.Now()
-			require.NoError(b, bus.Close())
-			b.ReportMetric(float64(time.Since(closeBegan).Microseconds()), "close-us")
-			var payloadDropped, handlerCalls uint64
-			for _, sub := range subs {
-				stats := sub.SubscriptionStats()
-				payloadDropped += stats.PayloadDropped
-				handlerCalls += stats.HandlerCalls
-				require.True(b, stats.Closed)
-				require.Zero(b, stats.QueueDepth)
-				require.False(b, stats.HandlerActive)
-				if test.closeQueued {
-					require.Equal(b, uint64(1), stats.HandlerCalls)
-					require.Zero(b, stats.PayloadDropped)
-				}
-			}
-			b.ReportMetric(float64(payloadDropped), "payload-dropped")
-			b.ReportMetric(float64(handlerCalls), "handler-calls")
-			// 分开报告自然关闭、GC 与主动 scavenging；不把 RSS 回落视为 Close 保证。
-			time.Sleep(100 * time.Millisecond)
-			peakRSS = max(peakRSS, reportCapacityMemory(b, "closed"))
-			runtime.GC()
-			peakRSS = max(peakRSS, reportCapacityMemory(b, "gc"))
-			debug.FreeOSMemory()
-			peakRSS = max(peakRSS, reportCapacityMemory(b, "scavenged"))
-			b.ReportMetric(float64(peakRSS), "peak-rss-B")
-			runtime.KeepAlive(subs)
-			durationsMu.Lock()
-			expectedSamples := 0
-			if !test.closeQueued && test.payload <= 64<<10 {
-				expectedSamples = test.capacity * test.subscriptions
-			}
-			require.Len(b, durations, expectedSamples)
-			slices.Sort(durations)
-			b.ReportMetric(float64(len(durations)), "handler-samples")
-			if len(durations) > 0 {
-				b.ReportMetric(float64(durations[(len(durations)*99+99)/100-1].Nanoseconds()), "handler-p99-ns")
-			}
-			durationsMu.Unlock()
+			test.run(b, url)
 		})
 	}
+}
+
+type capacityScenario struct {
+	name          string
+	payload       int
+	capacity      int
+	subscriptions int
+	overflow      int
+	closeQueued   bool
+}
+
+func (test capacityScenario) run(b *testing.B, url string) {
+	b.Helper()
+	require.Equal(b, 1, b.N, "run each capacity case in a fresh process with -benchtime=1x")
+	b.StopTimer()
+	bus := newTestBus(b, url, WithQueueCapacity(test.capacity))
+	require.GreaterOrEqual(b, bus.conn.MaxPayload(), int64(test.payload))
+	publish := startCapacityPublisher(b)
+	topic := natsgo.NewInbox()
+	started := make(chan struct{}, test.subscriptions)
+	release := make(chan struct{})
+	unblock := sync.OnceFunc(func() { close(release) })
+	b.Cleanup(unblock)
+	var durationsMu sync.Mutex
+	durations := make([]time.Duration, 0, test.capacity*test.subscriptions)
+	handle := capacityHandler(started, release, func(duration time.Duration) {
+		durationsMu.Lock()
+		durations = append(durations, duration)
+		durationsMu.Unlock()
+	})
+	subs := make([]event.SubscriptionStatsProvider, test.subscriptions)
+	for i := range subs {
+		sub, err := bus.Subscribe(context.Background(), topic, handle)
+		require.NoError(b, err)
+		observer, ok := sub.(event.SubscriptionStatsProvider)
+		require.True(b, ok)
+		subs[i] = observer
+	}
+	publish(topic, 1, 1)
+	for range subs {
+		select {
+		case <-started:
+		case <-time.After(5 * time.Second):
+			b.Fatal("primer did not reach every handler")
+		}
+	}
+	runtime.GC()
+	peakRSS := reportCapacityMemory(b, "base")
+	b.StartTimer()
+	fillSubscriptionBacklog(b, subs, test.capacity, test.overflow, func(count int) {
+		publish(topic, test.payload, count)
+	})
+	b.StopTimer()
+	runtime.GC()
+	peakRSS = max(peakRSS, reportCapacityMemory(b, "full"))
+	b.ReportMetric(float64(test.capacity*test.payload*test.subscriptions), "queued-payload-B")
+	b.ReportMetric(float64(test.overflow*test.subscriptions), "queue-dropped")
+	b.ReportMetric(float64(bus.conn.MaxPayload()), "broker-max-B")
+	b.ReportMetric(float64(test.subscriptions), "subscriptions")
+	began := time.Now()
+	if !test.closeQueued {
+		unblock()
+		require.Eventually(b, func() bool {
+			return subscriptionBacklogDrained(subs, test.payload, test.capacity)
+		}, 10*time.Second, time.Millisecond)
+		b.ReportMetric(float64(time.Since(began).Microseconds()), "drain-us")
+	}
+	closeBegan := time.Now()
+	require.NoError(b, bus.Close())
+	b.ReportMetric(float64(time.Since(closeBegan).Microseconds()), "close-us")
+	test.reportClosed(b, subs)
+	// 分开报告自然关闭、GC 与主动 scavenging；不把 RSS 回落视为 Close 保证。
+	time.Sleep(100 * time.Millisecond)
+	peakRSS = max(peakRSS, reportCapacityMemory(b, "closed"))
+	runtime.GC()
+	peakRSS = max(peakRSS, reportCapacityMemory(b, "gc"))
+	debug.FreeOSMemory()
+	peakRSS = max(peakRSS, reportCapacityMemory(b, "scavenged"))
+	b.ReportMetric(float64(peakRSS), "peak-rss-B")
+	runtime.KeepAlive(subs)
+	durationsMu.Lock()
+	expectedSamples := 0
+	if !test.closeQueued && test.payload <= 64<<10 {
+		expectedSamples = test.capacity * test.subscriptions
+	}
+	require.Len(b, durations, expectedSamples)
+	slices.Sort(durations)
+	b.ReportMetric(float64(len(durations)), "handler-samples")
+	if len(durations) > 0 {
+		b.ReportMetric(float64(durations[(len(durations)*99+99)/100-1].Nanoseconds()), "handler-p99-ns")
+	}
+	durationsMu.Unlock()
+}
+
+func capacityHandler(started chan<- struct{}, release <-chan struct{}, record func(time.Duration)) event.Handler {
+	return func(ctx context.Context, received event.Event) {
+		if len(received.Payload) == 1 {
+			started <- struct{}{}
+			select {
+			case <-release:
+			case <-ctx.Done():
+			}
+			return
+		}
+		// 固定 2ms 的协作 handler 是诊断模型，不代表业务 SLO。
+		began := time.Now()
+		timer := time.NewTimer(2 * time.Millisecond)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+		}
+		duration := time.Since(began)
+		record(duration)
+	}
+}
+
+func (test capacityScenario) reportClosed(b *testing.B, subs []event.SubscriptionStatsProvider) {
+	b.Helper()
+	var payloadDropped, handlerCalls uint64
+	for _, sub := range subs {
+		stats := sub.SubscriptionStats()
+		payloadDropped += stats.PayloadDropped
+		handlerCalls += stats.HandlerCalls
+		require.True(b, stats.Closed)
+		require.Zero(b, stats.QueueDepth)
+		require.False(b, stats.HandlerActive)
+		if test.closeQueued {
+			require.Equal(b, uint64(1), stats.HandlerCalls)
+			require.Zero(b, stats.PayloadDropped)
+		}
+	}
+	b.ReportMetric(float64(payloadDropped), "payload-dropped")
+	b.ReportMetric(float64(handlerCalls), "handler-calls")
 }
 
 // TestCapacityPublisherProcess 只作为 benchmark 的发布子进程运行，避免发布内存计入接收方 RSS。
@@ -201,7 +220,8 @@ func fillSubscriptionBacklog(b *testing.B, subs []event.SubscriptionStatsProvide
 		require.Eventually(b, func() bool {
 			for _, sub := range subs {
 				stats := sub.SubscriptionStats()
-				if !stats.QueueDroppedCurrent || uint64(stats.QueueDepth)+stats.QueueDropped != uint64(sent) {
+				dropped := sent - stats.QueueDepth
+				if !stats.QueueDroppedCurrent || dropped < 0 || stats.QueueDropped != uint64(dropped) {
 					return false
 				}
 			}
@@ -211,11 +231,14 @@ func fillSubscriptionBacklog(b *testing.B, subs []event.SubscriptionStatsProvide
 	for _, sub := range subs {
 		stats := sub.SubscriptionStats()
 		require.Equal(b, capacity, stats.QueueDepth)
-		require.Equal(b, uint64(overflow), stats.QueueDropped)
+		require.EqualValues(b, overflow, stats.QueueDropped)
 	}
 }
 
 func subscriptionBacklogDrained(subs []event.SubscriptionStatsProvider, payload, capacity int) bool {
+	if capacity < 0 {
+		return false
+	}
 	for _, sub := range subs {
 		stats := sub.SubscriptionStats()
 		if stats.QueueDepth != 0 || stats.HandlerActive {
@@ -225,7 +248,7 @@ func subscriptionBacklogDrained(subs []event.SubscriptionStatsProvider, payload,
 			if stats.PayloadDropped != uint64(capacity) || stats.HandlerCalls != 1 {
 				return false
 			}
-		} else if stats.HandlerCalls != uint64(capacity+1) {
+		} else if stats.HandlerCalls != uint64(capacity)+1 {
 			return false
 		}
 	}
@@ -267,7 +290,7 @@ func startCapacityPublisher(b *testing.B) func(string, int, int) {
 	b.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	b.Cleanup(cancel)
-	command := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestCapacityPublisherProcess$")
+	command := exec.CommandContext(ctx, "/proc/self/exe", "-test.run=^TestCapacityPublisherProcess$")
 	command.Env = append(os.Environ(), "YOLA_NATS_CAPACITY_PUBLISHER=1")
 	input, err := command.StdinPipe()
 	require.NoError(b, err)

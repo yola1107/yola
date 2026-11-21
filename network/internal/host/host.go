@@ -82,7 +82,7 @@ func extractInterfaceAddress(port string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	selectedIndex := int(^uint(0) >> 1)
+	var selectedIndex int
 	var selectedIP net.IP
 	for _, iface := range ifaces {
 		if iface.Flags&net.FlagUp == 0 || selectedIP != nil && iface.Index >= selectedIndex {

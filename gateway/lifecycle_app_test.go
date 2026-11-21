@@ -26,112 +26,128 @@ func TestApplicationOwnerCleansUpKratosFailures(t *testing.T) {
 	for _, kind := range []string{"gateway", "node"} {
 		for _, stage := range []string{"endpoint", "before start", "register", "after start", "normal stop", "deregister"} {
 			t.Run(kind+"/"+stage, func(t *testing.T) {
-				stopsNormally := stage == "normal stop" || stage == "deregister"
-				store := testLocator(t)
-				var server transport.Server
-				listener, err := net.Listen("tcp", "127.0.0.1:0")
-				require.NoError(t, err)
-				if kind == "gateway" {
-					server = newTestServer(t, Locator(store), Listener(listener))
-				} else {
-					nodeServer, nodeErr := node.NewServer(node.Registration(&testNodeRegistration{}), node.Listener(listener), node.Stateful(store))
-					require.NoError(t, nodeErr)
-					server = nodeServer
-				}
-				observed := &observedApplicationServer{
-					Server:    server,
-					address:   listener.Addr().String(),
-					started:   make(chan struct{}),
-					startDone: make(chan struct{}),
-					stopDone:  make(chan struct{}),
-				}
-				appCtx, cancelApp := context.WithCancel(context.Background())
-				cleanup := func() error {
-					cancelApp()
-					cleanupCtx, cancel := context.WithTimeout(context.Background(), time.Second)
-					defer cancel()
-					return server.Stop(cleanupCtx)
-				}
-				t.Cleanup(func() { require.NoError(t, cleanup()) })
-
-				injectedErr := errors.New("injected application failure")
-				registrar := &applicationRegistrar{started: observed.started}
-				if stage == "register" {
-					registrar.registerErr = injectedErr
-				}
-				if stage == "deregister" {
-					registrar.deregisterErr = injectedErr
-				}
-				servers := []transport.Server{observed}
-				if stage == "endpoint" {
-					servers = append(servers, &failedApplicationEndpoint{err: injectedErr})
-				}
-				ready := make(chan struct{})
-				appOptions := []kratos.Option{
-					kratos.Context(appCtx),
-					kratos.ID("instance-a"),
-					kratos.Name(kind),
-					kratos.Server(servers...),
-					kratos.BeforeStart(func(context.Context) error {
-						if stage == "before start" {
-							return injectedErr
-						}
-						return nil
-					}),
-					kratos.AfterStart(func(context.Context) error {
-						if stage == "after start" {
-							return injectedErr
-						}
-						close(ready)
-						return nil
-					}),
-					kratos.Registrar(registrar),
-					kratos.StopTimeout(time.Second),
-				}
-				app := kratos.New(appOptions...)
-				runDone := make(chan error, 1)
-				go func() { runDone <- app.Run() }()
-				if stopsNormally {
-					waitApplicationSignal(t, ready)
-					require.ErrorIs(t, app.Stop(), registrar.deregisterErr)
-					if stage == "deregister" {
-						// Kratos 在注销失败时不取消 App，所有者仍须触发并等待清理。
-						require.NoError(t, cleanup())
-					}
-				}
-				select {
-				case runErr := <-runDone:
-					if stopsNormally {
-						require.NoError(t, runErr)
-					} else {
-						require.ErrorIs(t, runErr, injectedErr)
-					}
-				case <-time.After(3 * time.Second):
-					t.Fatal("application did not return")
-				}
-				require.NoError(t, cleanup())
-				require.NoError(t, cleanup(), "repeated cleanup must preserve the terminal state")
-				require.ErrorIs(t, appCtx.Err(), context.Canceled)
-
-				if stage != "endpoint" && stage != "before start" {
-					waitApplicationSignal(t, observed.startDone)
-					waitApplicationSignal(t, observed.stopDone)
-				}
-				require.NotEmpty(t, observed.address)
-				rebound, err := net.Listen("tcp", observed.address)
-				require.NoError(t, err)
-				require.NoError(t, rebound.Close())
-				if kind == "node" {
-					_, err = store.LocateNodeEpoch(context.Background(), kind, "instance-a")
-					require.ErrorIs(t, err, locate.ErrNodeEpochNotFound)
-				}
-				if stopsNormally {
-					require.Equal(t, int32(1), registrar.deregistered.Load())
-				} else {
-					require.Zero(t, registrar.deregistered.Load(), "failure cleanup must not deregister another instance")
-				}
+				checkApplicationOwnerCleanup(t, kind, stage)
 			})
 		}
+	}
+}
+
+func checkApplicationOwnerCleanup(t *testing.T, kind, stage string) {
+	t.Helper()
+	stopsNormally := stage == "normal stop" || stage == "deregister"
+	store := testLocator(t)
+	var server transport.Server
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	if kind == "gateway" {
+		server = newTestServer(t, Locator(store), Listener(listener))
+	} else {
+		nodeServer, nodeErr := node.NewServer(node.Registration(&testNodeRegistration{}), node.Listener(listener), node.Stateful(store))
+		require.NoError(t, nodeErr)
+		server = nodeServer
+	}
+	observed := &observedApplicationServer{
+		Server:    server,
+		address:   listener.Addr().String(),
+		started:   make(chan struct{}),
+		startDone: make(chan struct{}),
+		stopDone:  make(chan struct{}),
+	}
+	appCtx, cancelApp := context.WithCancel(context.Background())
+	cleanup := func() error {
+		cancelApp()
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		return server.Stop(cleanupCtx)
+	}
+	t.Cleanup(func() { require.NoError(t, cleanup()) })
+
+	injectedErr := errors.New("injected application failure")
+	ready := make(chan struct{})
+	app, registrar := newApplicationForFailure(appCtx, kind, stage, observed, injectedErr, ready)
+	runDone := make(chan error, 1)
+	go func() { runDone <- app.Run() }()
+	if stopsNormally {
+		waitApplicationSignal(t, ready)
+		if stage == "deregister" {
+			require.ErrorIs(t, app.Stop(), injectedErr)
+			// Kratos 在注销失败时不取消 App，所有者仍须触发并等待清理。
+			require.NoError(t, cleanup())
+		} else {
+			require.NoError(t, app.Stop())
+		}
+	}
+	waitApplicationResult(t, runDone, stopsNormally, injectedErr)
+	require.NoError(t, cleanup())
+	require.NoError(t, cleanup(), "repeated cleanup must preserve the terminal state")
+	require.ErrorIs(t, appCtx.Err(), context.Canceled)
+
+	if stage != "endpoint" && stage != "before start" {
+		waitApplicationSignal(t, observed.startDone)
+		waitApplicationSignal(t, observed.stopDone)
+	}
+	require.NotEmpty(t, observed.address)
+	rebound, err := net.Listen("tcp", observed.address)
+	require.NoError(t, err)
+	require.NoError(t, rebound.Close())
+	if kind == "node" {
+		_, err = store.LocateNodeEpoch(context.Background(), kind, "instance-a")
+		require.ErrorIs(t, err, locate.ErrNodeEpochNotFound)
+	}
+	if stopsNormally {
+		require.Equal(t, int32(1), registrar.deregistered.Load())
+	} else {
+		require.Zero(t, registrar.deregistered.Load(), "failure cleanup must not deregister another instance")
+	}
+}
+
+func newApplicationForFailure(ctx context.Context, kind, stage string, observed *observedApplicationServer, injectedErr error, ready chan<- struct{}) (*kratos.App, *applicationRegistrar) {
+	registrar := &applicationRegistrar{started: observed.started}
+	if stage == "register" {
+		registrar.registerErr = injectedErr
+	}
+	if stage == "deregister" {
+		registrar.deregisterErr = injectedErr
+	}
+	servers := []transport.Server{observed}
+	if stage == "endpoint" {
+		servers = append(servers, &failedApplicationEndpoint{err: injectedErr})
+	}
+	appOptions := []kratos.Option{
+		kratos.Context(ctx),
+		kratos.ID("instance-a"),
+		kratos.Name(kind),
+		kratos.Server(servers...),
+		kratos.BeforeStart(func(context.Context) error {
+			if stage == "before start" {
+				return injectedErr
+			}
+			return nil
+		}),
+		kratos.AfterStart(func(context.Context) error {
+			if stage == "after start" {
+				return injectedErr
+			}
+			close(ready)
+			return nil
+		}),
+		kratos.Registrar(registrar),
+		kratos.StopTimeout(time.Second),
+	}
+	return kratos.New(appOptions...), registrar
+}
+
+func waitApplicationResult(t *testing.T, runDone <-chan error, stopsNormally bool, injectedErr error) {
+	t.Helper()
+	select {
+	case runErr := <-runDone:
+		if stopsNormally {
+			require.NoError(t, runErr)
+		} else {
+			require.ErrorIs(t, runErr, injectedErr)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("application did not return")
 	}
 }
 
@@ -148,7 +164,7 @@ func TestStartMakesInternalRPCReadyBeforeClientTransport(t *testing.T) {
 				started <- err
 				return err
 			}
-			defer conn.Close()
+			defer func() { _ = conn.Close() }()
 			probeCtx, cancel := context.WithTimeout(ctx, time.Second)
 			defer cancel()
 			_, err = grpc_health_v1.NewHealthClient(conn).Check(probeCtx, &grpc_health_v1.HealthCheckRequest{})

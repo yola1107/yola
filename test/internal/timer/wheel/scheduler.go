@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"yola/internal/contextwait"
 	"yola/test/internal/timer"
 
 	"github.com/RussellLuo/timingwheel"
@@ -30,8 +31,7 @@ type state uint8
 const (
 	stateNew state = iota
 	stateRunning
-	stateStopping
-	stateStopped
+	stateClosed
 )
 
 // Option configures a Scheduler.
@@ -77,8 +77,6 @@ type Scheduler struct {
 	tasks    map[timer.TaskID]*taskEntry
 	stop     chan struct{}
 	done     chan struct{}
-	stopOne  sync.Once
-	doneOne  sync.Once
 
 	nextID    atomic.Int64
 	running   atomic.Int32
@@ -168,17 +166,10 @@ func (s *Scheduler) Stop(ctx context.Context) error {
 		return nil
 	default:
 	}
-	select {
-	case <-s.done:
-		return nil
-	case <-ctx.Done():
-		select {
-		case <-s.done:
-			return nil
-		default:
-			return fmt.Errorf("stop time wheel: %w", ctx.Err())
-		}
+	if err := contextwait.Done(ctx, s.done); err != nil {
+		return fmt.Errorf("stop time wheel: %w", err)
 	}
+	return nil
 }
 
 // Once registers a one-shot callback.
@@ -219,7 +210,10 @@ func (s *Scheduler) Cancel(id timer.TaskID) bool {
 
 // CancelAll cancels all pending and periodic tasks.
 func (s *Scheduler) CancelAll() {
-	for _, scheduled := range s.cancelAll() {
+	s.mu.Lock()
+	timers := s.cancelAllLocked()
+	s.mu.Unlock()
+	for _, scheduled := range timers {
 		scheduled.Stop()
 	}
 }
@@ -243,12 +237,11 @@ func (s *Scheduler) schedule(delay, interval time.Duration, repeated bool, callb
 		id:       timer.TaskID(s.nextID.Add(1)),
 		execAt:   time.Now().Add(delay),
 		interval: interval,
-		repeated: repeated,
 		callback: callback,
 	}
 
 	s.mu.Lock()
-	if s.state == stateStopping || s.state == stateStopped {
+	if s.state == stateClosed {
 		s.mu.Unlock()
 		return 0, timer.ErrStopped
 	}
@@ -272,16 +265,12 @@ func (s *Scheduler) run(ctx context.Context) {
 	s.wheel.Stop()
 	s.engineMu.Unlock()
 	s.callbacks.Wait()
-	s.mu.Lock()
-	s.state = stateStopped
-	s.mu.Unlock()
-	s.doneOne.Do(func() { close(s.done) })
+	close(s.done)
 }
 
 func (s *Scheduler) arm(entry *taskEntry) {
 	s.mu.Lock()
-	current, ok := s.tasks[entry.id]
-	if s.state != stateRunning || !ok || current != entry || entry.canceled.Load() || entry.timer != nil || entry.arming {
+	if s.state != stateRunning || s.tasks[entry.id] != entry || entry.canceled.Load() || entry.timer != nil || entry.arming {
 		s.mu.Unlock()
 		return
 	}
@@ -306,8 +295,7 @@ func (s *Scheduler) arm(entry *taskEntry) {
 
 	s.mu.Lock()
 	entry.arming = false
-	current, ok = s.tasks[entry.id]
-	if s.state == stateRunning && ok && current == entry && !entry.canceled.Load() {
+	if s.state == stateRunning && s.tasks[entry.id] == entry && !entry.canceled.Load() {
 		entry.timer = scheduled
 		s.mu.Unlock()
 		close(ready)
@@ -320,8 +308,7 @@ func (s *Scheduler) arm(entry *taskEntry) {
 
 func (s *Scheduler) dispatch(entry *taskEntry) {
 	s.mu.Lock()
-	current, ok := s.tasks[entry.id]
-	if s.state != stateRunning || !ok || current != entry || entry.canceled.Load() {
+	if s.state != stateRunning || s.tasks[entry.id] != entry || entry.canceled.Load() {
 		s.mu.Unlock()
 		return
 	}
@@ -361,13 +348,12 @@ func (s *Scheduler) handleRejected(entry *taskEntry, submitErr error) {
 	s.logger.Warn("timer executor rejected callback", "task_id", entry.id, "error", submitErr)
 
 	s.mu.Lock()
-	current, ok := s.tasks[entry.id]
-	if !ok || current != entry || entry.canceled.Load() || s.state != stateRunning {
+	if s.tasks[entry.id] != entry || entry.canceled.Load() || s.state != stateRunning {
 		s.mu.Unlock()
 		return
 	}
-	if entry.repeated {
-		entry.execAt = nextExecution(entry.execAt, entry.interval, time.Now())
+	if entry.interval > 0 {
+		entry.execAt = timer.NextExecution(entry.execAt, entry.interval, time.Now())
 	} else {
 		entry.execAt = time.Now().Add(executorRetryDelay)
 	}
@@ -377,62 +363,41 @@ func (s *Scheduler) handleRejected(entry *taskEntry, submitErr error) {
 
 func (s *Scheduler) finish(entry *taskEntry) {
 	s.mu.Lock()
-	current, ok := s.tasks[entry.id]
-	if !ok || current != entry || entry.canceled.Load() || s.state != stateRunning {
+	if s.tasks[entry.id] != entry || entry.canceled.Load() || s.state != stateRunning {
 		s.mu.Unlock()
 		return
 	}
-	if !entry.repeated {
+	if entry.interval == 0 {
 		delete(s.tasks, entry.id)
 		s.mu.Unlock()
 		return
 	}
-	entry.execAt = nextExecution(entry.execAt, entry.interval, time.Now())
+	entry.execAt = timer.NextExecution(entry.execAt, entry.interval, time.Now())
 	s.mu.Unlock()
 	s.arm(entry)
 }
 
 func (s *Scheduler) requestStop() {
 	s.mu.Lock()
-	first := false
-	switch s.state {
-	case stateNew:
-		s.state = stateStopped
-		first = true
-	case stateRunning:
-		s.state = stateStopping
-		first = true
+	if s.state == stateClosed {
+		s.mu.Unlock()
+		return
 	}
-	var scheduled []*timingwheel.Timer
-	if first {
-		for _, entry := range s.tasks {
-			entry.canceled.Store(true)
-			if entry.timer != nil {
-				scheduled = append(scheduled, entry.timer)
-			}
-		}
-		clear(s.tasks)
-	}
+	started := s.state == stateRunning
+	s.state = stateClosed
+	scheduled := s.cancelAllLocked()
 	s.mu.Unlock()
 
 	for _, task := range scheduled {
 		task.Stop()
 	}
-	if !first {
-		return
-	}
-	s.stopOne.Do(func() { close(s.stop) })
-	s.mu.Lock()
-	stoppedBeforeStart := s.state == stateStopped
-	s.mu.Unlock()
-	if stoppedBeforeStart {
-		s.doneOne.Do(func() { close(s.done) })
+	close(s.stop)
+	if !started {
+		close(s.done)
 	}
 }
 
-func (s *Scheduler) cancelAll() []*timingwheel.Timer {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+func (s *Scheduler) cancelAllLocked() []*timingwheel.Timer {
 	scheduled := make([]*timingwheel.Timer, 0, len(s.tasks))
 	for _, entry := range s.tasks {
 		entry.canceled.Store(true)
@@ -448,18 +413,9 @@ type taskEntry struct {
 	id       timer.TaskID
 	execAt   time.Time
 	interval time.Duration
-	repeated bool
+
 	canceled atomic.Bool
 	callback func()
 	timer    *timingwheel.Timer
 	arming   bool
-}
-
-func nextExecution(previous time.Time, interval time.Duration, now time.Time) time.Time {
-	next := previous.Add(interval)
-	if next.After(now) {
-		return next
-	}
-	missed := int64(now.Sub(next)/interval) + 1
-	return next.Add(time.Duration(missed) * interval)
 }

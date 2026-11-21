@@ -13,6 +13,9 @@ import (
 	"yola/test/ludo/internal/biz/player"
 	"yola/test/ludo/internal/conf"
 	"yola/test/ludo/pkg/codes"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestManagerLimitsConcurrentTableJobs(t *testing.T) {
@@ -36,45 +39,19 @@ func TestManagerLimitsConcurrentTableJobs(t *testing.T) {
 					close(release)
 					ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 					defer cancel()
-					if err := manager.Close(ctx); err != nil {
-						t.Error(err)
-					}
+					assert.NoError(t, manager.Close(ctx))
 				})
-				if err := manager.Start(context.Background()); err != nil {
-					t.Fatal(err)
-				}
+				require.NoError(t, manager.Start(context.Background()))
 				for index := range manager.tables {
-					if err := manager.mailboxes.Executor(index).TryPost(func() {
+					require.NoError(t, manager.mailboxes.Executor(index).TryPost(func() {
 						started <- struct{}{}
 						<-release
-					}); err != nil {
-						t.Fatal(err)
-					}
+					}))
 				}
 				synctest.Wait()
-				if got := len(started); got != tc.workers {
-					t.Fatalf("concurrent table jobs = %d, want %d", got, tc.workers)
-				}
+				require.Len(t, started, tc.workers, "concurrent table jobs")
 			})
 		})
-	}
-}
-
-func TestManagerUsesStrictTableIDBoundaries(t *testing.T) {
-	room := testRoom(2)
-	room.LogCache.Open = false
-	tables := newStartedManager(t, room, new(tableRepoStub))
-
-	for _, id := range []int32{-1, 0, 3} {
-		if gameTable := tables.table(id); gameTable != nil {
-			t.Fatalf("table(%d) = table %d, want nil", id, gameTable.ID)
-		}
-	}
-	if first := tables.table(1); first == nil || first.ID != 1 {
-		t.Fatalf("table(1) = %v", first)
-	}
-	if second := tables.table(2); second == nil || second.ID != 2 {
-		t.Fatalf("table(2) = %v", second)
 	}
 }
 
@@ -83,7 +60,7 @@ func BenchmarkTryAvailableTablesFull(b *testing.B) {
 		b.Run(fmt.Sprintf("tables=%d", tableCount), func(b *testing.B) {
 			manager := &Manager{tables: make([]*Table, tableCount)}
 			for index := range manager.tables {
-				gameTable := &Table{ID: int32(index + 1), maxPlayers: 1}
+				gameTable := &Table{ID: int32(index + 1), seats: make([]*player.Player, 1)}
 				gameTable.seatCount.Store(1)
 				manager.tables[index] = gameTable
 			}
@@ -205,6 +182,13 @@ func TestManagerCallPlayerRechecksCapturedRoute(t *testing.T) {
 	mailboxes := tables.mailboxes
 
 	p := player.New(&player.Raw{ID: 1, BaseData: &player.BaseData{UID: 1, Money: 500}})
+	for _, id := range []int32{-1, 0, 3} {
+		p.SetTableID(id)
+		require.ErrorIs(t, tables.CallPlayer(t.Context(), p, func(*Table) error {
+			t.Errorf("unexpected action for invalid table %d", id)
+			return nil
+		}), ErrTableNotFound, "table %d", id)
+	}
 	if !seatForTest(tables.table(1), p) {
 		t.Fatal("seat player at first table")
 	}

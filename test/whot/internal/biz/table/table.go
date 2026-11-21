@@ -19,7 +19,7 @@ type Table struct {
 	manager    *Manager
 
 	// 游戏变量
-	stage *Stage           // 阶段状态
+	stage Stage            // 阶段状态
 	mLog  *Log             // 桌子日志
 	cards *GameCards       // card信息
 	seats []*player.Player // 玩家列表
@@ -43,7 +43,6 @@ func newTable(id int32, c *conf.Room, repo Repo, manager *Manager) *Table {
 		rc:          c,
 		repo:        repo,
 		manager:     manager,
-		stage:       &Stage{},
 		active:      -1,
 		first:       -1,
 		currCard:    -1,
@@ -230,20 +229,14 @@ func (t *Table) GetActivePlayer() *player.Player {
 	return t.playerAt(t.active)
 }
 
-func (t *Table) GetNextActivePlayer() *player.Player {
-	if t.active < 0 || t.active >= t.maxPlayers {
-		return nil
-	}
-	return t.NextPlayer(t.active)
-}
-
 func (t *Table) getNextActiveChair() int32 {
-	p := t.GetNextActivePlayer()
-	if p == nil {
-		slog.Error("next active player not found", "active_chair", t.active)
-		return -1 // 容错
+	if t.active >= 0 && t.active < t.maxPlayers {
+		if p := t.NextPlayer(t.active); p != nil {
+			return p.GetChairID()
+		}
 	}
-	return p.GetChairID()
+	slog.Error("next active player not found", "active_chair", t.active)
+	return -1
 }
 
 func (t *Table) playerAt(chair int32) *player.Player {
@@ -265,7 +258,7 @@ func (t *Table) GetGamers() []*player.Player {
 	return gamers
 }
 
-func (t *Table) Counter() (userCount, robotCount, allCount, gamingCount int32) {
+func (t *Table) playerCounts() (userCount, robotCount int32) {
 	for _, seat := range t.seats {
 		if seat == nil {
 			continue
@@ -275,12 +268,8 @@ func (t *Table) Counter() (userCount, robotCount, allCount, gamingCount int32) {
 		} else {
 			userCount++
 		}
-		if seat.IsGaming() {
-			gamingCount++
-		}
-		allCount++
 	}
-	return userCount, robotCount, allCount, gamingCount
+	return userCount, robotCount
 }
 
 func (t *Table) checkKick() {
@@ -307,7 +296,6 @@ func (t *Table) checkKickPlayer(p *player.Player, conf *conf.Room_Game) (int32, 
 		if p.IsOffline() {
 			return codes.KickByBroke, "KICK_BY_BROKE"
 		}
-	default:
 	}
 	return 0, ""
 }

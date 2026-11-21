@@ -20,11 +20,6 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-func TestServersUseIndependentMux(_ *testing.T) {
-	NewServer(Path("/ws"))
-	NewServer(Path("/ws"))
-}
-
 func TestEndpointUsesServerConfiguration(t *testing.T) {
 	for _, test := range []struct {
 		name    string
@@ -60,10 +55,14 @@ func TestEndpointUsesServerConfiguration(t *testing.T) {
 	}
 }
 
-func TestServerConfiguresHTTPHeaderLimits(t *testing.T) {
+func TestServerOwnsHTTPConfiguration(t *testing.T) {
 	server := NewServer()
 	if server.httpServer.ReadHeaderTimeout <= 0 || server.httpServer.MaxHeaderBytes <= 0 {
 		t.Fatal("HTTP header limits are not configured")
+	}
+	first, second := NewServer(Path("/ws")), NewServer(Path("/ws"))
+	if first.httpServer.Handler == second.httpServer.Handler {
+		t.Fatal("servers share the same HTTP mux")
 	}
 }
 
@@ -120,7 +119,7 @@ func TestServerCanPrepareAfterListenFailure(t *testing.T) {
 	if err = s.Stop(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	rebound, err := net.Listen("tcp", address)
+	rebound, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", address)
 	if err != nil {
 		t.Fatalf("listener remained open after Stop: %v", err)
 	}
@@ -141,7 +140,7 @@ func TestEndpointRejectsInvalidConfigurationBeforeBinding(t *testing.T) {
 		t.Fatalf("Endpoint() error = %v, want invalid path", err)
 	}
 
-	rebound, err := net.Listen("tcp", address)
+	rebound, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", address)
 	if err != nil {
 		t.Fatalf("invalid configuration bound the listener: %v", err)
 	}
@@ -209,7 +208,7 @@ func TestServerRejectsInvalidConfiguration(t *testing.T) {
 			server: newWebSocketServer(
 				t,
 				websocketTestHandler{},
-				TLSConfig(&tls.Config{InsecureSkipVerify: true}),
+				TLSConfig(&tls.Config{InsecureSkipVerify: true}), // #nosec G402 -- 验证配置入口会拒绝关闭证书校验。
 			),
 			want: "websocket: TLS certificate verification must be enabled",
 		},

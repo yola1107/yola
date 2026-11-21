@@ -2,6 +2,7 @@ package table
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"testing/synctest"
@@ -105,36 +106,41 @@ func TestEnterSpecifiedTablePreservesMailboxErrors(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
-				manager := newStartedManagerWithConfig(t, testRoom(2), new(tableRepoStub), 2, 1, 1)
-				ctx, cancel := context.WithTimeout(t.Context(), time.Second)
-				defer cancel()
-				if tc.name == "stopped" {
-					require.NoError(t, manager.Close(ctx))
-				} else {
-					release := make(chan struct{})
-					defer close(release)
-					executor := manager.mailboxes.Executor(1)
-					require.NoError(t, executor.TryPost(func() { <-release }))
-					synctest.Wait()
-					if tc.name == "full" {
-						require.NoError(t, executor.TryPost(func() {}))
-					}
-					if tc.name == "canceled" {
-						cancel()
-					}
-				}
-				p := player.New(&player.Raw{ID: 1, BaseData: &player.BaseData{UID: 1, Money: 500}})
-				_, _, err := manager.Enter(ctx, p, 2)
-				require.ErrorIs(t, err, tc.err)
-				// Close 在解除阻塞后排空队列，保证超时任务不会晚到入座。
-				t.Cleanup(func() {
-					require.NoError(t, manager.Close(context.Background()))
-					require.Equal(t, player.TableIDPending, p.GetTableID())
-					for _, gameTable := range manager.tables {
-						require.Zerof(t, gameTable.seatedCount(), "table %d", gameTable.ID)
-					}
-				})
+				assertEnterMailboxFailure(t, tc.err)
 			})
 		})
 	}
+}
+
+func assertEnterMailboxFailure(t *testing.T, wantErr error) {
+	t.Helper()
+	manager := newStartedManagerWithConfig(t, testRoom(2), new(tableRepoStub), 2, 1, 1)
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	if errors.Is(wantErr, mailbox.ErrStopped) {
+		require.NoError(t, manager.Close(ctx))
+	} else {
+		release := make(chan struct{})
+		defer close(release)
+		executor := manager.mailboxes.Executor(1)
+		require.NoError(t, executor.TryPost(func() { <-release }))
+		synctest.Wait()
+		if errors.Is(wantErr, mailbox.ErrFull) {
+			require.NoError(t, executor.TryPost(func() {}))
+		}
+		if errors.Is(wantErr, context.Canceled) {
+			cancel()
+		}
+	}
+	p := player.New(&player.Raw{ID: 1, BaseData: &player.BaseData{UID: 1, Money: 500}})
+	_, _, err := manager.Enter(ctx, p, 2)
+	require.ErrorIs(t, err, wantErr)
+	// Close 在解除阻塞后排空队列，保证超时任务不会晚到入座。
+	t.Cleanup(func() {
+		require.NoError(t, manager.Close(context.Background()))
+		require.Equal(t, player.TableIDPending, p.GetTableID())
+		for _, gameTable := range manager.tables {
+			require.Zerof(t, gameTable.seatedCount(), "table %d", gameTable.ID)
+		}
+	})
 }

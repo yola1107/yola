@@ -6,7 +6,7 @@ import (
 	"yola/node"
 )
 
-// GameServer defines the command handlers exposed through a Yola Node.
+// GameServer 定义通过 Node 暴露的 Ludo 命令处理器。
 type GameServer interface {
 	OnLoginReq(context.Context, *LoginReq) (*LoginRsp, error)
 	OnLogoutReq(context.Context, *LogoutReq) (*LogoutRsp, error)
@@ -20,7 +20,7 @@ type GameServer interface {
 	OnMoveReq(context.Context, *MoveReq) (*MoveRsp, error)
 }
 
-// RegisterGameServer registers the command contract with a Yola Node.
+// RegisterGameServer 在 Node 注册 Ludo 命令。
 func RegisterGameServer(server *node.Server, game GameServer) {
 	node.Register(server, GameCommand_CmdLogin, game.OnLoginReq)
 	node.Register(server, GameCommand_CmdLogout, game.OnLogoutReq)

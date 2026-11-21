@@ -46,7 +46,7 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	defer registry.Close()
+	defer func() { _ = registry.Close() }()
 
 	redisClient, err := xredis.NewClient(
 		xredis.WithAddress(cfg.redisAddress),
@@ -56,7 +56,7 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	defer redisClient.Close()
+	defer func() { _ = redisClient.Close() }()
 
 	gate, err := gateway.NewServer(
 		gateway.Address(cfg.grpcListen),
@@ -69,8 +69,8 @@ func main() {
 			websocket.NewServer(
 				websocket.Address(cfg.wsListen),
 				websocket.Timeout(cfg.rpcTimeout),
-				websocket.MaxConnLimit(int32(cfg.wsMaxConns)),
-				websocket.MaxConnPerIP(int32(cfg.wsMaxConnsPerIP)),
+				websocket.MaxConnLimit(cfg.wsMaxConns),
+				websocket.MaxConnPerIP(cfg.wsMaxConnsPerIP),
 				websocket.Middleware(recovery.Recovery()),
 			),
 		),

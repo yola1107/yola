@@ -152,24 +152,9 @@ func (t *Table) MovePiece(p *player.Player, req *v1.MoveReq, timeout bool) *v1.M
 		)
 	}
 
-	if arrived {
-		p.MarkPieceArrived(pieceID)
-		if len(t.board.GetActivePieceIDs(p.GetColor())) == 0 {
-			p.SetFinish()
-		}
-		if debugLogEnabled() {
-			slog.Debug("piece arrived",
-				"player", p.Desc(),
-				"piece_id", pieceID,
-				"dice", dice,
-				"player_finished", p.IsFinish(),
-			)
-		}
-
-		if p.IsFinish() {
-			t.settleGame(p, v1.FINISH_TYPE_PLAYER_HAND_EMPTY)
-			return rsp
-		}
+	if arrived && t.markPieceArrived(p, pieceID, dice) {
+		t.settleGame(p, v1.FINISH_TYPE_PLAYER_HAND_EMPTY)
+		return rsp
 	}
 
 	switch {
@@ -184,6 +169,22 @@ func (t *Table) MovePiece(p *player.Player, req *v1.MoveReq, timeout bool) *v1.M
 		t.allowPlayerToMove(p)
 	}
 	return rsp
+}
+
+func (t *Table) markPieceArrived(p *player.Player, pieceID, dice int32) bool {
+	p.MarkPieceArrived(pieceID)
+	if len(t.board.GetActivePieceIDs(p.GetColor())) == 0 {
+		p.SetFinish()
+	}
+	if debugLogEnabled() {
+		slog.Debug("piece arrived",
+			"player", p.Desc(),
+			"piece_id", pieceID,
+			"dice", dice,
+			"player_finished", p.IsFinish(),
+		)
+	}
+	return p.IsFinish()
 }
 
 func (t *Table) hasMovableOption(p *player.Player) bool {

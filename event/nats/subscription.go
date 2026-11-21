@@ -122,15 +122,16 @@ func (s *subscription) handle(ctx context.Context, message *natsgo.Msg) {
 
 func (s *subscription) beginStop() {
 	s.stopOnce.Do(func() {
-		if s.cancel != nil {
-			s.cancel()
+		cancel := s.cancel
+		s.cancel = nil
+		if cancel != nil {
+			cancel()
 		}
 		// 原生 unsubscribe 可能等待连接写锁，由唯一清理任务完成并发布结果。
 		go func() {
-			started, err := s.deactivate()
-			s.stopErr = err
+			s.stopErr = s.deactivate()
 			close(s.deactivated)
-			if !started {
+			if cancel == nil {
 				s.complete()
 			}
 		}()
@@ -152,24 +153,22 @@ func (s *subscription) complete() {
 	close(s.stopDone)
 }
 
-func (s *subscription) deactivate() (bool, error) {
+func (s *subscription) deactivate() error {
 	s.statsMu.Lock()
 	s.sampleDropped()
 	native := s.native
-	started := s.cancel != nil
 	s.native = nil
-	s.cancel = nil
 	dropped := s.stats.QueueDropped
 	s.stats.QueueDroppedCurrent = false
 	s.statsMu.Unlock()
 
 	if native == nil {
-		return started, nil
+		return nil
 	}
 	if dropped > 0 {
 		slog.Warn("event dropped", "topic", s.topic, "reason", "queue_full", "dropped", dropped)
 	}
-	return started, native.Unsubscribe()
+	return native.Unsubscribe()
 }
 
 func (s *subscription) wait(ctx context.Context) error {
@@ -190,7 +189,7 @@ func (s *subscription) sampleDropped() {
 	if s.native == nil {
 		return
 	}
-	if dropped, err := s.native.Dropped(); err == nil {
+	if dropped, err := s.native.Dropped(); err == nil && dropped >= 0 {
 		s.stats.QueueDropped = uint64(dropped)
 		s.stats.QueueDroppedCurrent = true
 	}

@@ -24,14 +24,6 @@ func TestResolveOptionsDefaultsAndZeroHandlerTimeout(t *testing.T) {
 	require.Equal(t, 10*time.Second, o.shutdownTimeout)
 }
 
-func TestConstructionRequiresRegistration(t *testing.T) {
-	_, err := NewServer()
-	require.EqualError(t, err, "node: registration is required")
-
-	_, err = NewServer(Registration(nil))
-	require.EqualError(t, err, "node: registration is required")
-}
-
 func TestResolveOptionsPropagatesOptionError(t *testing.T) {
 	want := errors.New("option failed")
 
@@ -113,44 +105,47 @@ func TestAdvertiseHostOptionPublishesEndpoint(t *testing.T) {
 	}
 }
 
-func TestAdvertiseHostRejectsUnreachableAdvertisement(t *testing.T) {
-	_, err := NewServer(Registration(&countingRegistrar{}), Address("127.0.0.1:9001"), AdvertiseHost("192.168.1.10"))
-	require.EqualError(t, err, `node: loopback listen host "127.0.0.1" cannot advertise non-loopback host "192.168.1.10"`)
-}
-
 func TestConstructionRejectsInvalidConfiguration(t *testing.T) {
+	registration := Registration(&countingRegistrar{})
 	for _, test := range []struct {
-		name   string
-		option Option
-		want   string
+		name string
+		opts []Option
+		want string
 	}{
-		{name: "push timeout", option: PushTimeout(0), want: "node: push timeout must be positive"},
-		{name: "cleanup timeout", option: CleanupTimeout(0), want: "node: cleanup timeout must be positive"},
-		{name: "shutdown timeout", option: ShutdownTimeout(0), want: "node: shutdown timeout must be positive"},
-		{name: "client TLS", option: ClientTLS(nil), want: "node: gRPC TLS config is required"},
-		{name: "server TLS", option: ServerTLS(nil), want: "node: TLS config is required"},
+		{name: "missing registration", want: "node: registration is required"},
+		{name: "nil registration", opts: []Option{Registration(nil)}, want: "node: registration is required"},
+		{name: "push timeout", opts: []Option{registration, PushTimeout(0)}, want: "node: push timeout must be positive"},
+		{name: "cleanup timeout", opts: []Option{registration, CleanupTimeout(0)}, want: "node: cleanup timeout must be positive"},
+		{name: "shutdown timeout", opts: []Option{registration, ShutdownTimeout(0)}, want: "node: shutdown timeout must be positive"},
+		{name: "client TLS", opts: []Option{registration, ClientTLS(nil)}, want: "node: gRPC TLS config is required"},
+		{name: "server TLS", opts: []Option{registration, ServerTLS(nil)}, want: "node: TLS config is required"},
 		{
-			name:   "server certificate",
-			option: ServerTLS(&tls.Config{MinVersion: tls.VersionTLS12}),
-			want:   "node: TLS certificate is required",
+			name: "server certificate",
+			opts: []Option{registration, ServerTLS(&tls.Config{MinVersion: tls.VersionTLS12})},
+			want: "node: TLS certificate is required",
 		},
-		{name: "handler timeout", option: HandlerTimeout(-time.Second), want: "node: handler timeout cannot be negative"},
-		{name: "listener", option: Listener(nil), want: "node: listener is required"},
-		{name: "stateful store", option: Stateful(nil), want: "node: stateful store is required"},
+		{name: "handler timeout", opts: []Option{registration, HandlerTimeout(-time.Second)}, want: "node: handler timeout cannot be negative"},
+		{name: "listener", opts: []Option{registration, Listener(nil)}, want: "node: listener is required"},
+		{name: "stateful store", opts: []Option{registration, Stateful(nil)}, want: "node: stateful store is required"},
 		{
-			name:   "typed nil stateful store",
-			option: Stateful((*memoryNodeStore)(nil)),
-			want:   "node: stateful store is required",
+			name: "typed nil stateful store",
+			opts: []Option{registration, Stateful((*memoryNodeStore)(nil))},
+			want: "node: stateful store is required",
 		},
-		{name: "gate directory", option: GateDirectory(nil), want: "node: gate directory is required"},
+		{name: "gate directory", opts: []Option{registration, GateDirectory(nil)}, want: "node: gate directory is required"},
 		{
-			name:   "typed nil gate directory",
-			option: GateDirectory((*fixedGateDirectory)(nil)),
-			want:   "node: gate directory is required",
+			name: "typed nil gate directory",
+			opts: []Option{registration, GateDirectory((*fixedGateDirectory)(nil))},
+			want: "node: gate directory is required",
+		},
+		{
+			name: "unreachable advertised address",
+			opts: []Option{registration, Address("127.0.0.1:9001"), AdvertiseHost("192.168.1.10")},
+			want: `node: loopback listen host "127.0.0.1" cannot advertise non-loopback host "192.168.1.10"`,
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			server, err := NewServer(Registration(&countingRegistrar{}), test.option)
+			server, err := NewServer(test.opts...)
 			require.EqualError(t, err, test.want)
 			require.Nil(t, server)
 		})

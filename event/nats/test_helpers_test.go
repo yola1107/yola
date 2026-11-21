@@ -127,7 +127,7 @@ type blockedWriteDialer struct {
 }
 
 func (d *blockedWriteDialer) Dial(network, address string) (net.Conn, error) {
-	conn, err := net.DialTimeout(network, address, time.Second)
+	conn, err := (&net.Dialer{Timeout: time.Second}).DialContext(context.Background(), network, address)
 	if err != nil {
 		return nil, err
 	}

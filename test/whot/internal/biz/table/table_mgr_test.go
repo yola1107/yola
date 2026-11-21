@@ -27,40 +27,45 @@ func TestManagerLimitsConcurrentTableJobs(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
-				room := &conf.Room{
-					Table:    &conf.Room_Table{TableNum: tc.tableCount, ChairNum: 4},
-					Game:     &conf.Room_Game{MaxMoney: -1, BaseMoney: 1},
-					Robot:    &conf.Room_Robot{},
-					LogCache: &conf.Room_LogCache{},
-				}
-				manager := NewManager(room, new(managerTestRepo))
-				started := make(chan struct{}, tc.tableCount)
-				release := make(chan struct{})
-				t.Cleanup(func() {
-					close(release)
-					ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-					defer cancel()
-					if err := manager.Close(ctx); err != nil {
-						t.Error(err)
-					}
-				})
-				if err := manager.Start(context.Background()); err != nil {
-					t.Fatal(err)
-				}
-				for index := range manager.tables {
-					if err := manager.mailboxes.Executor(index).TryPost(func() {
-						started <- struct{}{}
-						<-release
-					}); err != nil {
-						t.Fatal(err)
-					}
-				}
-				synctest.Wait()
-				if got := len(started); got != tc.workers {
-					t.Fatalf("concurrent table jobs = %d, want %d", got, tc.workers)
-				}
+				assertConcurrentTableJobs(t, tc.tableCount, tc.workers)
 			})
 		})
+	}
+}
+
+func assertConcurrentTableJobs(t *testing.T, tableCount int32, workers int) {
+	t.Helper()
+	room := &conf.Room{
+		Table:    &conf.Room_Table{TableNum: tableCount, ChairNum: 4},
+		Game:     &conf.Room_Game{MaxMoney: -1, BaseMoney: 1},
+		Robot:    &conf.Room_Robot{},
+		LogCache: &conf.Room_LogCache{},
+	}
+	manager := NewManager(room, new(managerTestRepo))
+	started := make(chan struct{}, tableCount)
+	release := make(chan struct{})
+	t.Cleanup(func() {
+		close(release)
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := manager.Close(ctx); err != nil {
+			t.Error(err)
+		}
+	})
+	if err := manager.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for index := range manager.tables {
+		if err := manager.mailboxes.Executor(index).TryPost(func() {
+			started <- struct{}{}
+			<-release
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	synctest.Wait()
+	if got := len(started); got != workers {
+		t.Fatalf("concurrent table jobs = %d, want %d", got, workers)
 	}
 }
 

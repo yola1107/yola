@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"math"
 	"time"
 
 	protocolv1 "yola/api/protocol/v1"
@@ -31,7 +32,7 @@ func (s *Server) forward(ctx context.Context, sess *session, msg *protocolv1.Pro
 		case codes.Aborted, codes.Internal:
 			logForwardError(ctx, slog.LevelWarn, "forward node fenced", binding, code, err)
 		}
-		msg.Op, msg.Code, msg.Body = protocolv1.OpResponse, int32(code), nil
+		msg.Op, msg.Code, msg.Body = protocolv1.OpResponse, protocolCode(code), nil
 		return
 	}
 	reply, err := route.forward(rpcCtx, msg.Cmd, msg.Body)
@@ -40,7 +41,7 @@ func (s *Server) forward(ctx context.Context, sess *session, msg *protocolv1.Pro
 		if code != codes.Canceled && code != codes.Aborted {
 			logForwardError(ctx, slog.LevelError, "forward node failed", binding, code, err)
 		}
-		msg.Op, msg.Code, msg.Body = protocolv1.OpResponse, int32(code), nil
+		msg.Op, msg.Code, msg.Body = protocolv1.OpResponse, protocolCode(code), nil
 		return
 	}
 	msg.Op, msg.Code, msg.Body = protocolv1.OpResponse, int32(codes.OK), reply.GetBody()
@@ -98,8 +99,15 @@ func logForwardError(
 		"conn_id", binding.ConnID,
 		"service", binding.ServiceName,
 		"gate_id", binding.GateID,
-		"code", int32(code),
+		"code", int64(code),
 		"status", code.String(),
 		"error", err,
 	)
+}
+
+func protocolCode(code codes.Code) int32 {
+	if code > math.MaxInt32 {
+		return int32(codes.Unknown)
+	}
+	return int32(code)
 }

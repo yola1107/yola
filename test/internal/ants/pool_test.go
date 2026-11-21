@@ -5,11 +5,12 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 func BenchmarkPoolSubmit(b *testing.B) {
@@ -194,81 +195,52 @@ func TestPoolContextCancellationStopsPool(t *testing.T) {
 }
 
 func TestPoolRecoversTaskPanic(t *testing.T) {
-	pool, err := New(WithSize(1), WithNonblocking(false))
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	if err = pool.Start(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if err = pool.Submit(func() { panic("boom") }); err != nil {
-		t.Fatal(err)
-	}
-
-	done := make(chan struct{})
-	if err = pool.Submit(func() { close(done) }); err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("worker did not continue after panic")
-	}
-
-	stopCtx, stopCancel := context.WithTimeout(context.Background(), time.Second)
-	defer stopCancel()
-	if err = pool.Stop(stopCtx); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestPoolLogsTaskPanicWithNilLogger(t *testing.T) {
-	var output bytes.Buffer
-	previous := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&output, nil)))
-	t.Cleanup(func() { slog.SetDefault(previous) })
-
-	pool, err := New(WithSize(1), WithNonblocking(false), WithLogger(nil))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err = pool.Start(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	defer func() {
-		if stopErr := pool.Stop(context.Background()); stopErr != nil {
-			t.Error(stopErr)
+	verifyRecovery := func(t *testing.T, pool *Pool, message string) {
+		t.Helper()
+		require.NoError(t, pool.Submit(func() { panic(message) }))
+		done := make(chan struct{})
+		require.NoError(t, pool.Submit(func() { close(done) }))
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Fatal("worker did not continue after panic")
 		}
-	}()
+	}
 
-	if err = pool.Submit(func() { panic("nil logger panic") }); err != nil {
-		t.Fatal(err)
-	}
-	done := make(chan struct{})
-	if err = pool.Submit(func() { close(done) }); err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("worker did not continue after panic")
-	}
-	logged := output.String()
-	if !strings.Contains(logged, "worker pool task panic") || !strings.Contains(logged, "nil logger panic") {
-		t.Fatalf("panic log = %q", logged)
-	}
+	t.Run("default logger", func(t *testing.T) {
+		pool, err := New(WithSize(1), WithNonblocking(false))
+		require.NoError(t, err)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		require.NoError(t, pool.Start(ctx))
+		verifyRecovery(t, pool, "boom")
+
+		stopCtx, stopCancel := context.WithTimeout(context.Background(), time.Second)
+		defer stopCancel()
+		require.NoError(t, pool.Stop(stopCtx))
+	})
+
+	t.Run("nil logger", func(t *testing.T) {
+		var output bytes.Buffer
+		previous := slog.Default()
+		slog.SetDefault(slog.New(slog.NewTextHandler(&output, nil)))
+		t.Cleanup(func() { slog.SetDefault(previous) })
+
+		pool, err := New(WithSize(1), WithNonblocking(false), WithLogger(nil))
+		require.NoError(t, err)
+		require.NoError(t, pool.Start(context.Background()))
+		defer func() { require.NoError(t, pool.Stop(context.Background())) }()
+
+		verifyRecovery(t, pool, "nil logger panic")
+		require.Contains(t, output.String(), "worker pool task panic")
+		require.Contains(t, output.String(), "nil logger panic")
+	})
 }
 
 func TestPoolConcurrentStopSubmitCompletesSuccessfulTasks(t *testing.T) {
 	pool, err := New(WithSize(4), WithNonblocking(true))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err = pool.Start(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+	require.NoError(t, pool.Start(context.Background()))
 
 	var accepted atomic.Int64
 	var completed atomic.Int64
@@ -340,9 +312,7 @@ func TestPoolConcurrentStopSubmitCompletesSuccessfulTasks(t *testing.T) {
 			t.Fatalf("Submit during Stop error = %v", submitErr)
 		}
 	}
-	if err = <-stopDone; err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, <-stopDone)
 	if got, want := completed.Load(), accepted.Load(); got != want {
 		t.Fatalf("completed successful tasks = %d, want %d", got, want)
 	}

@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	v1 "yola/test/whot/api/v1"
@@ -14,16 +16,12 @@ import (
 	"yola/test/whot/internal/conf"
 	"yola/test/whot/pkg/codes"
 
+	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 )
 
 func TestConcurrentLoginSeatsOnePlayer(t *testing.T) {
-	room := &conf.Room{
-		Table:    &conf.Room_Table{TableNum: 1, ChairNum: 2},
-		Game:     &conf.Room_Game{MinMoney: 100, MaxMoney: 1000, BaseMoney: 100},
-		Robot:    &conf.Room_Robot{},
-		LogCache: &conf.Room_LogCache{},
-	}
+	room := whotTestRoom()
 	// 两次 LoadPlayer 都到达后才返回，确保两个登录竞争同一玩家。
 	repo := &concurrentLoginRepo{loaded: make(chan struct{})}
 	uc, cleanup, err := NewUsecase(repo, room)
@@ -72,12 +70,7 @@ func TestConcurrentLoginSeatsOnePlayer(t *testing.T) {
 }
 
 func TestStaleDisconnectDoesNotOfflineReconnectedPlayer(t *testing.T) {
-	room := &conf.Room{
-		Table:    &conf.Room_Table{TableNum: 1, ChairNum: 2},
-		Game:     &conf.Room_Game{MinMoney: 100, MaxMoney: 1000, BaseMoney: 100},
-		Robot:    &conf.Room_Robot{},
-		LogCache: &conf.Room_LogCache{},
-	}
+	room := whotTestRoom()
 	uc, cleanup, err := NewUsecase(new(usecaseRepoStub), room)
 	if err != nil {
 		t.Fatal(err)
@@ -112,70 +105,61 @@ func TestStaleDisconnectDoesNotOfflineReconnectedPlayer(t *testing.T) {
 }
 
 func TestDisconnectDuringSwitchRemovesPlayerFromDestination(t *testing.T) {
-	room := &conf.Room{
-		Table:    &conf.Room_Table{TableNum: 2, ChairNum: 2},
-		Game:     &conf.Room_Game{MinMoney: 100, MaxMoney: 1000, BaseMoney: 100},
-		Robot:    &conf.Room_Robot{},
-		LogCache: &conf.Room_LogCache{},
-	}
-	uc, cleanup, err := NewUsecase(new(usecaseRepoStub), room)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(cleanup)
+	synctest.Test(t, func(t *testing.T) {
+		room := whotTestRoom()
+		room.Table.TableNum = 2
+		uc, cleanup, err := NewUsecase(new(usecaseRepoStub), room)
+		require.NoError(t, err)
+		t.Cleanup(cleanup)
 
-	sessions := make([]*connectionSession, 3)
-	for index, uid := range []int64{41, 42, 43} {
-		sessions[index] = &connectionSession{uid: fmt.Sprint(uid), bindingToken: fmt.Sprintf("binding-%d", uid)}
-		if reply, loginErr := uc.Login(context.Background(), sessions[index], uid, "valid"); loginErr != nil || reply.Code != codes.Success {
-			t.Fatalf("Login(%d) = (%+v, %v)", uid, reply, loginErr)
+		var leaving *connectionSession
+		for _, uid := range []int64{41, 42, 43} {
+			sess := &connectionSession{uid: strconv.FormatInt(uid, 10), bindingToken: fmt.Sprintf("binding-%d", uid)}
+			if uid == 41 {
+				leaving = sess
+			}
+			reply, err := uc.Login(t.Context(), sess, uid, "valid")
+			require.NoError(t, err)
+			require.Equal(t, codes.Success, reply.Code)
 		}
-	}
-	p := uc.pm.GetByID(41)
-	blocker := uc.pm.GetByID(43)
-	if p.GetTableID() != 1 || blocker.GetTableID() != 2 {
-		t.Fatalf("test routes = player:%d blocker:%d", p.GetTableID(), blocker.GetTableID())
-	}
+		p := uc.pm.GetByID(41)
+		blocker := uc.pm.GetByID(43)
+		require.Equal(t, int32(1), p.GetTableID(), "source table")
+		require.Equal(t, int32(2), blocker.GetTableID(), "destination table")
 
-	targetBlocked := make(chan struct{})
-	releaseTarget := make(chan struct{})
-	blockDone := make(chan error, 1)
-	go func() {
-		blockDone <- uc.tm.CallPlayer(context.Background(), blocker, func(*table.Table) error {
-			close(targetBlocked)
-			<-releaseTarget
-			return nil
-		})
-	}()
-	<-targetBlocked
+		targetBlocked := make(chan struct{})
+		releaseTarget := make(chan struct{})
+		unblock := sync.OnceFunc(func() { close(releaseTarget) })
+		t.Cleanup(unblock)
+		blockDone := make(chan error, 1)
+		go func() {
+			blockDone <- uc.tm.CallPlayer(t.Context(), blocker, func(*table.Table) error {
+				close(targetBlocked)
+				<-releaseTarget
+				return nil
+			})
+		}()
+		<-targetBlocked
 
-	switchDone := make(chan error, 1)
-	go func() {
-		_, switchErr := uc.SwitchTable(context.Background(), 41)
-		switchDone <- switchErr
-	}()
-	waitForBizTest(t, func() bool { return p.GetTableID() == player.TableIDPending })
-	if err := uc.Disconnect(context.Background(), sessions[0]); err != nil {
-		t.Fatal(err)
-	}
-	close(releaseTarget)
-	if err := <-blockDone; err != nil {
-		t.Fatal(err)
-	}
-	if err := <-switchDone; !errors.Is(err, table.ErrPlayerDisconnected) {
-		t.Fatalf("SwitchTable() error = %v, want %v", err, table.ErrPlayerDisconnected)
-	}
-	if current := uc.pm.GetByID(41); current != nil {
-		t.Fatalf("disconnected player remained managed: %v", current)
-	}
-	if p.GetTableID() != player.TableIDDetached {
-		t.Fatalf("disconnected player table = %d, want detached", p.GetTableID())
-	}
+		switchDone := make(chan error, 1)
+		go func() {
+			_, switchErr := uc.SwitchTable(t.Context(), 41)
+			switchDone <- switchErr
+		}()
+		synctest.Wait()
+		require.Equal(t, player.TableIDPending, p.GetTableID())
+		require.NoError(t, uc.Disconnect(t.Context(), leaving))
+		unblock()
+		require.NoError(t, <-blockDone)
+		require.ErrorIs(t, <-switchDone, table.ErrPlayerDisconnected)
+		require.Nil(t, uc.pm.GetByID(41))
+		require.Equal(t, player.TableIDDetached, p.GetTableID())
+	})
 }
 
 func TestDrainPersistsUnbindsAndIsIdempotent(t *testing.T) {
 	repo := new(usecaseRepoStub)
-	uc, cleanup, err := NewUsecase(repo, whotDrainTestRoom())
+	uc, cleanup, err := NewUsecase(repo, whotTestRoom())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -206,7 +190,7 @@ func TestDrainPersistsUnbindsAndIsIdempotent(t *testing.T) {
 
 func TestDrainDoesNotCleanPlayersWhenTableStopTimesOut(t *testing.T) {
 	repo := new(usecaseRepoStub)
-	uc, cleanup, err := NewUsecase(repo, whotDrainTestRoom())
+	uc, cleanup, err := NewUsecase(repo, whotTestRoom())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -257,7 +241,7 @@ func TestDrainReturnsPlayerCleanupErrors(t *testing.T) {
 	saveErr := errors.New("save failed")
 	unbindErr := errors.New("unbind failed")
 	repo := &usecaseRepoStub{saveErr: saveErr}
-	uc, cleanup, err := NewUsecase(repo, whotDrainTestRoom())
+	uc, cleanup, err := NewUsecase(repo, whotTestRoom())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -281,23 +265,12 @@ func TestDrainReturnsPlayerCleanupErrors(t *testing.T) {
 	}
 }
 
-func whotDrainTestRoom() *conf.Room {
+func whotTestRoom() *conf.Room {
 	return &conf.Room{
 		Table:    &conf.Room_Table{TableNum: 1, ChairNum: 2},
 		Game:     &conf.Room_Game{MinMoney: 100, MaxMoney: 1000, BaseMoney: 100},
 		Robot:    &conf.Room_Robot{},
 		LogCache: &conf.Room_LogCache{},
-	}
-}
-
-func waitForBizTest(t *testing.T, condition func() bool) {
-	t.Helper()
-	deadline := time.Now().Add(time.Second)
-	for !condition() {
-		if time.Now().After(deadline) {
-			t.Fatal("timed out waiting for business condition")
-		}
-		time.Sleep(time.Millisecond)
 	}
 }
 

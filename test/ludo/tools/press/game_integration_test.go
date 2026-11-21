@@ -3,7 +3,7 @@ package press
 import (
 	"fmt"
 	"log/slog"
-	"math/rand/v2"
+	"math"
 	"os"
 	"strconv"
 	"strings"
@@ -13,6 +13,7 @@ import (
 
 	"yola/network/websocket"
 	"yola/test/internal/pushbench"
+	"yola/test/internal/xgo"
 	v1 "yola/test/ludo/api/v1"
 	"yola/test/ludo/internal/biz"
 	"yola/test/ludo/internal/conf"
@@ -79,7 +80,7 @@ func runGameDeliveryScenarios(t *testing.T, timeouts pushbench.RequestTimeouts) 
 	t.Cleanup(func() { slog.SetDefault(logger) })
 	for _, scenario := range []struct {
 		name   string
-		tables int
+		tables int32
 		robots bool
 	}{
 		{name: "smoke", tables: 2},
@@ -95,15 +96,15 @@ func runGameDeliveryScenarios(t *testing.T, timeouts pushbench.RequestTimeouts) 
 }
 
 // runGameDelivery 在 duration 为零时仅验证入座、场景与消息投递，否则继续验证全员开局及对局。
-func runGameDelivery(t *testing.T, tableCount int, robots bool, duration time.Duration, timeouts pushbench.RequestTimeouts) {
+func runGameDelivery(t *testing.T, tableCount int32, robots bool, duration time.Duration, timeouts pushbench.RequestTimeouts) {
 	t.Helper()
 	playerCount := tableCount * 4
 	if robots {
 		playerCount = 1
 	}
-	uidStart := int64(1_000_000_000) + rand.Int64N(1_000_000_000)
+	uidStart := xgo.RandInt[int64](1_000_000_000, 2_000_000_000)
 	room := &conf.Room{
-		Table: &conf.Room_Table{TableNum: int32(tableCount), ChairNum: 4},
+		Table: &conf.Room_Table{TableNum: tableCount, ChairNum: 4},
 		Game:  &conf.Room_Game{BaseMoney: 1, MinMoney: 100, MaxMoney: -1, AutoReady: true},
 		Robot: &conf.Room_Robot{
 			Open:          robots,
@@ -118,22 +119,22 @@ func runGameDelivery(t *testing.T, tableCount int, robots bool, duration time.Du
 		},
 	}
 	client := pushbench.GameRedis(t)
-	usecase, cleanup, err := biz.NewUsecase("delivery-test", data.NewPlayerRepo(data.NewData(client)), room)
+	usecase, cleanup, err := biz.NewUsecase("delivery-test", data.NewPlayerRepo(client), room)
 	require.NoError(t, err)
 	t.Cleanup(cleanup)
 	game := service.NewService(usecase)
-	probe := pushbench.StartGame(t, "ludo", client, game.RegisterNode, game.Drain, playerCount, timeouts)
+	probe := pushbench.StartGame(t, "ludo", client, game.RegisterNode, usecase.Drain, int(playerCount), timeouts)
 	// 到达率由 Batch/Interval 控制，有限玩家集不因压测端启动池满而漏发 Login。
 	runner := NewRunner(Press{
 		URL:               probe.Endpoint,
 		Open:              true,
 		Scenario:          scenarioPlay,
-		Num:               int32(playerCount),
+		Num:               playerCount,
 		Batch:             []int32{400, 400},
 		Interval:          10,
 		StartID:           uidStart,
 		UIDCount:          int64(playerCount),
-		Concurrency:       playerCount,
+		Concurrency:       int(playerCount),
 		ActionConcurrency: 1000,
 		MinMoney:          10000,
 		MaxMoney:          20000,
@@ -148,41 +149,7 @@ func runGameDelivery(t *testing.T, tableCount int, robots bool, duration time.Du
 	observer.actions.Store(true)
 	tableIDs := make([]atomic.Int32, playerCount)
 	runner.connectUser = func(user *User) error {
-		index := int(user.id - uidStart)
-		user.targetTableID = int32(index/4 + 1)
-		handlers := map[int32]websocket.PushHandler{
-			int32(v1.GameCommand_CmdSendCardPush): user.OnSendCardPush,
-			int32(v1.GameCommand_CmdScenePush):    user.OnScenePush,
-			int32(v1.GameCommand_CmdActivePush):   user.OnActivePush,
-			int32(v1.GameCommand_CmdMovePush):     user.OnMovePush,
-			int32(v1.GameCommand_CmdResultPush):   user.OnResultPush,
-		}
-		observer.observePushes(t, user, index, handlers)
-		codec := probe.Codec(func(command int32, body []byte) error {
-			tableID, err := inspectGameResponse(command, body, user.id)
-			if err == nil && v1.GameCommand(command) == v1.GameCommand_CmdLogin && tableID != user.targetTableID {
-				return fmt.Errorf("login table: uid=%d got=%d want=%d", user.id, tableID, user.targetTableID)
-			}
-			if tableID > 0 {
-				tableIDs[index].Store(tableID)
-			}
-			return err
-		})
-		connection, err := websocket.NewClient(
-			runner.ctx,
-			websocket.WithEndpoint(probe.Endpoint),
-			websocket.WithServiceName("ludo"),
-			websocket.WithToken(strconv.FormatInt(user.id, 10)),
-			websocket.WithCodec(codec),
-			websocket.WithPushHandler(handlers),
-			websocket.WithDisconnectFunc(user.OnDisconnect),
-		)
-		if err != nil {
-			return err
-		}
-		user.chair.Store(-1)
-		user.client.Store(connection)
-		return nil
+		return observer.connectUser(t, user, uidStart, tableIDs)
 	}
 	startupStarted := time.Now()
 	require.NoError(t, runner.Start())
@@ -200,16 +167,7 @@ func runGameDelivery(t *testing.T, tableCount int, robots bool, duration time.Du
 	require.NoError(t, probe.Err())
 	require.Zero(t, runner.startupRejected.Load(), "pressure startup pool rejected a player before login")
 	require.Zero(t, runner.closedPlayers.Load(), "pressure player failed startup or disconnected")
-	seats := make(map[int32]int, tableCount)
-	for index := range playerCount {
-		require.Equal(t, int32(index/4+1), tableIDs[index].Load())
-		seats[tableIDs[index].Load()]++
-	}
-	require.Len(t, seats, tableCount)
-	for tableID, count := range seats {
-		require.Positive(t, tableID)
-		require.Equal(t, playerCount/tableCount, count)
-	}
+	assertDeliverySeats(t, tableIDs, tableCount, playerCount)
 	if duration > 0 {
 		measureGamePlay(t, probe, observer.started, duration)
 	}
@@ -221,6 +179,71 @@ func runGameDelivery(t *testing.T, tableCount int, robots bool, duration time.Du
 		user.eventMu.Unlock()
 		require.Equal(t, userActive, state)
 	}
+	verifiedScenes := verifyDeliveryScenes(t, runner, uidStart, tableIDs, tableCount, robots)
+	probe.Stop(t)
+	probe.AssertDelivered(t, int(playerCount))
+	require.Zero(t, runner.closedPlayers.Load())
+	require.Zero(t, runner.startupRejected.Load())
+	if robots {
+		require.Positive(t, observer.robotMoves.Load())
+	}
+	t.Logf("GAME setup: game=ludo tables=%d players=%d robots=%t workers=%d duration=%s result_pushes=%d robot_move_pushes=%d verified_scenes=%d commands=%v",
+		tableCount, playerCount, robots, min(tableCount, 16), duration, observer.results.Load(), observer.robotMoves.Load(), verifiedScenes, runner.commandCounts())
+}
+
+func (o *gameDeliveryObserver) connectUser(t *testing.T, user *User, uidStart int64, tableIDs []atomic.Int32) error {
+	t.Helper()
+	offset := user.id - uidStart
+	if offset < 0 || offset > math.MaxInt32 {
+		return fmt.Errorf("pressure UID %d outside the delivery test range", user.id)
+	}
+	index := int32(offset)
+	user.targetTableID = index/4 + 1
+	handlers := user.gamePushHandlers()
+	o.observePushes(t, user, int(index), handlers)
+	codec := o.probe.Codec(func(command int32, body []byte) error {
+		tableID, err := inspectGameResponse(command, body, user.id)
+		if err == nil && v1.GameCommand(command) == v1.GameCommand_CmdLogin && tableID != user.targetTableID {
+			return fmt.Errorf("login table: uid=%d got=%d want=%d", user.id, tableID, user.targetTableID)
+		}
+		if tableID > 0 {
+			tableIDs[index].Store(tableID)
+		}
+		return err
+	})
+	connection, err := websocket.NewClient(
+		user.runner.ctx,
+		websocket.WithEndpoint(o.probe.Endpoint),
+		websocket.WithServiceName("ludo"),
+		websocket.WithToken(strconv.FormatInt(user.id, 10)),
+		websocket.WithCodec(codec),
+		websocket.WithPushHandler(handlers),
+		websocket.WithDisconnectFunc(user.OnDisconnect),
+	)
+	if err != nil {
+		return err
+	}
+	user.chair.Store(-1)
+	user.client.Store(connection)
+	return nil
+}
+
+func assertDeliverySeats(t *testing.T, tableIDs []atomic.Int32, tableCount, playerCount int32) {
+	t.Helper()
+	seats := make(map[int32]int, tableCount)
+	for index := range playerCount {
+		require.Equal(t, index/4+1, tableIDs[index].Load())
+		seats[tableIDs[index].Load()]++
+	}
+	require.Len(t, seats, int(tableCount))
+	for tableID, count := range seats {
+		require.Positive(t, tableID)
+		require.Equal(t, int(playerCount/tableCount), count)
+	}
+}
+
+func verifyDeliveryScenes(t *testing.T, runner *Runner, uidStart int64, tableIDs []atomic.Int32, tableCount int32, robots bool) int {
+	t.Helper()
 	verified := make(map[int32]bool, tableCount)
 	for _, user := range runner.userSnapshot() {
 		tableID := tableIDs[int(user.id-uidStart)].Load()
@@ -232,16 +255,8 @@ func runGameDelivery(t *testing.T, tableCount int, robots bool, duration time.Du
 		assertScenePlayers(t, scene.Players, tableID, uidStart, tableIDs, robots)
 		verified[tableID] = true
 	}
-	require.Len(t, verified, tableCount)
-	probe.Stop(t)
-	probe.AssertDelivered(t, playerCount)
-	require.Zero(t, runner.closedPlayers.Load())
-	require.Zero(t, runner.startupRejected.Load())
-	if robots {
-		require.Positive(t, observer.robotMoves.Load())
-	}
-	t.Logf("GAME setup: game=ludo tables=%d players=%d robots=%t workers=%d duration=%s result_pushes=%d robot_move_pushes=%d verified_scenes=%d commands=%v",
-		tableCount, playerCount, robots, min(tableCount, 16), duration, observer.results.Load(), observer.robotMoves.Load(), len(verified), runner.commandCounts())
+	require.Len(t, verified, int(tableCount))
+	return len(verified)
 }
 
 func measureGamePlay(t *testing.T, probe *pushbench.GameProbe, started []atomic.Bool, duration time.Duration) {
@@ -343,22 +358,27 @@ func (o *gameDeliveryObserver) observePushes(t *testing.T, user *User, index int
 		}
 		handler := handlers[command]
 		handlers[command] = func(body []byte) {
-			o.probe.RecordPush(user.id, command, body)
-			if command == int32(v1.GameCommand_CmdSendCardPush) {
-				o.started[index].Store(true)
-			}
-			if command == int32(v1.GameCommand_CmdResultPush) {
-				o.results.Add(1)
-			}
-			if o.robots && command == int32(v1.GameCommand_CmdMovePush) {
-				var move v1.MoveRsp
-				if assert.NoError(t, proto.Unmarshal(body, &move)) && move.GetMove().GetPlayerId() >= o.robotIDBegin {
-					o.robotMoves.Add(1)
-				}
-			}
+			o.recordPush(t, user.id, index, command, body)
 			if o.actions.Load() && handler != nil {
 				handler(body)
 			}
+		}
+	}
+}
+
+func (o *gameDeliveryObserver) recordPush(t *testing.T, uid int64, index int, command int32, body []byte) {
+	t.Helper()
+	o.probe.RecordPush(uid, command, body)
+	if command == int32(v1.GameCommand_CmdSendCardPush) {
+		o.started[index].Store(true)
+	}
+	if command == int32(v1.GameCommand_CmdResultPush) {
+		o.results.Add(1)
+	}
+	if o.robots && command == int32(v1.GameCommand_CmdMovePush) {
+		var move v1.MoveRsp
+		if assert.NoError(t, proto.Unmarshal(body, &move)) && move.GetMove().GetPlayerId() >= o.robotIDBegin {
+			o.robotMoves.Add(1)
 		}
 	}
 }

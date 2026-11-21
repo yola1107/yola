@@ -343,7 +343,7 @@ func TestClientRequestHonorsCanceledContext(t *testing.T) {
 
 func TestClientCloseFailsPendingRequest(t *testing.T) {
 	clientConn, serverConn := net.Pipe()
-	defer serverConn.Close()
+	defer func() { _ = serverConn.Close() }()
 	c := &Client{
 		conn:           clientConn,
 		codec:          defaultCodec(),

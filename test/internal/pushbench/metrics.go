@@ -73,43 +73,49 @@ func (m *measurements) report(b testing.TB) {
 	var summaries []measurementSummary
 	for _, scope := range m.collect(b).ScopeMetrics {
 		for _, instrument := range scope.Metrics {
-			histogram, ok := instrument.Data.(metricdata.Histogram[float64])
-			if !ok {
-				continue
-			}
-			for _, point := range histogram.DataPoints {
-				if point.Count == 0 {
-					continue
-				}
-				stage, _ := point.Attributes.Value("stage")
-				failed, _ := point.Attributes.Value("error")
-				name := stage.AsString()
-				if instrument.Name == "pushbench_rpc_seconds" {
-					name = "gateway_rpc"
-				}
-				summary := measurementSummary{
-					Stage:    name,
-					Calls:    point.Count,
-					MeanUS:   point.Sum * 1e6 / float64(point.Count),
-					P50Upper: percentileUpperBound(point, 0.50) * 1e6,
-					P95Upper: percentileUpperBound(point, 0.95) * 1e6,
-					P99Upper: percentileUpperBound(point, 0.99) * 1e6,
-					Failed:   failed.AsBool(),
-				}
-				summaries = append(summaries, summary)
-				if benchmark, ok := b.(*testing.B); ok {
-					benchmark.ReportMetric(summary.MeanUS, name+"_mean_us")
-					benchmark.ReportMetric(summary.P99Upper, name+"_p99_le_us")
-				}
-				if summary.Failed {
-					b.Errorf("%s had %d failed calls", name, point.Count)
-				}
-			}
+			summaries = appendHistogram(summaries, b, instrument)
 		}
 	}
 	encoded, err := json.Marshal(summaries)
 	require.NoError(b, err)
 	b.Logf("I45 measurements: %s", encoded)
+}
+
+func appendHistogram(summaries []measurementSummary, tb testing.TB, instrument metricdata.Metrics) []measurementSummary {
+	tb.Helper()
+	histogram, ok := instrument.Data.(metricdata.Histogram[float64])
+	if !ok {
+		return summaries
+	}
+	for _, point := range histogram.DataPoints {
+		if point.Count == 0 {
+			continue
+		}
+		stage, _ := point.Attributes.Value("stage")
+		failed, _ := point.Attributes.Value("error")
+		name := stage.AsString()
+		if instrument.Name == "pushbench_rpc_seconds" {
+			name = "gateway_rpc"
+		}
+		summary := measurementSummary{
+			Stage:    name,
+			Calls:    point.Count,
+			MeanUS:   point.Sum * 1e6 / float64(point.Count),
+			P50Upper: percentileUpperBound(point, 0.50) * 1e6,
+			P95Upper: percentileUpperBound(point, 0.95) * 1e6,
+			P99Upper: percentileUpperBound(point, 0.99) * 1e6,
+			Failed:   failed.AsBool(),
+		}
+		summaries = append(summaries, summary)
+		if benchmark, ok := tb.(*testing.B); ok {
+			benchmark.ReportMetric(summary.MeanUS, name+"_mean_us")
+			benchmark.ReportMetric(summary.P99Upper, name+"_p99_le_us")
+		}
+		if summary.Failed {
+			tb.Errorf("%s had %d failed calls", name, point.Count)
+		}
+	}
+	return summaries
 }
 
 func percentileUpperBound(point metricdata.HistogramDataPoint[float64], quantile float64) float64 {

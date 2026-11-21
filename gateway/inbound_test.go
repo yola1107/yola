@@ -13,10 +13,9 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 )
 
-func TestAuthenticationCommitsSuccessfulRoute(t *testing.T) {
+func TestAuthenticationCommitsRouteWithoutNode(t *testing.T) {
 	store := testLocator(t)
 	var calls atomic.Int32
 	deadlines := make(chan bool, 1)
@@ -24,6 +23,7 @@ func TestAuthenticationCommitsSuccessfulRoute(t *testing.T) {
 	gateway := newTestServer(t,
 		Auth(testAuthenticator{calls: &calls, deadlines: deadlines, services: services}),
 		Locator(store),
+		Discovery(staticDiscovery{}),
 		LeaseTTL(time.Minute),
 	)
 	initTestGateway(t, gateway)
@@ -44,23 +44,6 @@ func TestAuthenticationCommitsSuccessfulRoute(t *testing.T) {
 	require.Equal(t, "game", binding.ServiceName)
 	require.Equal(t, "player-a", binding.UID)
 	require.Equal(t, conn.ConnID(), binding.ConnID)
-}
-
-func TestAuthenticationDoesNotDependOnNodeAvailability(t *testing.T) {
-	store := testLocator(t)
-	gateway := newTestServer(t,
-		Locator(store),
-		Discovery(staticDiscovery{}),
-		LeaseTTL(time.Minute),
-	)
-	initTestGateway(t, gateway)
-	conn := newTestConnection("conn-a")
-	require.NoError(t, gateway.Open(context.Background(), conn))
-
-	auth := authMessage(t)
-	_, err := gateway.Handle(context.Background(), conn, auth)
-	require.NoError(t, err)
-	require.Equal(t, int32(codes.OK), auth.Code)
 	_, err = store.LocateGate(context.Background(), "game", "player-a")
 	require.NoError(t, err)
 
@@ -143,8 +126,8 @@ func TestAuthenticationRejectsInvalidUID(t *testing.T) {
 		})),
 	)
 
-	_, err := gateway.authenticateUID(context.Background(), "game", nil, "conn-a")
-	require.Equal(t, codes.Unauthenticated, status.Code(err))
+	_, code := gateway.authenticateUID(context.Background(), "game", nil, "conn-a")
+	require.Equal(t, codes.Unauthenticated, code)
 }
 
 func TestAuthenticationDoesNotBindAfterAdmissionCloses(t *testing.T) {

@@ -1,7 +1,7 @@
 package press
 
 import (
-	"sort"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -133,7 +133,7 @@ func (s *latencySamples) percentiles() (time.Duration, time.Duration, time.Durat
 	if len(values) == 0 {
 		return 0, 0, 0
 	}
-	sort.Slice(values, func(i, j int) bool { return values[i] < values[j] })
+	slices.Sort(values)
 	return percentile(values, 50), percentile(values, 95), percentile(values, 99)
 }
 
